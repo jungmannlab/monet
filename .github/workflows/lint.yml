@@ -1,0 +1,43 @@
+name: Lint
+
+# Style gate on a cheap GitHub-hosted runner -- one of the two REQUIRED status
+# checks (with "Unit Tests (hosted)") that gate merges into develop/master.
+# black and flake8 read their config from pyproject.toml ([tool.black] /
+# [tool.flake8] via the Flake8-pyproject plugin); versions are pinned to match
+# .pre-commit-config.yaml so CI and the local pre-commit hook agree. CI lints
+# the `monet/` package only (matching the pre-commit scope); the vendored
+# TLPM.py and the setuptools-scm _version.py are excluded via the tool config.
+
+on:
+  push:
+    branches:
+      - master
+      - main
+      - develop
+  # No branch filter on pull_request: lint every PR regardless of target branch
+  # (matches the pre-split ci.yml behaviour).
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install linters
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install black==26.5.1 flake8==7.1.1 Flake8-pyproject
+
+      - name: black --check
+        run: black --check monet
+
+      - name: flake8
+        run: flake8 monet

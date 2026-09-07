@@ -1,0 +1,49 @@
+# protocols.yaml — calibration sweeps, keyed by microscope name (must match a
+# key in configs.yaml). Used by `python -m monet calibrate <Name>` (and the 2D
+# calibration in the GUI). Without a protocol, `calibrate` runs a 1D
+# attenuator-only sweep with no laser control.
+#
+# Keys per protocol:
+#   laser_sequence : order in which wavelengths are calibrated
+#   laser_powers   : wavelength -> list of laser power set-points [mW] to
+#                    calibrate at each
+#   beampath       : wavelength (and the special `end` key) -> desired beam-path
+#                    object positions for that step. The object ids (DC,
+#                    shutter) match configs.yaml -> <Name> -> beampath. The
+#                    string values for `DC` (Ti488setting, ...) MUST be presets
+#                    that exist in the Micro-Manager "Filter turret" config
+#                    group (see microscope.cfg), or monet raises
+#                    "Position 'Ti488setting' not available ...".
+
+
+# Full 3-laser sweep for the Voyager rig. Each `DC` value below is a preset in
+# the MM "Filter turret" group in microscope.cfg; `shutter: true/false` opens /
+# closes the MM Core shutter. The `end` step parks the turret and closes the
+# shutter when the run finishes.
+Voyager:
+  laser_sequence: [488, 561, 640]
+  laser_powers:
+    488: [50, 100, 200, 500]
+    561: [100, 200, 500, 1000]
+    640: [100, 200, 500, 1000]
+  beampath:
+    488: {DC: Ti488setting, shutter: true}
+    561: {DC: Ti561setting, shutter: true}
+    640: {DC: Ti640setting, shutter: true}
+    end: {DC: Ti488setting, shutter: false}
+
+
+# Simulation sweep — drives the Test* beam-path objects in configs.yaml -> sim.
+# TestShutter positions are booleans, so `DC` is given as a bool here (the
+# simulated devices accept any position and do nothing physical).
+sim:
+  laser_sequence: [488, 561, 640]
+  laser_powers:
+    488: [50, 100, 200]
+    561: [100, 200, 500]
+    640: [100, 200, 500]
+  beampath:
+    488: {DC: true, shutter: true}
+    561: {DC: true, shutter: true}
+    640: {DC: true, shutter: true}
+    end: {DC: false, shutter: false}

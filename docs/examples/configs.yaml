@@ -1,0 +1,127 @@
+# configs.yaml — one entry per microscope, keyed by the <Name> you pass on the
+# CLI (e.g. `python -m monet gui Voyager`). An unknown name raises a KeyError
+# that prints the available names.
+#
+# Required keys per microscope: database, index, powermeter, attenuation,
+# analysis. Optional: lasers (for 2D / multi-laser protocols), beampath
+# (Micro-Manager devices), dest_calibration_plot.
+#
+# The three example microscopes below are meant to be read top-to-bottom:
+#   sim        — pure simulation, runs with zero hardware/SDKs
+#   Voyager    — full Nikon Ti2 rig: 3 lasers, Kinesis attenuator, TLPM meter,
+#                MM beam path, backed by the central server
+#   Deepglow   — minimal single-laser rig backed by a legacy Excel file
+#
+# Names referenced across files stay consistent: the `beampath` object ids
+# here (DC, shutter) match the protocol's beampath keys, and the protocol's
+# preset strings (Ti488setting, ...) match the Micro-Manager presets in
+# microscope.cfg.
+
+
+# ---------------------------------------------------------------------------
+# sim — simulation only. No hardware, no SDKs, no config matching required.
+# Try:  python -m monet gui sim   |   python -m monet set sim
+# ---------------------------------------------------------------------------
+sim:
+  database: ./sim_power_database.xlsx
+  index:
+    name: sim
+    wavelength [nm]: 488
+    laser_power [mW]: 100
+  powermeter:
+    classpath: monet.powermeter.TestPowerMeter
+    init_kwargs:
+      address: find connection
+      bkg: 0
+      amp: 50
+      phi: 30
+      start: 10
+      step: 5
+      noise: 0.5
+  attenuation:
+    classpath: monet.attenuation.TestAttenuator
+    init_kwargs: {bkg: 0, amp: 50, phi: 30, start: 10, step: 5}
+  analysis:
+    classpath: monet.analysis.SinusAttenuationCurveAnalyzer
+    init_kwargs: {min: 30, max: 100, step: 5}
+  lasers:
+    488: {classpath: monet.laser.TestLaser, init_kwargs: {}}
+    561: {classpath: monet.laser.TestLaser, init_kwargs: {}}
+    640: {classpath: monet.laser.TestLaser, init_kwargs: {}}
+  beampath:
+    DC:      {classpath: monet.beampath.TestShutter, init_kwargs: {}}
+    shutter: {classpath: monet.beampath.TestShutter, init_kwargs: {}}
+
+
+# ---------------------------------------------------------------------------
+# Voyager — full multi-laser Nikon Ti2 microscope on the central server.
+#   * index carries only `name` because the lasers/powers are enumerated by
+#     the 2D protocol (protocols.yaml -> Voyager).
+#   * powermeter uses the newer TLPM driver (see ONBOARDING Part 4).
+#   * beampath object ids (DC, shutter) are referenced by the protocol; the
+#     protocol's preset strings must exist as presets in microscope.cfg.
+# ---------------------------------------------------------------------------
+Voyager:
+  database: http://microscope-server.lab.local:8000   # central server (Part 6)
+
+  index:
+    name: Voyager
+
+  powermeter:
+    classpath: monet.powermeter.ThorlabsTLPMPowerMeter
+    init_kwargs:
+      address: find connection
+      # Point at the folder holding TLPM_64.dll if it is not on the PATH:
+      dll_path: C:/Program Files/IVI Foundation/VISA/Win64/Bin
+
+  attenuation:
+    classpath: monet.attenuation.KinesisAttenuator
+    init_kwargs:
+      serial: "27255833"          # Thorlabs rotation-mount serial number
+
+  analysis:
+    classpath: monet.analysis.SinusAttenuationCurveAnalyzer
+    init_kwargs: {min: 0, max: 180, step: 5}
+
+  lasers:
+    488: {classpath: monet.laser.Toptica, init_kwargs: {port: COM4}}
+    561: {classpath: monet.laser.MPBVFL,  init_kwargs: {port: COM7}}
+    640: {classpath: monet.laser.MPBVFL,  init_kwargs: {port: COM8}}
+
+  beampath:
+    # object id -> Micro-Manager-backed device. `DC` drives the "Filter turret"
+    # config group; `shutter` drives the MM Core shutter.
+    DC:      {classpath: monet.beampath.NikonFilterWheel, init_kwargs: {SN: 1234}}
+    shutter: {classpath: monet.beampath.NikonShutter,     init_kwargs: {SN: 123456}}
+
+  dest_calibration_plot: ./calibration_plots/
+
+
+# ---------------------------------------------------------------------------
+# Deepglow — minimal single-laser rig, legacy Excel database, no beam path.
+#   Uses an NI-DAQ analog-out attenuator and a legacy (VISA) Thorlabs meter.
+# ---------------------------------------------------------------------------
+Deepglow:
+  database: ../power_database.xlsx    # legacy Excel file (relative to cwd)
+
+  index:
+    name: Deepglow
+    wavelength [nm]: 561
+    laser_power [mW]: 200
+
+  powermeter:
+    classpath: monet.powermeter.ThorlabsPowerMeter   # legacy PM100D over VISA
+    init_kwargs:
+      address: find connection
+
+  attenuation:
+    classpath: monet.attenuation.NIdaqmxAOAttenuator
+    init_kwargs:
+      lines: {561: "Dev1/ao0"}       # wavelength -> analog-output line
+
+  analysis:
+    classpath: monet.analysis.LinearAttenuationCurveAnalyzer
+    init_kwargs: {min: 0.0, max: 5.0, step: 0.25}    # AO volts
+
+  lasers:
+    561: {classpath: monet.laser.Cobolt, init_kwargs: {port: COM5}}

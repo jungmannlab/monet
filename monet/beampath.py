@@ -252,6 +252,9 @@ class TestShutter(AbstractBeamPathObject):
                 "TestShutter position must be bool, got {!r}".format(pos)
             )
         logger.debug("setting position of TestShutter to {:b}".format(pos))
+        # Mirror NikonShutter: autoshutter is off while the shutter is held
+        # open, and back on once it is closed again.
+        self._autoshutter = not pos
         super(self.__class__, self.__class__).position.__set__(self, pos)
 
 
@@ -272,7 +275,10 @@ class NikonShutter(AbstractBeamPathObject):
 
     def _connect(self, config):
         self.core = get_pycromgr()
-        self.core.set_property("Core", "AutoShutter", "0")
+        # Leave MicroManager's autoshutter on so the microscope is ready for
+        # normal imaging. monet switches it off only transiently while it
+        # holds the shutter open itself (see the position setter).
+        self.core.set_property("Core", "AutoShutter", "1")
 
     @property
     def autoshutter(self):
@@ -302,13 +308,16 @@ class NikonShutter(AbstractBeamPathObject):
             raise ValueError(
                 "NikonShutter position must be bool, got {!r}".format(pos)
             )
-        # if pos:
-        #     self.device.open()
-        #     # core.setShutterOpen(True)
-        # else:
-        #     self.device.close()
-        # core.set_property('Core', 'ShutterOpen', pos)
-        self.core.set_shutter_open(pos)
+        # Autoshutter normally stays on so the microscope drives the shutter
+        # around acquisitions. To hold the shutter open ourselves we must
+        # switch it off first (otherwise MicroManager would re-close it), and
+        # hand control back once we close the shutter again.
+        if pos:
+            self.autoshutter = False
+            self.core.set_shutter_open(True)
+        else:
+            self.core.set_shutter_open(False)
+            self.autoshutter = True
         super(self.__class__, self.__class__).position.__set__(self, pos)
 
 
