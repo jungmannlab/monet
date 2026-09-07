@@ -634,9 +634,10 @@ class CalibrationProtocol2D(CalibrationProtocol1D):
             self.instrument.beampath.positions = self.protocol["beampath"][
                 "end"
             ]
-        # re-enable autoshutter so the microscope is left ready for normal
-        # imaging: calibration drives the shutter manually, which requires
-        # autoshutter to be switched off (see NikonShutter._connect).
+        # Belt-and-braces: make sure autoshutter is left on for normal
+        # imaging. Closing the shutter already re-enables it (see
+        # NikonShutter.position), but the final beam-path move above may not
+        # touch the shutter, so re-enable it explicitly here too.
         if self.instrument.use_beampath:
             shutter = self.instrument.beampath.objects.get("shutter")
             if shutter is not None:
