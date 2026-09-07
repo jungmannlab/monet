@@ -1563,9 +1563,6 @@ class AdjustTab(QWidget):
         self._btn_bp_close.clicked.connect(self._on_bp_close)
         bp_row.addWidget(self._btn_bp_open)
         bp_row.addWidget(self._btn_bp_close)
-        self._autoshutter_cb = QCheckBox("Autoshutter")
-        self._autoshutter_cb.stateChanged.connect(self._on_autoshutter)
-        bp_row.addWidget(self._autoshutter_cb)
         bp_row.addStretch()
         layout.addLayout(bp_row)
 
@@ -1768,16 +1765,6 @@ class AdjustTab(QWidget):
             self._emit_status("Ready", 2000)
 
         self._run_hw(_do, "Closing beampath…", on_done=_done)
-
-    def _on_autoshutter(self, state):
-        if self._pc is None:
-            return
-        try:
-            self._pc.instrument.beampath.objects["shutter"].autoshutter = (
-                Qt.CheckState(state) == Qt.CheckState.Checked
-            )
-        except Exception as exc:
-            QMessageBox.critical(self, "Error", str(exc))
 
 
 # ---------------------------------------------------------------------------
@@ -2069,23 +2056,6 @@ class SetPowerTab(QWidget):
         hw_pwr_layout.addStretch()
         hw_pwr_group.setLayout(hw_pwr_layout)
         layout.addWidget(hw_pwr_group)
-
-        # Autoshutter
-        self._autoshutter_cb = QCheckBox("Autoshutter")
-        self._autoshutter_cb.setToolTip(
-            "Hands shutter control to the microscope's acquisition software "
-            "(e.g. MicroManager), which then opens the shutter only during "
-            "image exposures and closes it otherwise.\n\n"
-            "• Enabled: normal imaging — the shutter follows acquisitions, and "
-            "monet's manual open/close is overridden by the microscope.\n"
-            "• Disabled: monet (or you) drive the shutter directly and it "
-            "stays exactly as set — needed while calibrating or setting power "
-            "so the beam stays on between measurements. Note that other "
-            "software will then not auto-close the shutter, so the sample "
-            "keeps being illuminated until it is closed manually."
-        )
-        self._autoshutter_cb.stateChanged.connect(self._on_autoshutter)
-        layout.addWidget(self._autoshutter_cb)
 
         layout.addStretch()
 
@@ -3186,16 +3156,6 @@ class SetPowerTab(QWidget):
             self._emit_status("Ready", 2000)
 
         self._run_hw(_do, f"Setting laser power to {pwr} mW…", on_done=_done)
-
-    def _on_autoshutter(self, state):
-        if self._pc is None:
-            return
-        try:
-            self._pc.instrument.beampath.objects["shutter"].autoshutter = (
-                Qt.CheckState(state) == Qt.CheckState.Checked
-            )
-        except Exception as exc:
-            QMessageBox.critical(self, "Error", str(exc))
 
 
 # ---------------------------------------------------------------------------

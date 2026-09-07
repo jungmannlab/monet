@@ -52,6 +52,15 @@ class TestBeampath(unittest.TestCase):
         sh.autoshutter = False
         self.assertFalse(sh.autoshutter)
 
+    def test_03b_TestShutter_position_toggles_autoshutter(self):
+        sh = mbp.TestShutter({"SN": 1234})
+        # Opening the shutter switches autoshutter off so monet can hold it
+        # open; closing it hands control back to the microscope.
+        sh.position = True
+        self.assertFalse(sh.autoshutter)
+        sh.position = False
+        self.assertTrue(sh.autoshutter)
+
     def test_04_TestShutter_position_must_be_bool(self):
         sh = mbp.TestShutter({"SN": 1234})
         with self.assertRaises(ValueError):
