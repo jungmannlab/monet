@@ -92,8 +92,14 @@ def main():
     parser.add_argument(
         "--host",
         type=str,
-        default="0.0.0.0",
-        help="Host to bind the server to (serve mode only).",
+        default="127.0.0.1",
+        help=(
+            "Host to bind the server to (serve mode only). Defaults to "
+            "loopback: the serve API actuates laser hardware, so it must "
+            "not be exposed on a network without authentication. Binding a "
+            "non-loopback host is gated on the shared auth helper (A9 / "
+            "ADR-001; built in WP-3b, reused here in WP-12a)."
+        ),
     )
     parser.add_argument(
         "--port",
