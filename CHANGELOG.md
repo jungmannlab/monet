@@ -10,6 +10,13 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
+### Security
+- `serve` now binds `127.0.0.1` by default (was `0.0.0.0`). The serve API
+  actuates laser hardware, so it must not be network-exposed without
+  authentication; binding a non-loopback host will be gated on the shared
+  bearer-token auth helper (A9 / ADR-001, WP-3b → reused in WP-12a). Pass
+  `--host` explicitly to override on a trusted, authenticated deployment.
+
 ### Fixed
 - Connecting in the GUI no longer switches a laser on: loading the calibration
   database populated the analyzers via the ``laser`` setter, which auto-enabled
