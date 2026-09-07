@@ -102,6 +102,14 @@ service. Drivers: `laser.py`, `attenuation.py`, `powermeter.py`, `beampath.py`.
 Surfaces: `__main__.py` (CLI), `gui.py` + `qt.py` (PyQt6 GUI / embeddable
 `monet.qt`). Full map in `README.md`.
 
+**Auth invariant (fail-closed):** the `serve` API *actuates laser hardware*, so an
+unauthenticated networked bind is a safety issue, not just data exposure. The
+`--host 0.0.0.0` default above is being changed to `127.0.0.1`; never bind a
+non-loopback host without the shared auth helper configured (bearer-token +
+`read`/`write` scopes, `write` on power-set / calibration-edit). The helper is
+built in picasso-registry (WP-3b) and imported here (WP-12a); see that repo's
+`docs/adr/001-service-authentication.md` and Open-Decisions **A9**.
+
 ## Standing pointers
 
 Paths so later sessions can `@`-reference them. Repo root is
