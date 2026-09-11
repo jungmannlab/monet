@@ -24,7 +24,7 @@ GUI walkthrough, embedding API, and HTTP endpoints.
 
 ## Current branch
 
-`feature-FullAutoS0A` — PRs target `master`. (Upstream also has `develop`.)
+Dev branch is `develop`; release path is `develop` → `master`. Work each task on its own feature branch and PR per the **Branch map** in `../../planning/DNA-PAINT_Work-Order-Briefs.md`. Don't pin the current branch here — check the tracker's branch-state note or `git`; a pinned branch is what goes stale.
 
 ## Commands
 
