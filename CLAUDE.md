@@ -24,7 +24,7 @@ GUI walkthrough, embedding API, and HTTP endpoints.
 
 ## Current branch
 
-`feature-FullAutoS0A` — PRs target `master`. (Upstream also has `develop`.)
+Dev branch is `develop`; release path is `develop` → `master`. Work each task on its own feature branch and PR per the **Branch map** in `../../planning/DNA-PAINT_Work-Order-Briefs.md`. Don't pin the current branch here — check the tracker's branch-state note or `git`; a pinned branch is what goes stale.
 
 ## Commands
 
@@ -87,6 +87,15 @@ in-tree config does not match the aligned target yet, the current state is noted
 - **Tests:** write/extend tests with every change; keep them green. Hardware is
   simulated via `TestLaser` / `TestAttenuator` / `TestPowerMeter`; server tests
   use FastAPI's `TestClient`; the GUI smoke test auto-skips without PyQt6.
+
+## Working defaults (how to behave in a session)
+
+In-session habits that complement the gates: the STOP-GATE and PR gates govern *when* and *where* to build; these govern *how*.
+
+- **Think before coding.** State your assumptions; if the brief is ambiguous or a simpler approach exists, say so and ask — don't pick silently.
+- **Minimal, necessary change.** No speculative abstraction, configurability, or error-handling for cases that can't occur. Every changed line should trace to the work order.
+- **Surgical diffs.** Match surrounding style; don't refactor or reformat untouched code, and don't delete pre-existing dead code — mention it instead. Remove only the orphans (imports/vars) your own change creates.
+- **Goal-driven.** Turn the brief's ACCEPTANCE into a check you can actually run, and verify it before opening the PR (hosted CI lint + unit is the required merge gate).
 
 ## Architecture (short)
 
