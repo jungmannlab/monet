@@ -154,6 +154,13 @@ so both DNA-PAINT services share one audited implementation.
 - **Scopes:** `write` on DB edits (`/calibrations`, `/factors`,
   `/calibrations/delete`, `/database/restart`) and on `POST /power/set`; `read` on
   the query routes and `GET /power`. `/health` is public.
+- **monet's own clients** (a microscope running `calibrate`/`set`, or the GUI,
+  pointing `database:` at an auth-enabled server) read their token from
+  `PAINT_MONET_TOKEN` (a single value, not the server's map). Because the client
+  both reads and writes the DB, give it a **`write`** token. Unset ⇒ no header
+  sent (works against a loopback / auth-off server). **Enable auth on a networked
+  server and set `PAINT_MONET_TOKEN` on the clients together** — a token-enforcing
+  server rejects token-less clients with 401.
 - **Fail-closed:** with no tokens configured the service is unauthenticated — but
   it then refuses any non-loopback bind (startup guard) and any non-loopback
   request (request-time net). Loopback dev stays zero-config.

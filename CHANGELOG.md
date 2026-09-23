@@ -26,6 +26,13 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
   unless tokens are configured, and `require_scope` refuses an unauthenticated
   non-loopback request even if the app is served directly. Loopback dev stays
   zero-config.
+- **Authenticated DB client.** monet's own HTTP client (`monet.io`, used by
+  `calibrate`/`set`/GUI when `database:` is a server URL) now sends
+  `Authorization: Bearer <PAINT_MONET_TOKEN>` on every request, so it keeps
+  working when the server enforces auth. Use a `write` token (the client reads and
+  writes); unset ⇒ no header (auth-off/loopback servers unchanged). Enabling
+  server auth and setting `PAINT_MONET_TOKEN` on clients must be rolled out
+  together.
 
 ### Fixed
 - Connecting in the GUI no longer switches a laser on: loading the calibration
