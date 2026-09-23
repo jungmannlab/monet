@@ -126,7 +126,38 @@ def main():
         import uvicorn
 
         os.environ["MONET_DB_PATH"] = args.db_path
-        from monet.server import app
+
+        # Fail-closed host guard (A9 / ADR-001, C18): refuse to *start* on a
+        # non-loopback host unless tokens are configured. A monet `write`
+        # actuates laser hardware, so a misconfigured networked bind must fail
+        # fast with a clear error, not serve an open actuator. The loopback dev
+        # path stays zero-config. (The request-time net in require_scope holds
+        # the invariant even when the module app is served directly.)
+        from monet.serviceauth import (
+            MONET_TOKENS_ENV,
+            AuthConfig,
+            is_loopback_host,
+        )
+
+        if (
+            not is_loopback_host(args.host)
+            and not AuthConfig.from_env(MONET_TOKENS_ENV).enabled
+        ):
+            parser.error(
+                f"refusing to bind non-loopback host {args.host!r} without "
+                f"auth: set {MONET_TOKENS_ENV} (token:scope:label,...) or bind "
+                "127.0.0.1. The serve API actuates laser hardware — see "
+                "README 'Authentication'."
+            )
+
+        # With a microscope name, build the instrument so the target-power API
+        # is live; without one, serve the DB-only app.
+        if args.name:
+            from monet.server import build_app_for_microscope
+
+            app = build_app_for_microscope(args.name, args.configs_file)
+        else:
+            from monet.server import app
 
         uvicorn.run(app, host=args.host, port=args.port)
     elif args.mode == "migrate":

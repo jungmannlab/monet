@@ -57,6 +57,20 @@ def _is_server_url(fname):
     return fname.startswith("http://") or fname.startswith("https://")
 
 
+# Bearer token for a monet calibration server that enforces auth (i.e. one
+# started with PAINT_MONET_TOKENS set). io.py both reads and writes the DB, so
+# this should be a WRITE-scoped token (write is a superset of read). When the
+# variable is unset no Authorization header is sent, so a loopback / auth-off
+# server keeps working unchanged. See README "Authentication".
+MONET_CLIENT_TOKEN_ENV = "PAINT_MONET_TOKEN"
+
+
+def _auth_headers():
+    """Authorization header for the monet server, or {} if no token is set."""
+    token = os.environ.get(MONET_CLIENT_TOKEN_ENV)
+    return {"Authorization": f"Bearer {token}"} if token else {}
+
+
 def _flush_outbox(server_url: str) -> None:
     """Replay any queued outbox entries against the server.
 
@@ -85,7 +99,10 @@ def _flush_outbox(server_url: str) -> None:
     for entry_id, endpoint, payload, local_key in pending:
         try:
             resp = requests.post(
-                f"{server_url}{endpoint}", json=payload, timeout=10
+                f"{server_url}{endpoint}",
+                json=payload,
+                timeout=10,
+                headers=_auth_headers(),
             )
             resp.raise_for_status()
 
@@ -202,6 +219,7 @@ def _save_calibration_http(server_url, index, cali_pars):
             f"{server_url}/calibrations",
             json={"index": index, "parameters": cali_pars},
             timeout=10,
+            headers=_auth_headers(),
         )
         resp.raise_for_status()
         record = resp.json()
@@ -386,6 +404,7 @@ def _load_database_http(server_url, index, time_idx):
             f"{server_url}/calibrations/query",
             json={"index": json_index, "time_idx": time_idx},
             timeout=10,
+            headers=_auth_headers(),
         )
         resp.raise_for_status()
         records = resp.json()["records"]
@@ -485,7 +504,11 @@ def restart_database(db_fname):
 
 def _restart_database_http(server_url):
     """Restart database via HTTP server."""
-    resp = requests.post(f"{server_url}/database/restart", timeout=30)
+    resp = requests.post(
+        f"{server_url}/database/restart",
+        timeout=30,
+        headers=_auth_headers(),
+    )
     resp.raise_for_status()
     data = resp.json()
     return data["backup_path"]
@@ -548,7 +571,10 @@ def _delete_calibration_http(server_url, index):
     cache = _get_cache(server_url)
     try:
         resp = requests.post(
-            f"{server_url}/calibrations/delete", json=payload, timeout=10
+            f"{server_url}/calibrations/delete",
+            json=payload,
+            timeout=10,
+            headers=_auth_headers(),
         )
         resp.raise_for_status()
         count = resp.json()["deleted_count"]
@@ -1817,7 +1843,12 @@ def _save_factor_http(
     }
     cache = _get_cache(server_url)
     try:
-        resp = requests.post(f"{server_url}/factors", json=payload, timeout=10)
+        resp = requests.post(
+            f"{server_url}/factors",
+            json=payload,
+            timeout=10,
+            headers=_auth_headers(),
+        )
         resp.raise_for_status()
         cache.upsert_factor(payload)
     except _CONNECTION_ERRORS:
@@ -1909,7 +1940,10 @@ def load_factors(db_fname, device=None, laser=None):
         cache = _get_cache(db_fname)
         try:
             resp = requests.post(
-                f"{db_fname}/factors/query", json=payload, timeout=10
+                f"{db_fname}/factors/query",
+                json=payload,
+                timeout=10,
+                headers=_auth_headers(),
             )
             resp.raise_for_status()
             records = resp.json().get("records", [])

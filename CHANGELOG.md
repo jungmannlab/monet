@@ -13,9 +13,26 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 ### Security
 - `serve` now binds `127.0.0.1` by default (was `0.0.0.0`). The serve API
   actuates laser hardware, so it must not be network-exposed without
-  authentication; binding a non-loopback host will be gated on the shared
-  bearer-token auth helper (A9 / ADR-001, WP-3b → reused in WP-12a). Pass
-  `--host` explicitly to override on a trusted, authenticated deployment.
+  authentication.
+- **Service authentication (WP-12a / A9 / ADR-001).** The serve API now imports
+  the shared bearer-token helper from picasso-registry (`picasso_registry.auth`,
+  built in WP-3b) rather than reimplementing auth. Every data route is scoped:
+  `write` on DB edits (`/calibrations`, `/factors`, `/calibrations/delete`,
+  `/database/restart`) and on `POST /power/set`; `read` on the query routes and
+  `GET /power`; `/health` stays public. Tokens are read from `PAINT_MONET_TOKENS`
+  (a `token:scope:label` map, never committed, never in the DB); a `write` token
+  also satisfies `read`.
+- **Fail-closed host guard.** `monet serve` refuses to bind a non-loopback host
+  unless tokens are configured, and `require_scope` refuses an unauthenticated
+  non-loopback request even if the app is served directly. Loopback dev stays
+  zero-config.
+- **Authenticated DB client.** monet's own HTTP client (`monet.io`, used by
+  `calibrate`/`set`/GUI when `database:` is a server URL) now sends
+  `Authorization: Bearer <PAINT_MONET_TOKEN>` on every request, so it keeps
+  working when the server enforces auth. Use a `write` token (the client reads and
+  writes); unset ⇒ no header (auth-off/loopback servers unchanged). Enabling
+  server auth and setting `PAINT_MONET_TOKEN` on clients must be rolled out
+  together.
 
 ### Fixed
 - Connecting in the GUI no longer switches a laser on: loading the calibration
@@ -38,6 +55,27 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
   exactly once), so consecutive runs are separated regardless of timing.
 
 ### Added
+- **Target-power API (WP-12a).** `monet serve <MicroscopeName>` now exposes a
+  power actuator for the recommender/PycroFlow: `POST /power/set` sets a per-laser
+  target power (reusing the closed-loop PI setter `run_power_feedback` when a
+  meter is attached, else open-loop from the calibration) and returns the measured
+  power so target + measured can be logged to the registry; `GET /power` reads
+  back the current power. With no microscope name, `serve` runs the DB only and
+  the `/power` routes return `503`.
+- **Runtime safety interlock (C34).** A hard per-laser max-power ceiling clamps a
+  too-high request to the limit before the laser is actuated (fail-safe, enforced
+  in code, not advisory). It is enforced in the **control layer**
+  (`IlluminationLaserControl.clamp_to_max_power`, applied by the `power` setter,
+  `set_power_fixed_*` and `run_power_feedback`), so **every** actuation path — the
+  HTTP power API, the GUI and the CLI — is bounded, not just the API route.
+  Configure it via a `safety.max_power_mw` map in the microscope config until the
+  versioned site descriptor (WP-FLEET) supplies it; a **malformed** ceiling
+  refuses to build the instrument (fail-closed) rather than silently disabling the
+  limit. `POST /power/set` reports `clamped` and the delivered `target_power_mw`.
+- `monet.serviceauth` binds monet to the shared `picasso_registry.auth` helper
+  (via the new `picasso-registry[auth]` dependency in the `[server]` extra) and
+  pins monet's own `PAINT_MONET_TOKENS` env var so the two services never share a
+  token store.
 - Set Power tab: setting a power (without measuring) now records it in the
   MicroManager acquisition comment tagged ``[set]``; a subsequent Measure
   supersedes that line with a ``[measured]`` entry for the same laser

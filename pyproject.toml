@@ -55,9 +55,16 @@ gui = [
 
 # FastAPI calibration server (`python -m monet serve`). SQLAlchemy is a core
 # dependency (see above), so only the web-server packages live here.
+#
+# picasso-registry[auth] is the shared service-auth helper (WP-3b / ADR-001):
+# monet imports `picasso_registry.auth` rather than reimplementing bearer-token
+# auth, so the two DNA-PAINT services share one audited implementation. The
+# [auth] extra is only FastAPI (already required here), so this adds no runtime
+# weight beyond the small pure-Python package itself.
 server = [
     "fastapi>=0.104",
     "uvicorn[standard]>=0.24",
+    "picasso-registry[auth] @ git+https://github.com/jungmannlab/picasso-registry.git",
 ]
 
 # Real-hardware SDKs. All imported lazily, so they are only required on the

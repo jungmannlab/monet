@@ -1,0 +1,48 @@
+# docs/staging/staging_config.yaml
+#
+# A pure-simulation microscope ("stg") for staging / real-world testing of the
+# target-power API + auth (WP-12a) with NO hardware. Runs against Test* drivers.
+#
+#   python docs/staging/seed_calibration.py          # seed the calibration DB
+#   export PAINT_MONET_TOKENS="$WRITE:write:stg,$READ:read:dash"
+#   monet serve stg -c docs/staging/staging_config.yaml --host 0.0.0.0 --port 8765
+#
+# Note: the stock Test attenuator/meter are no-ops (curr_pos()==0), so the
+# *measured* power is not meaningful here — this harness validates the networked
+# surface (auth, scopes, host guard, safety clamp, client token), not power
+# accuracy. Accuracy is validated on real hardware at WP-12b.
+stg:
+  database: ./staging_power_database.xlsx
+  index:
+    name: stg
+    wavelength [nm]: 488
+    laser_power [mW]: 100
+  # C34 per-laser safety ceiling (mW). A request above this is clamped.
+  safety:
+    max_power_mw:
+      488: 40
+      561: 80
+      640: 80
+  powermeter:
+    classpath: monet.powermeter.TestPowerMeter
+    init_kwargs:
+      address: find connection
+      bkg: 0
+      amp: 50
+      phi: 30
+      start: 10
+      step: 5
+      noise: 0.5
+  attenuation:
+    classpath: monet.attenuation.TestAttenuator
+    init_kwargs: {bkg: 0, amp: 50, phi: 30, start: 30, step: 5}
+  analysis:
+    classpath: monet.analysis.LinearCurveAnalyzer
+    init_kwargs: {min: 0, max: 100, step: 5}
+  lasers:
+    488: {classpath: monet.laser.TestLaser, init_kwargs: {}}
+    561: {classpath: monet.laser.TestLaser, init_kwargs: {}}
+    640: {classpath: monet.laser.TestLaser, init_kwargs: {}}
+  beampath:
+    DC:      {classpath: monet.beampath.TestShutter, init_kwargs: {}}
+    shutter: {classpath: monet.beampath.TestShutter, init_kwargs: {}}
