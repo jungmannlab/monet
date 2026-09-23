@@ -162,9 +162,57 @@ so both DNA-PAINT services share one audited implementation.
   proxy with HTTP Basic / lab SSO (the dashboard is not bearer-guarded, per
   ADR-001). Do not expose plain HTTP off-box.
 
+#### Creating, storing & rotating tokens
+
+**Generate** a high-entropy token per holder. The token must not contain `:`,
+`,`, `;`, or a newline (those are the map's separators), so use a URL-safe or hex
+generator:
+
+```bash
+python -c "import secrets; print(secrets.token_urlsafe(32))"   # e.g. Xy7...q  (URL-safe)
+openssl rand -hex 32                                            # hex alternative
+```
+
+Assemble one entry per holder as `token:scope:label` and join with commas — give
+each machine/role its **own** token so it can be revoked independently, and make
+the `label` name the holder (used for attributable writes in the logs):
+
+```bash
+export PAINT_MONET_TOKENS="$(cat <<'ENV'
+Xy7...q:write:microscope-mercury,
+Ab3...k:write:cluster,
+Zq9...t:read:dashboards
+ENV
+)"
+```
+
+**Store** it out of the repo and off the DB: a per-machine, root-owned
+`EnvironmentFile` is the simplest fit for the systemd unit that runs `serve`:
+
+```ini
+# /etc/monet/monet.env   (chmod 600, owned by the service user; NEVER committed)
+PAINT_MONET_TOKENS=Xy7...q:write:microscope-mercury,Zq9...t:read:dashboards
+MONET_DB_PATH=/shared/calibrations.db
+```
+```ini
+# /etc/systemd/system/monet-serve.service
+[Service]
+EnvironmentFile=/etc/monet/monet.env
+ExecStart=/opt/monet/.venv/bin/monet serve Mercury --host 0.0.0.0 --port 8000
+```
+
+A gitignored `.env` (loaded by your shell/`direnv`) or a secrets manager works
+too; the only hard rules are *never in git* and *never in the calibration DB*.
+
+**Rotate / revoke** by editing the map and restarting `serve` (tokens are read at
+startup): add the new token, redistribute it to that holder, then delete the old
+entry. Because each holder has a distinct `label`, you can revoke one microscope
+or the dashboards without disturbing the others. There is no online revocation
+list — rotation is "edit the env + restart", so keep the map small and per-role.
+
 ```bash
 # clients send the bearer token
-curl -H "Authorization: Bearer s3cr3t-write" \
+curl -H "Authorization: Bearer $TOKEN" \
      -X POST http://scope:8000/power/set \
      -d '{"laser": 488, "target_power_mw": 30}'
 ```
