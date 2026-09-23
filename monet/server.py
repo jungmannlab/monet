@@ -497,6 +497,34 @@ def create_app(
                 status_code=422, detail="target power must be non-negative"
             )
 
+        # ── Validate the request BEFORE any actuation ───────────────────────
+        # Everything that can 422 is checked here, before the laser is selected,
+        # enabled, or driven, so a bad request never actuates hardware.
+        has_meter = powermeter is not None
+        mode = req.mode or ("fixed_laser" if has_meter else "combined")
+        if mode not in ("combined", "fixed_laser", "fixed_attenuator"):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"unknown mode {mode!r}; expected one of 'combined', "
+                    "'fixed_laser', 'fixed_attenuator'"
+                ),
+            )
+        closed_loop = mode in ("fixed_laser", "fixed_attenuator")
+        if closed_loop and not has_meter:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"mode {mode!r} is closed-loop and needs a power meter, "
+                    "but none is attached; use mode 'combined' for open-loop"
+                ),
+            )
+        if req.tolerance_pct is not None and req.tolerance_pct <= 0:
+            raise HTTPException(
+                status_code=422,
+                detail="tolerance_pct must be positive",
+            )
+
         # ── SAFETY INTERLOCK (C34) ──────────────────────────────────────────
         # The hard per-laser ceiling is enforced in the control layer, below
         # every actuation path (control.clamp_to_max_power, applied by the power
@@ -512,10 +540,7 @@ def create_app(
         instrument.laser = laser
         instrument.laser_enabled = True
 
-        has_meter = powermeter is not None
-        mode = req.mode or ("fixed_laser" if has_meter else "combined")
-
-        if has_meter and mode in ("fixed_laser", "fixed_attenuator"):
+        if closed_loop:
             fb = config.get("feedback", {}) if isinstance(config, dict) else {}
             tol = (
                 req.tolerance_pct
@@ -552,7 +577,6 @@ def create_app(
                 measured = float(instrument.power)
             converged = True
             iterations = 0
-            mode = "combined"
 
         return PowerSetResponse(
             laser=laser,
@@ -664,7 +688,12 @@ def build_app_for_microscope(name, configs_file=None):
             f"Microscope {name!r} not found in configurations."
         ) from exc
 
-    instrument = IlluminationLaserControl(config, auto_enable_lasers=False)
+    # do_load_cal=False so the calibration is loaded exactly once, by the
+    # explicit call below (whose success/failure we surface), rather than also
+    # implicitly in the constructor.
+    instrument = IlluminationLaserControl(
+        config, do_load_cal=False, auto_enable_lasers=False
+    )
     try:
         instrument.load_calibration_database()
     except Exception as exc:

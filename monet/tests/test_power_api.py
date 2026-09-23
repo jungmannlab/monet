@@ -251,6 +251,51 @@ class TestPowerAPIBehaviour(_AppMixin, unittest.TestCase):
         )
         self.assertEqual(resp.status_code, 422)
 
+    def test_unknown_mode_is_422_before_actuation(self):
+        ctrl, config = _build_control()
+        pm = _AttenuatorCurvePowerMeter(ctrl, miscal=1.0)
+        start = ctrl.attenuator.curr_pos()
+        client = self._make_client(
+            instrument=ctrl, powermeter=pm, config=config
+        )
+        resp = client.post(
+            "/power/set",
+            json={"laser": 488, "target_power_mw": 30, "mode": "nonsense"},
+        )
+        self.assertEqual(resp.status_code, 422)
+        # rejected before any hardware move
+        self.assertEqual(ctrl.attenuator.curr_pos(), start)
+
+    def test_closed_loop_mode_without_meter_is_422(self):
+        ctrl, config = _build_control()
+        start = ctrl.attenuator.curr_pos()
+        client = self._make_client(
+            instrument=ctrl, powermeter=None, config=config
+        )
+        resp = client.post(
+            "/power/set",
+            json={"laser": 488, "target_power_mw": 30, "mode": "fixed_laser"},
+        )
+        self.assertEqual(resp.status_code, 422)
+        self.assertEqual(ctrl.attenuator.curr_pos(), start)
+
+    def test_nonpositive_tolerance_is_422(self):
+        ctrl, config = _build_control()
+        pm = _AttenuatorCurvePowerMeter(ctrl, miscal=1.0)
+        client = self._make_client(
+            instrument=ctrl, powermeter=pm, config=config
+        )
+        resp = client.post(
+            "/power/set",
+            json={
+                "laser": 488,
+                "target_power_mw": 30,
+                "mode": "fixed_laser",
+                "tolerance_pct": 0,
+            },
+        )
+        self.assertEqual(resp.status_code, 422)
+
     def test_no_instrument_is_503(self):
         """DB-only deployment (no microscope): the power route is present but
         refuses with 503."""
