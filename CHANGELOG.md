@@ -55,11 +55,16 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
   power so target + measured can be logged to the registry; `GET /power` reads
   back the current power. With no microscope name, `serve` runs the DB only and
   the `/power` routes return `503`.
-- **Runtime safety interlock (C34).** `POST /power/set` clamps the request to a
-  hard per-laser maximum before actuating the laser (fail-safe, enforced in code,
-  not advisory). Configure it via a `safety.max_power_mw` map in the microscope
-  config until the versioned site descriptor (WP-FLEET) supplies it; the response
-  reports `clamped` and the delivered `target_power_mw`.
+- **Runtime safety interlock (C34).** A hard per-laser max-power ceiling clamps a
+  too-high request to the limit before the laser is actuated (fail-safe, enforced
+  in code, not advisory). It is enforced in the **control layer**
+  (`IlluminationLaserControl.clamp_to_max_power`, applied by the `power` setter,
+  `set_power_fixed_*` and `run_power_feedback`), so **every** actuation path — the
+  HTTP power API, the GUI and the CLI — is bounded, not just the API route.
+  Configure it via a `safety.max_power_mw` map in the microscope config until the
+  versioned site descriptor (WP-FLEET) supplies it; a **malformed** ceiling
+  refuses to build the instrument (fail-closed) rather than silently disabling the
+  limit. `POST /power/set` reports `clamped` and the delivered `target_power_mw`.
 - `monet.serviceauth` binds monet to the shared `picasso_registry.auth` helper
   (via the new `picasso-registry[auth]` dependency in the `[server]` extra) and
   pins monet's own `PAINT_MONET_TOKENS` env var so the two services never share a

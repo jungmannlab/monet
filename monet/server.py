@@ -99,40 +99,6 @@ def _record_from_row(row: Calibration) -> CalibrationRecord:
     )
 
 
-def _max_power_mw(config, laser):
-    """Return the hard safety ceiling for ``laser`` in mW, or None if unset.
-
-    Interim source (until WP-FLEET ships the versioned site descriptor, C34): a
-    ``safety.max_power_mw`` mapping in the microscope config, e.g.::
-
-        safety:
-          max_power_mw:
-            488: 120.0
-            561: 200.0
-
-    Keys may be ints or numeric strings. Enforcement is identical whichever
-    source supplies the value — this is the one eventual source of truth.
-    """
-    if not isinstance(config, dict):
-        return None
-    safety = config.get("safety") or {}
-    caps = safety.get("max_power_mw") or {}
-    if not isinstance(caps, dict):
-        return None
-    candidates = [laser, str(laser)]
-    try:
-        candidates += [int(laser), str(int(laser))]
-    except (TypeError, ValueError):
-        pass
-    for key in candidates:
-        if key in caps:
-            try:
-                return float(caps[key])
-            except (TypeError, ValueError):
-                return None
-    return None
-
-
 def create_app(
     auth: AuthConfig | None = None,
     instrument=None,
@@ -532,24 +498,15 @@ def create_app(
             )
 
         # ── SAFETY INTERLOCK (C34) ──────────────────────────────────────────
-        # Hard per-laser ceiling, enforced in code before actuation. A request
-        # above the ceiling is clamped down (fail-safe: the hardware is never
-        # driven above the ceiling) and the response flags `clamped=True` so the
-        # caller sees the delivered target differs from what it asked for.
-        ceiling = _max_power_mw(config, laser)
-        target = requested
-        clamped = False
-        if ceiling is not None and target > ceiling:
-            logger.warning(
-                "power/set: requested %.3f mW exceeds safety ceiling "
-                "%.3f mW for laser %s (holder=%s); clamping.",
-                requested,
-                ceiling,
-                laser,
-                getattr(token, "label", None),
-            )
-            target = ceiling
-            clamped = True
+        # The hard per-laser ceiling is enforced in the control layer, below
+        # every actuation path (control.clamp_to_max_power, applied by the power
+        # setter / set_power_fixed_* / run_power_feedback), so the GUI and CLI
+        # are bounded too — not just this route. Here we resolve the ceiling and
+        # the delivered target for the response so the caller sees when its
+        # request was clamped down (fail-safe: the hardware is never driven above
+        # the ceiling).
+        ceiling = instrument.max_power(laser)
+        target, clamped = instrument.clamp_to_max_power(requested, laser)
 
         # Select + enable the laser (this is an actuation route).
         instrument.laser = laser
@@ -614,8 +571,12 @@ def create_app(
     def read_power(request: Request, laser: int | None = None):
         """Read back the current power (measured if a meter is attached).
 
-        Read-only: it never enables a laser. When ``laser`` is given the
-        instrument is switched to that line for the read-back.
+        Truly read-only: it does not switch lines, change any set-point, or
+        enable a laser. It reports the **currently active** laser — the only
+        one for which a live meter reading is physically meaningful (the meter
+        sees whatever is emitting). If ``laser`` is supplied and is not the
+        active laser, the request is rejected (409); select it with
+        ``POST /power/set`` first.
         """
         instrument = request.app.state.instrument
         powermeter = request.app.state.powermeter
@@ -627,24 +588,16 @@ def create_app(
                     "`monet serve <MicroscopeName>` to enable the power API"
                 ),
             )
-        if laser is not None:
-            if laser not in instrument.laser:
-                raise HTTPException(
-                    status_code=422,
-                    detail=(
-                        f"laser {laser} not available; "
-                        f"configured lasers: {instrument.laser}"
-                    ),
-                )
-            # Switch lines for the read-back without ever enabling emission,
-            # regardless of the instrument's auto_enable_lasers setting.
-            prev_auto = instrument.auto_enable_lasers
-            instrument.auto_enable_lasers = False
-            try:
-                instrument.laser = laser
-            finally:
-                instrument.auto_enable_lasers = prev_auto
-        laser = instrument.curr_laser
+        current = instrument.curr_laser
+        if laser is not None and laser != current:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"laser {laser} is not the active laser ({current}); "
+                    "select it via POST /power/set before reading back"
+                ),
+            )
+        laser = current
 
         predicted = None
         try:

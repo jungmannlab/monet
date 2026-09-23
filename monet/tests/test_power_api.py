@@ -229,6 +229,20 @@ class TestPowerAPIBehaviour(_AppMixin, unittest.TestCase):
             "read-back must not enable a laser",
         )
 
+    def test_read_back_rejects_non_active_laser_without_mutating(self):
+        """GET /power is read-only: a non-active laser is rejected (409) and the
+        instrument's current laser / set-point are left untouched."""
+        ctrl, config = _build_control()
+        ctrl.laser = 488
+        before_laser = ctrl.curr_laser
+        before_lp = ctrl.laserpower
+        client = self._make_client(instrument=ctrl, config=config)
+        resp = client.get("/power", params={"laser": 561})
+        self.assertEqual(resp.status_code, 409)
+        # no state mutation from a read
+        self.assertEqual(ctrl.curr_laser, before_laser)
+        self.assertEqual(ctrl.laserpower, before_lp)
+
     def test_unknown_laser_is_422(self):
         ctrl, config = _build_control()
         client = self._make_client(instrument=ctrl, config=config)
@@ -294,6 +308,12 @@ class TestPowerSafetyInterlock(_AppMixin, unittest.TestCase):
         )
         self.assertEqual(resp.status_code, 200, resp.text)
         self.assertTrue(resp.json()["clamped"])
+
+    def test_malformed_safety_config_refuses_construction(self):
+        """Fail-closed: a broken ceiling config refuses to build the instrument
+        rather than silently running without the interlock."""
+        with self.assertRaises(ValueError):
+            _build_control(safety={"max_power_mw": {488: "oops"}})
 
 
 class TestPowerAPIAuth(_AppMixin, unittest.TestCase):
