@@ -10,6 +10,8 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-28
+
 ### Changed
 - **Release-prep (C40/C41/B8).** Pinned `picasso-registry[auth]` to the released
   tag **`@v0.1.0`** (was a floating git URL; resolves the C39 caveat — not on
