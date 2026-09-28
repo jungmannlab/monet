@@ -161,9 +161,14 @@ so both DNA-PAINT services share one audited implementation.
   sent (works against a loopback / auth-off server). **Enable auth on a networked
   server and set `PAINT_MONET_TOKEN` on the clients together** — a token-enforcing
   server rejects token-less clients with 401.
-- **Fail-closed:** with no tokens configured the service is unauthenticated — but
-  it then refuses any non-loopback bind (startup guard) and any non-loopback
-  request (request-time net). Loopback dev stays zero-config.
+- **Toggle (`PAINT_MONET_AUTH`)** for easy onboarding — `off` | `on` | `auto`
+  (default `auto`): `auto` enforces iff tokens are set (backward-compatible);
+  `off` runs open on loopback and makes the client omit its token (debugging);
+  `on` requires tokens and makes `monet serve` refuse to start without them. Set
+  it in `.env` alongside the token.
+- **Fail-closed:** with auth inactive the service refuses any non-loopback bind
+  (startup guard) and any non-loopback request (request-time net). Loopback dev
+  stays zero-config.
 - **TLS:** terminate TLS at a reverse proxy (Caddy/nginx) or run uvicorn with
   `--ssl-keyfile`/`--ssl-certfile`; put the browser **dashboard** behind the same
   proxy with HTTP Basic / lab SSO (the dashboard is not bearer-guarded, per
@@ -315,7 +320,29 @@ Scopes are enforced only when `PAINT_MONET_TOKENS` is set; see [Authentication](
 
 ## Configuration
 
-Microscope configurations are defined in YAML files referenced by `env.yaml`. Each config specifies:
+### Per-machine settings (`.env`)
+
+monet reads its per-machine settings from environment variables, loaded from a
+gitignored **`.env`** in the package root at import (via `python-dotenv`,
+`override=False` — an already-exported variable or a systemd `EnvironmentFile`
+still wins). Copy [`.env.template`](.env.template) to `.env` and fill in:
+
+| Variable | Purpose |
+|---|---|
+| `MONET_CONFIG_PATHS` | `os.pathsep`-separated list of `configs.yaml` paths (first that exists wins) |
+| `MONET_PROTOCOL_PATHS` | same, for `protocols.yaml` |
+| `PAINT_MONET_AUTH` | auth toggle: `off` \| `on` \| `auto` (default `auto`) |
+| `PAINT_MONET_TOKEN` | client bearer token (a `write` token; see [Authentication](#authentication)) |
+| `PAINT_MONET_TOKENS` | server token→scope→label map (on the `serve` host) |
+
+> **Deprecation:** the config/protocol paths used to live in `env.yaml`
+> (`config_paths` / `protocol_paths`). That file is still read as a fallback but
+> emits a `DeprecationWarning`; migrate to `MONET_CONFIG_PATHS` /
+> `MONET_PROTOCOL_PATHS` in `.env`.
+
+### Microscope configs
+
+Microscope configurations are defined in YAML files referenced by `MONET_CONFIG_PATHS` (or, deprecated, `env.yaml`). Each config specifies:
 
 - `database` — file path (`.xlsx`) or server URL (`http://...`)
 - `index` — microscope name, wavelength, laser power

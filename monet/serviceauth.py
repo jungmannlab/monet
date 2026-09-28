@@ -50,10 +50,21 @@ MONET_TOKENS_ENV = "PAINT_MONET_TOKENS"
 
 
 def auth_from_env(var: str = MONET_TOKENS_ENV) -> AuthConfig:
-    """Build monet's :class:`AuthConfig` from ``PAINT_MONET_TOKENS``.
+    """Build monet's :class:`AuthConfig`, honouring the ``PAINT_MONET_AUTH`` toggle.
 
-    An unset/empty variable yields a disabled (unauthenticated) config — the
-    zero-config loopback dev path and the in-memory test client. The fail-closed
-    host guard is what keeps that state off a networked bind.
+    * ``off`` → an empty (disabled) config regardless of any tokens set, so the
+      server does not enforce (loopback dev). The fail-closed host guard still
+      refuses a *non-loopback* bind when the config is disabled.
+    * ``on`` / ``auto`` → built from ``PAINT_MONET_TOKENS``; enabled iff tokens
+      are present. (``on`` additionally makes ``monet serve`` refuse to start
+      without tokens — enforced in the CLI guard, not here, so importing the app
+      never raises.)
+
+    An unset/empty token var yields a disabled config — the zero-config loopback
+    dev path and the in-memory test client.
     """
+    from monet import auth_mode
+
+    if auth_mode() == "off":
+        return AuthConfig({})
     return AuthConfig.from_env(var)

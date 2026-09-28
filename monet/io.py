@@ -66,7 +66,15 @@ MONET_CLIENT_TOKEN_ENV = "PAINT_MONET_TOKEN"
 
 
 def _auth_headers():
-    """Authorization header for the monet server, or {} if no token is set."""
+    """Authorization header for the monet server, or {} if no token is sent.
+
+    Honours the PAINT_MONET_AUTH toggle: ``off`` sends no token (talking to an
+    auth-off server); ``on``/``auto`` send the bearer token when one is set.
+    """
+    from monet import auth_mode
+
+    if auth_mode() == "off":
+        return {}
     token = os.environ.get(MONET_CLIENT_TOKEN_ENV)
     return {"Authorization": f"Bearer {token}"} if token else {}
 

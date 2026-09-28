@@ -8,9 +8,10 @@ monet/__init__.py
 """
 
 import logging
+import os
+import warnings
 from logging import handlers
 
-import importlib_resources
 import yaml as _yaml
 
 try:
@@ -43,6 +44,32 @@ def config_logger():
 config_logger()
 logger = logging.getLogger(__name__)
 
+# ── per-machine settings via .env ────────────────────────────────────────────
+# monet reads its per-machine settings from environment variables: the config /
+# protocol path lists (MONET_CONFIG_PATHS / MONET_PROTOCOL_PATHS), the auth
+# token(s) (PAINT_MONET_TOKEN / PAINT_MONET_TOKENS) and the auth toggle
+# (PAINT_MONET_AUTH). Load a gitignored `.env` (package root, then cwd) into the
+# environment so those can live in one file. override=False ⇒ an already-exported
+# variable or a systemd EnvironmentFile still wins.
+_PKG_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _load_env_files(pkg_root=_PKG_ROOT):
+    """Load `.env` (package root, then cwd/parents) into os.environ, no override."""
+    try:
+        from dotenv import load_dotenv
+    except Exception:  # pragma: no cover - python-dotenv is a core dep
+        logger.debug("python-dotenv unavailable; .env not loaded")
+        return
+    try:
+        load_dotenv(os.path.join(pkg_root, ".env"), override=False)
+        load_dotenv(override=False)
+    except Exception:
+        logger.debug("could not load .env", exc_info=True)
+
+
+_load_env_files()
+
 DEVICE_TAG = "name"
 LASER_TAG = "wavelength [nm]"
 POWER_TAG = "laser_power [mW]"
@@ -72,14 +99,34 @@ def normalize_powermeter_type(value):
     return v
 
 
-try:
-    ref = importlib_resources.files("monet") / "..\\env.yaml"
-    with importlib_resources.as_file(ref) as envpath:
-        with open(envpath, "r") as f:
-            env = _yaml.full_load(f)
-except Exception:
-    logger.debug("env.yaml cannot be loaded.")
-    env = None
+# Auth toggle (PAINT_MONET_AUTH): 'off' | 'on' | 'auto' (default). Kept here
+# (dependency-light) so both the client (monet.io) and the server helper
+# (monet.serviceauth) can read it without importing the FastAPI/auth stack.
+#   auto  — enforce iff tokens are configured (backward-compatible default)
+#   off   — never enforce (loopback dev); the client omits its token
+#   on    — require tokens (serve refuses to start if none are configured)
+PAINT_MONET_AUTH_ENV = "PAINT_MONET_AUTH"
+_AUTH_OFF_VALUES = frozenset({"off", "0", "false", "no"})
+_AUTH_ON_VALUES = frozenset({"on", "1", "true", "yes"})
+
+
+def auth_mode():
+    """Return the normalized auth toggle: 'off', 'on', or 'auto' (default)."""
+    value = (os.environ.get(PAINT_MONET_AUTH_ENV) or "").strip().lower()
+    if value in _AUTH_OFF_VALUES:
+        return "off"
+    if value in _AUTH_ON_VALUES:
+        return "on"
+    return "auto"
+
+
+def _paths_from_env(var):
+    """Parse an os.pathsep-separated path list from ``var``, or None if unset."""
+    raw = os.environ.get(var)
+    if not raw:
+        return None
+    return [p.strip() for p in raw.split(os.pathsep) if p.strip()]
+
 
 ###########################################################
 #
@@ -229,12 +276,36 @@ test_config_2d = {
 ###########################################################
 
 
-if env:
-    default_config_paths = env["config_paths"]
-    default_protocol_paths = env["protocol_paths"]
-else:
-    default_config_paths = []
-    default_protocol_paths = []
+# Preferred source: MONET_CONFIG_PATHS / MONET_PROTOCOL_PATHS (from .env / env).
+default_config_paths = _paths_from_env("MONET_CONFIG_PATHS")
+default_protocol_paths = _paths_from_env("MONET_PROTOCOL_PATHS")
+
+# Legacy fallback: env.yaml (deprecated). Only consulted for a list not already
+# supplied via the environment, and it emits a DeprecationWarning so rigs migrate.
+if default_config_paths is None or default_protocol_paths is None:
+    _legacy_env = None
+    try:
+        _envpath = os.path.join(_PKG_ROOT, "env.yaml")
+        if os.path.exists(_envpath):
+            with open(_envpath, "r") as f:
+                _legacy_env = _yaml.full_load(f)
+    except Exception:
+        logger.debug("env.yaml cannot be loaded.", exc_info=True)
+        _legacy_env = None
+    if _legacy_env:
+        warnings.warn(
+            "monet: env.yaml is deprecated; set MONET_CONFIG_PATHS and "
+            "MONET_PROTOCOL_PATHS in a .env file instead (see .env.template).",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        if default_config_paths is None:
+            default_config_paths = _legacy_env.get("config_paths", [])
+        if default_protocol_paths is None:
+            default_protocol_paths = _legacy_env.get("protocol_paths", [])
+
+default_config_paths = default_config_paths or []
+default_protocol_paths = default_protocol_paths or []
 
 
 CONFIGS = {}

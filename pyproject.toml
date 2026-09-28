@@ -37,6 +37,9 @@ dependencies = [
     "icecream>=2.1",
     "requests>=2.31",
     "importlib_resources>=5.0",
+    # Loads a per-machine .env (config/protocol paths, auth token & toggle) into
+    # the environment at import — see monet/__init__.py _load_env_files.
+    "python-dotenv>=1.0",
     # SQLAlchemy is imported eagerly via monet.io -> monet.cache -> monet.models
     # (the local SQLite cache/outbox that backs the HTTP database mode), so it is
     # required to import the core workflow even when only the Excel DB is used.

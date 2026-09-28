@@ -55,7 +55,7 @@ from monet.schemas import (
     PowerSetResponse,
     RestartResponse,
 )
-from monet.serviceauth import AuthConfig, require_scope
+from monet.serviceauth import AuthConfig, auth_from_env, require_scope
 
 logger = logging.getLogger(__name__)
 
@@ -119,9 +119,7 @@ def create_app(
     :func:`build_app_for_microscope`.
     """
     app = FastAPI(title="Monet Calibration Server", lifespan=lifespan)
-    app.state.auth = (
-        auth if auth is not None else AuthConfig.from_env("PAINT_MONET_TOKENS")
-    )
+    app.state.auth = auth if auth is not None else auth_from_env()
     app.state.instrument = instrument
     app.state.powermeter = powermeter
     app.state.config = (

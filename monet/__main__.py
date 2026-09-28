@@ -128,21 +128,29 @@ def main():
         os.environ["MONET_DB_PATH"] = args.db_path
 
         # Fail-closed host guard (A9 / ADR-001, C18): refuse to *start* on a
-        # non-loopback host unless tokens are configured. A monet `write`
-        # actuates laser hardware, so a misconfigured networked bind must fail
-        # fast with a clear error, not serve an open actuator. The loopback dev
-        # path stays zero-config. (The request-time net in require_scope holds
-        # the invariant even when the module app is served directly.)
+        # non-loopback host unless auth is active. A monet `write` actuates laser
+        # hardware, so a misconfigured networked bind must fail fast with a clear
+        # error, not serve an open actuator. The loopback dev path stays
+        # zero-config. (The request-time net in require_scope holds the invariant
+        # even when the module app is served directly.)
+        from monet import PAINT_MONET_AUTH_ENV, auth_mode
         from monet.serviceauth import (
             MONET_TOKENS_ENV,
-            AuthConfig,
+            auth_from_env,
             is_loopback_host,
         )
 
-        if (
-            not is_loopback_host(args.host)
-            and not AuthConfig.from_env(MONET_TOKENS_ENV).enabled
-        ):
+        _auth = auth_from_env()
+        # PAINT_MONET_AUTH=on means "auth is required" — refuse to start without
+        # tokens even on loopback, so an intended-secure rig fails loudly on a
+        # misconfiguration instead of silently running open.
+        if auth_mode() == "on" and not _auth.enabled:
+            parser.error(
+                f"{PAINT_MONET_AUTH_ENV}=on but no tokens configured; set "
+                f"{MONET_TOKENS_ENV} (token:scope:label,...) or use "
+                f"{PAINT_MONET_AUTH_ENV}=off."
+            )
+        if not is_loopback_host(args.host) and not _auth.enabled:
             parser.error(
                 f"refusing to bind non-loopback host {args.host!r} without "
                 f"auth: set {MONET_TOKENS_ENV} (token:scope:label,...) or bind "

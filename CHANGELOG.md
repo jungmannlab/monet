@@ -55,6 +55,17 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
   exactly once), so consecutive runs are separated regardless of timing.
 
 ### Added
+- **`.env` for per-machine settings (deprecates `env.yaml`).** monet now loads a
+  gitignored `.env` from the package root at import (via `python-dotenv`,
+  `override=False`). Config/protocol path lists move to `MONET_CONFIG_PATHS` /
+  `MONET_PROTOCOL_PATHS` (`os.pathsep`-separated); `env.yaml` is still read as a
+  fallback but emits a `DeprecationWarning`. Auth tokens live here too
+  (`PAINT_MONET_TOKEN` / `PAINT_MONET_TOKENS`). See `.env.template`.
+- **Auth toggle `PAINT_MONET_AUTH`** (`off` | `on` | `auto`, default `auto`) to
+  ease onboarding: `auto` = enforce iff tokens are set (backward-compatible);
+  `off` = no auth on loopback and the client omits its token; `on` = require
+  tokens (`serve` refuses to start without them). Honoured by the client
+  (`monet.io`), the server (`create_app`), and the fail-closed host guard.
 - **Target-power API (WP-12a).** `monet serve <MicroscopeName>` now exposes a
   power actuator for the recommender/PycroFlow: `POST /power/set` sets a per-laser
   target power (reusing the closed-loop PI setter `run_power_feedback` when a
