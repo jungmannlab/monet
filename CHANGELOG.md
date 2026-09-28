@@ -25,6 +25,12 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
   untimed wait, so a faulted mount would hang server startup. Motion happens
   only via authenticated requests. The CLI `calibrate` command drops its now
   redundant explicit `attenuator.home()` (construction already homes once).
+- **`beampath.get_pycromgr` cleanup.** Collapsed the two identical
+  `if pycore_config is None / else` branches (both just call `Core()`) into a
+  single path, removed the commented-out `pymmcore` scaffolding, and corrected
+  the docstring — the `pycore_config` argument is accepted for call-site
+  compatibility but not used (the Micro-Manager config is loaded in the MM GUI).
+  No behaviour change.
 
 ## [0.4.0] - 2026-09-28
 
