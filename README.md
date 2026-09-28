@@ -194,8 +194,17 @@ monet token revoke --label microscope-mercury
 ```
 
 Tokens are read at startup. To apply a change, restart `serve` — or, on Unix,
-`kill -HUP <serve-pid>` **live-reloads** the tokens with no downtime. Give each
-machine/role its **own** label so it can be rotated/revoked independently; the
+`kill -HUP <serve-pid>` **live-reloads** the tokens with no downtime.
+
+> **systemd `EnvironmentFile` deployments:** `monet token` and the SIGHUP reload
+> both target a **`.env`**, not a systemd `EnvironmentFile`. If your unit sets
+> tokens via `EnvironmentFile=/etc/monet/monet.env`, pass `--env-file
+> /etc/monet/monet.env` to `monet token` and `systemctl restart` the unit to
+> apply — editing the package-root `.env` (the default) would be silently ignored
+> by such a server.
+
+Give each machine/role its **own** label so it can be rotated/revoked
+independently; the
 `label` is what attributes writes in the logs.
 
 **By hand** (equivalent): a token is just a high-entropy string that must not

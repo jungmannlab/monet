@@ -86,10 +86,11 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
   the `/power` + `/laser` routes return `503`.
 - **Laser enable/disable API (WP-12a).** `POST /laser/set` `{laser, enabled}`
   toggles one laser's emission (`write`); `POST /laser/off` disables **all**
-  lasers — the fail-safe the recommender/PycroFlow calls on end-of-run and on the
-  abort/error path (A10/C21); `GET /laser` reports per-laser enabled state
-  (`read`). `/laser/off` is best-effort per laser (a bad driver is logged, not
-  raised, so one laser can't block the others going off).
+  lasers **and closes any beam-path shutter** — the fail-safe the
+  recommender/PycroFlow calls on end-of-run and on the abort/error path (A10/C21);
+  `GET /laser` reports per-laser enabled state (`read`). Emission-off is the hard
+  guarantee; shutter-close is best-effort defense-in-depth. All best-effort per
+  device (a bad driver is logged, not raised, so one can't block the others).
 - **Runtime safety interlock (C34).** A hard per-laser max-power ceiling clamps a
   too-high request to the limit before the laser is actuated (fail-safe, enforced
   in code, not advisory). It is enforced in the **control layer**

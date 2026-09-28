@@ -168,6 +168,38 @@ def _laser_status(instrument, label=None):
     )
 
 
+def _require_instrument(request):
+    """Return the configured instrument, or 503 if the server is DB-only."""
+    instrument = request.app.state.instrument
+    if instrument is None:
+        raise HTTPException(status_code=503, detail=_NO_INSTRUMENT)
+    return instrument
+
+
+def _close_shutters(instrument):
+    """Best-effort close any beam-path shutter (position=False).
+
+    Defense-in-depth for the /laser/off fail-safe: laser emission-off is the hard
+    guarantee, this closes the shutter too. The power server has no beam-path
+    protocol, so we drive shutter-type objects directly rather than a protocol
+    position; each is best-effort so one bad device can't stop the rest.
+    """
+    if not getattr(instrument, "use_beampath", False):
+        return
+    beampath = getattr(instrument, "beampath", None)
+    objects = getattr(beampath, "objects", {}) if beampath else {}
+    for obid, obj in objects.items():
+        if "shutter" in str(obid).lower():
+            try:
+                obj.position = False
+            except Exception:
+                logger.warning(
+                    "laser/off: could not close shutter %s",
+                    obid,
+                    exc_info=True,
+                )
+
+
 def create_app(
     auth: AuthConfig | None = None,
     instrument=None,
@@ -534,20 +566,11 @@ def create_app(
         """
         from monet.control import run_power_feedback
 
-        instrument = request.app.state.instrument
+        instrument = _require_instrument(request)
         powermeter = request.app.state.powermeter
         config = request.app.state.config
         if config is None:
             config = getattr(instrument, "config", None)
-
-        if instrument is None:
-            raise HTTPException(
-                status_code=503,
-                detail=(
-                    "no instrument configured; start with "
-                    "`monet serve <MicroscopeName>` to enable the power API"
-                ),
-            )
 
         laser = req.laser
         if laser not in instrument.laser:
@@ -669,16 +692,8 @@ def create_app(
         active laser, the request is rejected (409); select it with
         ``POST /power/set`` first.
         """
-        instrument = request.app.state.instrument
+        instrument = _require_instrument(request)
         powermeter = request.app.state.powermeter
-        if instrument is None:
-            raise HTTPException(
-                status_code=503,
-                detail=(
-                    "no instrument configured; start with "
-                    "`monet serve <MicroscopeName>` to enable the power API"
-                ),
-            )
         current = instrument.curr_laser
         if laser is not None and laser != current:
             raise HTTPException(
@@ -721,9 +736,7 @@ def create_app(
         the requested laser directly, without changing the current laser or its
         power set-point.
         """
-        instrument = request.app.state.instrument
-        if instrument is None:
-            raise HTTPException(status_code=503, detail=_NO_INSTRUMENT)
+        instrument = _require_instrument(request)
         if req.laser not in instrument.laser:
             raise HTTPException(
                 status_code=422,
@@ -737,16 +750,16 @@ def create_app(
 
     @app.post("/laser/off", response_model=LaserStatusResponse)
     def lasers_off(request: Request, token=Depends(require_scope("write"))):
-        """Disable ALL lasers — the fail-safe (A10 / C21).
+        """Disable all lasers and close any shutter — the fail-safe (A10/C21).
 
         The recommender/PycroFlow calls this on end-of-run and on the abort /
-        error path so emission is never left on. Best-effort per laser: a driver
-        that fails to disable is logged, not raised, so one bad laser can't stop
-        the others from going off.
+        error path. Disabling laser **emission** is the hard guarantee (no light
+        regardless of the shutter); closing the shutter is best-effort
+        defense-in-depth (the power server has no beam-path protocol, so shutters
+        are driven directly). Best-effort per device: a driver that fails is
+        logged, not raised, so one bad laser/shutter can't stop the others.
         """
-        instrument = request.app.state.instrument
-        if instrument is None:
-            raise HTTPException(status_code=503, detail=_NO_INSTRUMENT)
+        instrument = _require_instrument(request)
         for las in instrument.laser:
             try:
                 instrument.lasers[las].enabled = False
@@ -756,14 +769,13 @@ def create_app(
                     las,
                     exc_info=True,
                 )
+        _close_shutters(instrument)
         return _laser_status(instrument, getattr(token, "label", None))
 
     @app.get("/laser", response_model=LaserStatusResponse, dependencies=_READ)
     def laser_status(request: Request):
         """Report each laser's enabled state and the current laser."""
-        instrument = request.app.state.instrument
-        if instrument is None:
-            raise HTTPException(status_code=503, detail=_NO_INSTRUMENT)
+        instrument = _require_instrument(request)
         return _laser_status(instrument)
 
     # /health is deliberately unauthenticated: liveness/readiness probes and the

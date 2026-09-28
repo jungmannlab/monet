@@ -66,10 +66,11 @@ class _AttenuatorCurvePowerMeter:
         return self._inst.analyzer.estimate_power(att) * self._miscal
 
 
-def _build_control(safety=None):
+def _build_control(safety=None, with_beampath=False):
     """IlluminationLaserControl with a linear calibration for lasers 488/561 at
     laser powers 50 and 100 mW, and a tracking attenuator so feedback works.
-    Optionally attach a ``safety`` config block (max-power ceilings)."""
+    Optionally attach a ``safety`` config block (max-power ceilings) and a
+    beam-path with a Test shutter."""
     os.makedirs("monet/tests/TestData/control", exist_ok=True)
     datim = [
         datetime.now().strftime("%Y-%m-%d"),
@@ -122,6 +123,13 @@ def _build_control(safety=None):
     }
     if safety is not None:
         config["safety"] = safety
+    if with_beampath:
+        config["beampath"] = {
+            "shutter": {
+                "classpath": "monet.beampath.TestShutter",
+                "init_kwargs": {},
+            }
+        }
     ctrl = mco.IlluminationLaserControl(config)
     ctrl.attenuator = _TrackingAttenuator(start=30)
     ctrl.laser = 488
@@ -345,6 +353,18 @@ class TestLaserEnableDisable(_AppMixin, unittest.TestCase):
         self.assertFalse(any(la.enabled for la in ctrl.lasers.values()))
         body = resp.json()
         self.assertTrue(all(not s["enabled"] for s in body["lasers"]))
+
+    def test_off_closes_shutter(self):
+        """The fail-safe also closes the beam-path shutter (A10/C21)."""
+        ctrl, config = _build_control(with_beampath=True)
+        for las in ctrl.lasers.values():
+            las.enabled = True
+        ctrl.beampath.objects["shutter"].position = True  # held open
+        client = self._make_client(instrument=ctrl, config=config)
+        resp = client.post("/laser/off")
+        self.assertEqual(resp.status_code, 200, resp.text)
+        self.assertFalse(any(la.enabled for la in ctrl.lasers.values()))
+        self.assertFalse(ctrl.beampath.objects["shutter"].position)
 
     def test_status_reports_state(self):
         ctrl, config = _build_control()

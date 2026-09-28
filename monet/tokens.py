@@ -64,16 +64,27 @@ def _write_map(env_file, tokens):
         "{}:{}:{}".format(tok, info.scope, info.label)
         for tok, info in tokens.items()
     )
-    # Ensure the file exists (set_key needs it) then keep it secret-only.
+    # The token must never touch a world-readable file. Create the file 0600
+    # *before* set_key writes the secret into it (set_key edits in place), and
+    # harden an existing file too. A umask can only remove bits, and 0o600 has no
+    # group/other bits, so os.open reliably yields 0o600. If we can't lock an
+    # existing file down, warn loudly rather than silently write a secret to it.
     parent = os.path.dirname(os.path.abspath(env_file))
     if parent:
         os.makedirs(parent, exist_ok=True)
-    open(env_file, "a").close()
+    if not os.path.exists(env_file):
+        os.close(os.open(env_file, os.O_CREAT | os.O_WRONLY, 0o600))
+    else:
+        try:
+            os.chmod(env_file, 0o600)
+        except OSError as exc:
+            print(
+                "warning: could not restrict permissions on {}: {}".format(
+                    env_file, exc
+                ),
+                file=sys.stderr,
+            )
     set_key(env_file, _TOKENS_KEY, serialized, quote_mode="never")
-    try:
-        os.chmod(env_file, 0o600)
-    except OSError:
-        pass
     # Reflect into this process too (a running server still needs a restart).
     os.environ[_TOKENS_KEY] = serialized
 
@@ -90,7 +101,9 @@ def _print_new(env_file, value, scope, label):
         "  On the server:  restart `monet serve`, or `kill -HUP <serve-pid>`\n"
         "                  (Unix) to apply without downtime.\n"
         "  On the client:  add this line to that machine's .env:\n\n"
-        "    PAINT_MONET_TOKEN={}\n".format(env_file, value)
+        "    PAINT_MONET_TOKEN={}\n\n".format(env_file, value)
+        + "(The value was printed to this terminal — clear your shell history "
+        "if it is shared or logged.)\n"
     )
 
 
@@ -177,8 +190,11 @@ def token_cli(argv):
         p.add_argument(
             "--env-file",
             default=None,
-            help="path to the .env holding PAINT_MONET_TOKENS "
-            "(default: the package-root .env the server loads).",
+            help="path to the .env holding PAINT_MONET_TOKENS (default: the "
+            "package-root .env the server loads). For a systemd "
+            "EnvironmentFile deployment, pass its path (e.g. "
+            "/etc/monet/monet.env) so the running server reads the change; "
+            ".env edits + SIGHUP do NOT reload a systemd EnvironmentFile.",
         )
 
     pa = sub.add_parser("add", help="generate and register a new token")
