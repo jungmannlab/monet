@@ -83,7 +83,13 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
   meter is attached, else open-loop from the calibration) and returns the measured
   power so target + measured can be logged to the registry; `GET /power` reads
   back the current power. With no microscope name, `serve` runs the DB only and
-  the `/power` routes return `503`.
+  the `/power` + `/laser` routes return `503`.
+- **Laser enable/disable API (WP-12a).** `POST /laser/set` `{laser, enabled}`
+  toggles one laser's emission (`write`); `POST /laser/off` disables **all**
+  lasers — the fail-safe the recommender/PycroFlow calls on end-of-run and on the
+  abort/error path (A10/C21); `GET /laser` reports per-laser enabled state
+  (`read`). `/laser/off` is best-effort per laser (a bad driver is logged, not
+  raised, so one laser can't block the others going off).
 - **Runtime safety interlock (C34).** A hard per-laser max-power ceiling clamps a
   too-high request to the limit before the laser is actuated (fail-safe, enforced
   in code, not advisory). It is enforced in the **control layer**

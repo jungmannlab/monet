@@ -120,9 +120,13 @@ python -m monet serve <MicroscopeName> --host 127.0.0.1 --port 8000
   the calibration; returns the measured power. The request is **clamped to a hard
   per-laser safety ceiling** before the laser is actuated (see below).
 - `GET /power` — read back the current measured/predicted power (`read` scope).
+- `POST /laser/set` `{laser, enabled}` — enable/disable one laser's emission
+  (`write`). `POST /laser/off` disables **all** lasers — the fail-safe the
+  recommender/PycroFlow calls on end-of-run and abort (A10/C21). `GET /laser`
+  reports per-laser state (`read`).
 
-Without a microscope name, `serve` runs the database only and the `/power` routes
-return `503`.
+Without a microscope name, `serve` runs the database only and the `/power` and
+`/laser` routes return `503`.
 
 **Safety ceiling (C34).** A monet `write` actuates laser hardware, so power-set
 is bounded by a hard per-laser maximum. Until the versioned site descriptor
@@ -324,6 +328,9 @@ When running in server mode, monet exposes these HTTP endpoints:
 | `/factors/query` | POST | `read` | Query objective-transmission factors |
 | `/power/set` | POST | `write` | Set a per-laser target power (clamped to the safety ceiling); returns measured power. Requires `serve <Name>` |
 | `/power` | GET | `read` | Read back measured/predicted power. Requires `serve <Name>` |
+| `/laser/set` | POST | `write` | Enable/disable one laser's emission. Requires `serve <Name>` |
+| `/laser/off` | POST | `write` | Disable ALL lasers (fail-safe, A10/C21). Requires `serve <Name>` |
+| `/laser` | GET | `read` | Per-laser enabled state + current laser. Requires `serve <Name>` |
 | `/dashboard` | GET | proxy | Browser dashboard (guard at the reverse proxy, not by bearer token) |
 | `/health` | GET | public | Health check |
 

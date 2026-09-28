@@ -50,6 +50,9 @@ from monet.schemas import (
     FactorListResponse,
     FactorQuery,
     FactorRecord,
+    LaserSetRequest,
+    LaserState,
+    LaserStatusResponse,
     PowerReadResponse,
     PowerSetRequest,
     PowerSetResponse,
@@ -140,6 +143,28 @@ def _record_from_row(row: Calibration) -> CalibrationRecord:
         calibration_date=row.calibration_date,
         calibration_time=row.calibration_time,
         parameters=json.loads(row.parameters_json),
+    )
+
+
+_NO_INSTRUMENT = (
+    "no instrument configured; start with `monet serve <MicroscopeName>` "
+    "to enable the power/laser API"
+)
+
+
+def _laser_status(instrument, label=None):
+    """Build a LaserStatusResponse from the instrument's live laser states."""
+    states = []
+    for las in instrument.laser:
+        try:
+            enabled = bool(instrument.lasers[las].enabled)
+        except Exception:
+            enabled = False
+        states.append(LaserState(laser=las, enabled=enabled))
+    return LaserStatusResponse(
+        lasers=states,
+        current_laser=instrument.curr_laser,
+        label=label,
     )
 
 
@@ -683,6 +708,63 @@ def create_app(
             predicted_power_mw=predicted,
             has_powermeter=powermeter is not None,
         )
+
+    @app.post("/laser/set", response_model=LaserStatusResponse)
+    def set_laser(
+        req: LaserSetRequest,
+        request: Request,
+        token=Depends(require_scope("write")),
+    ):
+        """Enable or disable one laser's emission.
+
+        Enabling actuates the laser (emission on) — hence ``write`` scope. Toggles
+        the requested laser directly, without changing the current laser or its
+        power set-point.
+        """
+        instrument = request.app.state.instrument
+        if instrument is None:
+            raise HTTPException(status_code=503, detail=_NO_INSTRUMENT)
+        if req.laser not in instrument.laser:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"laser {req.laser} not available; "
+                    f"configured lasers: {instrument.laser}"
+                ),
+            )
+        instrument.lasers[req.laser].enabled = bool(req.enabled)
+        return _laser_status(instrument, getattr(token, "label", None))
+
+    @app.post("/laser/off", response_model=LaserStatusResponse)
+    def lasers_off(request: Request, token=Depends(require_scope("write"))):
+        """Disable ALL lasers — the fail-safe (A10 / C21).
+
+        The recommender/PycroFlow calls this on end-of-run and on the abort /
+        error path so emission is never left on. Best-effort per laser: a driver
+        that fails to disable is logged, not raised, so one bad laser can't stop
+        the others from going off.
+        """
+        instrument = request.app.state.instrument
+        if instrument is None:
+            raise HTTPException(status_code=503, detail=_NO_INSTRUMENT)
+        for las in instrument.laser:
+            try:
+                instrument.lasers[las].enabled = False
+            except Exception:
+                logger.warning(
+                    "laser/off: could not disable laser %s",
+                    las,
+                    exc_info=True,
+                )
+        return _laser_status(instrument, getattr(token, "label", None))
+
+    @app.get("/laser", response_model=LaserStatusResponse, dependencies=_READ)
+    def laser_status(request: Request):
+        """Report each laser's enabled state and the current laser."""
+        instrument = request.app.state.instrument
+        if instrument is None:
+            raise HTTPException(status_code=503, detail=_NO_INSTRUMENT)
+        return _laser_status(instrument)
 
     # /health is deliberately unauthenticated: liveness/readiness probes and the
     # reverse proxy can't carry a bearer token, and it exposes nothing sensitive.

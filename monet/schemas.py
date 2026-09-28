@@ -119,3 +119,24 @@ class PowerReadResponse(BaseModel):
     measured_power_mw: Optional[float]  # from the meter, if one is attached
     predicted_power_mw: Optional[float]  # from the calibration model
     has_powermeter: bool
+
+
+# ── Laser enable/disable (WP-12a) ────────────────────────────────────────────
+# Enabling actuates the laser (emission on); disabling / all-off is the fail-safe
+# the recommender/PycroFlow uses on end-of-run and abort (A10 / C21).
+
+
+class LaserSetRequest(BaseModel):
+    laser: int
+    enabled: bool
+
+
+class LaserState(BaseModel):
+    laser: int
+    enabled: bool
+
+
+class LaserStatusResponse(BaseModel):
+    lasers: List[LaserState]
+    current_laser: int
+    label: Optional[str] = None  # attributable token holder (auth on)

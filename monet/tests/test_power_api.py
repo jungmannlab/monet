@@ -305,6 +305,132 @@ class TestPowerAPIBehaviour(_AppMixin, unittest.TestCase):
         )
         self.assertEqual(resp.status_code, 503)
         self.assertEqual(client.get("/power").status_code, 503)
+        self.assertEqual(client.get("/laser").status_code, 503)
+        self.assertEqual(client.post("/laser/off").status_code, 503)
+
+
+class TestLaserEnableDisable(_AppMixin, unittest.TestCase):
+    """Enable/disable + all-off fail-safe (A10/C21)."""
+
+    def test_enable_then_disable_one_laser(self):
+        ctrl, config = _build_control()
+        for las in ctrl.lasers.values():
+            las.enabled = False
+        client = self._make_client(instrument=ctrl, config=config)
+
+        resp = client.post("/laser/set", json={"laser": 488, "enabled": True})
+        self.assertEqual(resp.status_code, 200, resp.text)
+        self.assertTrue(ctrl.lasers[488].enabled)
+
+        resp = client.post("/laser/set", json={"laser": 488, "enabled": False})
+        self.assertEqual(resp.status_code, 200, resp.text)
+        self.assertFalse(ctrl.lasers[488].enabled)
+
+    def test_set_laser_does_not_change_current_laser(self):
+        ctrl, config = _build_control()
+        ctrl.laser = 488
+        client = self._make_client(instrument=ctrl, config=config)
+        client.post("/laser/set", json={"laser": 561, "enabled": True})
+        # toggling 561 leaves the current laser (488) unchanged
+        self.assertEqual(ctrl.curr_laser, 488)
+        self.assertTrue(ctrl.lasers[561].enabled)
+
+    def test_off_disables_all_lasers(self):
+        ctrl, config = _build_control()
+        for las in ctrl.lasers.values():
+            las.enabled = True
+        client = self._make_client(instrument=ctrl, config=config)
+        resp = client.post("/laser/off")
+        self.assertEqual(resp.status_code, 200, resp.text)
+        self.assertFalse(any(la.enabled for la in ctrl.lasers.values()))
+        body = resp.json()
+        self.assertTrue(all(not s["enabled"] for s in body["lasers"]))
+
+    def test_status_reports_state(self):
+        ctrl, config = _build_control()
+        ctrl.lasers[488].enabled = True
+        ctrl.lasers[561].enabled = False
+        client = self._make_client(instrument=ctrl, config=config)
+        body = client.get("/laser").json()
+        by_laser = {s["laser"]: s["enabled"] for s in body["lasers"]}
+        self.assertTrue(by_laser[488])
+        self.assertFalse(by_laser[561])
+
+    def test_unknown_laser_is_422(self):
+        ctrl, config = _build_control()
+        client = self._make_client(instrument=ctrl, config=config)
+        resp = client.post("/laser/set", json={"laser": 999, "enabled": True})
+        self.assertEqual(resp.status_code, 422)
+
+    def test_enable_requires_write_token(self):
+        ctrl, config = _build_control()
+        auth = AuthConfig(
+            {
+                "rtok": TokenInfo(scope="read", label="reader"),
+                "wtok": TokenInfo(scope="write", label="w"),
+            }
+        )
+        start = {la: ctrl.lasers[la].enabled for la in ctrl.laser}
+        client = self._make_client(auth=auth, instrument=ctrl, config=config)
+        # no token -> 401, hardware untouched
+        self.assertEqual(
+            client.post(
+                "/laser/set", json={"laser": 488, "enabled": True}
+            ).status_code,
+            401,
+        )
+        # read token -> 403, hardware untouched
+        self.assertEqual(
+            client.post(
+                "/laser/set",
+                json={"laser": 488, "enabled": True},
+                headers={"Authorization": "Bearer rtok"},
+            ).status_code,
+            403,
+        )
+        self.assertEqual(
+            {la: ctrl.lasers[la].enabled for la in ctrl.laser}, start
+        )
+        # write token -> 200
+        self.assertEqual(
+            client.post(
+                "/laser/set",
+                json={"laser": 488, "enabled": True},
+                headers={"Authorization": "Bearer wtok"},
+            ).status_code,
+            200,
+        )
+
+    def test_off_requires_write_and_status_allows_read(self):
+        ctrl, config = _build_control()
+        auth = AuthConfig(
+            {
+                "rtok": TokenInfo(scope="read", label="reader"),
+                "wtok": TokenInfo(scope="write", label="w"),
+            }
+        )
+        client = self._make_client(auth=auth, instrument=ctrl, config=config)
+        # all-off needs write
+        self.assertEqual(client.post("/laser/off").status_code, 401)
+        self.assertEqual(
+            client.post(
+                "/laser/off", headers={"Authorization": "Bearer rtok"}
+            ).status_code,
+            403,
+        )
+        self.assertEqual(
+            client.post(
+                "/laser/off", headers={"Authorization": "Bearer wtok"}
+            ).status_code,
+            200,
+        )
+        # status is read-scoped
+        self.assertEqual(
+            client.get(
+                "/laser", headers={"Authorization": "Bearer rtok"}
+            ).status_code,
+            200,
+        )
 
 
 class TestPowerSafetyInterlock(_AppMixin, unittest.TestCase):
