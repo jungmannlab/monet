@@ -24,7 +24,7 @@ GUI walkthrough, embedding API, and HTTP endpoints.
 
 ## Current branch
 
-`feature-FullAutoS0A` — PRs target `master`. (Upstream also has `develop`.)
+Dev branch is `develop`; release path is `develop` → `master`. Work each task on its own feature branch and PR per the **Branch map** in `../../planning/DNA-PAINT_Work-Order-Briefs.md`. Don't pin the current branch here — check the tracker's branch-state note or `git`; a pinned branch is what goes stale.
 
 ## Commands
 
@@ -34,7 +34,7 @@ pip install -e .                # core
 pip install -e ".[gui]"         # PyQt6 GUI  -> python -m monet gui
 pip install -e ".[server]"      # FastAPI DB server -> python -m monet serve
 pip install -e ".[hardware]"    # real-instrument SDKs (pyvisa, nidaqmx, ...)
-pip install -e ".[dev]"         # test tooling (pytest, pytest-cov, coverage, httpx)
+pip install -e ".[dev]"         # test tooling + [server] (needed to run the suite)
 pip install -e ".[all]"         # everything
 
 # Run (console script `monet` and `python -m monet` are equivalent)
@@ -88,6 +88,15 @@ in-tree config does not match the aligned target yet, the current state is noted
   simulated via `TestLaser` / `TestAttenuator` / `TestPowerMeter`; server tests
   use FastAPI's `TestClient`; the GUI smoke test auto-skips without PyQt6.
 
+## Working defaults (how to behave in a session)
+
+In-session habits that complement the gates: the STOP-GATE and PR gates govern *when* and *where* to build; these govern *how*.
+
+- **Think before coding.** State your assumptions; if the brief is ambiguous or a simpler approach exists, say so and ask — don't pick silently.
+- **Minimal, necessary change.** No speculative abstraction, configurability, or error-handling for cases that can't occur. Every changed line should trace to the work order.
+- **Surgical diffs.** Match surrounding style; don't refactor or reformat untouched code, and don't delete pre-existing dead code — mention it instead. Remove only the orphans (imports/vars) your own change creates.
+- **Goal-driven.** Turn the brief's ACCEPTANCE into a check you can actually run, and verify it before opening the PR (hosted CI lint + unit is the required merge gate).
+
 ## Architecture (short)
 
 Config (`monet/__init__.py`, YAML via `env.yaml`) names per-microscope
@@ -101,6 +110,14 @@ HTTP; `cache.py` is a local SQLite mirror/outbox for the HTTP path;
 service. Drivers: `laser.py`, `attenuation.py`, `powermeter.py`, `beampath.py`.
 Surfaces: `__main__.py` (CLI), `gui.py` + `qt.py` (PyQt6 GUI / embeddable
 `monet.qt`). Full map in `README.md`.
+
+**Auth invariant (fail-closed):** the `serve` API *actuates laser hardware*, so an
+unauthenticated networked bind is a safety issue, not just data exposure. The
+`--host 0.0.0.0` default above is being changed to `127.0.0.1`; never bind a
+non-loopback host without the shared auth helper configured (bearer-token +
+`read`/`write` scopes, `write` on power-set / calibration-edit). The helper is
+built in picasso-registry (WP-3b) and imported here (WP-12a); see that repo's
+`docs/adr/001-service-authentication.md` and Open-Decisions **A9**.
 
 ## Standing pointers
 
