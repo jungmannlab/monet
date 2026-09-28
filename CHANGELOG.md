@@ -10,12 +10,39 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-28
+
+### Changed
+- **Release-prep (C40/C41/B8).** Pinned `picasso-registry[auth]` to the released
+  tag **`@v0.1.0`** (was a floating git URL; resolves the C39 caveat — not on
+  PyPI, so it stays a pinned git ref). Pinned the `[hardware]` `pycromanager` to
+  **`>=1.0,<2`** so the extra is numpy-2-compatible under the C41 harmonization
+  (the pycromanager-1.0 code migration + acq-PC validation is tracked as B8;
+  monet's pycromanager use is lazy/hardware-only).
+
 ### Security
 - `serve` now binds `127.0.0.1` by default (was `0.0.0.0`). The serve API
   actuates laser hardware, so it must not be network-exposed without
-  authentication; binding a non-loopback host will be gated on the shared
-  bearer-token auth helper (A9 / ADR-001, WP-3b → reused in WP-12a). Pass
-  `--host` explicitly to override on a trusted, authenticated deployment.
+  authentication.
+- **Service authentication (WP-12a / A9 / ADR-001).** The serve API now imports
+  the shared bearer-token helper from picasso-registry (`picasso_registry.auth`,
+  built in WP-3b) rather than reimplementing auth. Every data route is scoped:
+  `write` on DB edits (`/calibrations`, `/factors`, `/calibrations/delete`,
+  `/database/restart`) and on `POST /power/set`; `read` on the query routes and
+  `GET /power`; `/health` stays public. Tokens are read from `PAINT_MONET_TOKENS`
+  (a `token:scope:label` map, never committed, never in the DB); a `write` token
+  also satisfies `read`.
+- **Fail-closed host guard.** `monet serve` refuses to bind a non-loopback host
+  unless tokens are configured, and `require_scope` refuses an unauthenticated
+  non-loopback request even if the app is served directly. Loopback dev stays
+  zero-config.
+- **Authenticated DB client.** monet's own HTTP client (`monet.io`, used by
+  `calibrate`/`set`/GUI when `database:` is a server URL) now sends
+  `Authorization: Bearer <PAINT_MONET_TOKEN>` on every request, so it keeps
+  working when the server enforces auth. Use a `write` token (the client reads and
+  writes); unset ⇒ no header (auth-off/loopback servers unchanged). Enabling
+  server auth and setting `PAINT_MONET_TOKEN` on clients must be rolled out
+  together.
 
 ### Fixed
 - Connecting in the GUI no longer switches a laser on: loading the calibration
@@ -38,6 +65,56 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
   exactly once), so consecutive runs are separated regardless of timing.
 
 ### Added
+- **`monet token` CLI** to manage server auth tokens without hand-editing files:
+  `add`/`list`/`revoke`/`rotate` generate a high-entropy token, maintain the
+  `PAINT_MONET_TOKENS` map in a `.env` (chmod 600), and print the value once with
+  the client line to paste. `list` shows scopes + labels only, never values.
+  Tokens stay plaintext at rest (the C18 model). Run it on the server box — there
+  is deliberately no token-minting HTTP endpoint (the dashboard stays
+  proxy-guarded per ADR-001).
+- **Live token reload on SIGHUP** (Unix). `monet serve` installs a SIGHUP handler
+  that re-reads the tokens from `.env` and refreshes the running auth config
+  (`server.reload_auth`) — so `monet token add/revoke/rotate` applies without a
+  restart via `kill -HUP <serve-pid>`. No-op on Windows (restart there).
+- **`.env` for per-machine settings (deprecates `env.yaml`).** monet now loads a
+  gitignored `.env` from the package root at import (via `python-dotenv`,
+  `override=False`). Config/protocol path lists move to `MONET_CONFIG_PATHS` /
+  `MONET_PROTOCOL_PATHS` (`os.pathsep`-separated); `env.yaml` is still read as a
+  fallback but emits a `DeprecationWarning`. Auth tokens live here too
+  (`PAINT_MONET_TOKEN` / `PAINT_MONET_TOKENS`). See `.env.template`.
+- **Auth toggle `PAINT_MONET_AUTH`** (`off` | `on` | `auto`, default `auto`) to
+  ease onboarding: `auto` = enforce iff tokens are set (backward-compatible);
+  `off` = no auth on loopback and the client omits its token; `on` = require
+  tokens (`serve` refuses to start without them). Honoured by the client
+  (`monet.io`), the server (`create_app`), and the fail-closed host guard.
+- **Target-power API (WP-12a).** `monet serve <MicroscopeName>` now exposes a
+  power actuator for the recommender/PycroFlow: `POST /power/set` sets a per-laser
+  target power (reusing the closed-loop PI setter `run_power_feedback` when a
+  meter is attached, else open-loop from the calibration) and returns the measured
+  power so target + measured can be logged to the registry; `GET /power` reads
+  back the current power. With no microscope name, `serve` runs the DB only and
+  the `/power` + `/laser` routes return `503`.
+- **Laser enable/disable API (WP-12a).** `POST /laser/set` `{laser, enabled}`
+  toggles one laser's emission (`write`); `POST /laser/off` disables **all**
+  lasers **and closes any beam-path shutter** — the fail-safe the
+  recommender/PycroFlow calls on end-of-run and on the abort/error path (A10/C21);
+  `GET /laser` reports per-laser enabled state (`read`). Emission-off is the hard
+  guarantee; shutter-close is best-effort defense-in-depth. All best-effort per
+  device (a bad driver is logged, not raised, so one can't block the others).
+- **Runtime safety interlock (C34).** A hard per-laser max-power ceiling clamps a
+  too-high request to the limit before the laser is actuated (fail-safe, enforced
+  in code, not advisory). It is enforced in the **control layer**
+  (`IlluminationLaserControl.clamp_to_max_power`, applied by the `power` setter,
+  `set_power_fixed_*` and `run_power_feedback`), so **every** actuation path — the
+  HTTP power API, the GUI and the CLI — is bounded, not just the API route.
+  Configure it via a `safety.max_power_mw` map in the microscope config until the
+  versioned site descriptor (WP-FLEET) supplies it; a **malformed** ceiling
+  refuses to build the instrument (fail-closed) rather than silently disabling the
+  limit. `POST /power/set` reports `clamped` and the delivered `target_power_mw`.
+- `monet.serviceauth` binds monet to the shared `picasso_registry.auth` helper
+  (via the new `picasso-registry[auth]` dependency in the `[server]` extra) and
+  pins monet's own `PAINT_MONET_TOKENS` env var so the two services never share a
+  token store.
 - Set Power tab: setting a power (without measuring) now records it in the
   MicroManager acquisition comment tagged ``[set]``; a subsequent Measure
   supersedes that line with a ``[measured]`` entry for the same laser
@@ -83,6 +160,13 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
   today") saved with every calibration of a run.
 
 ### Changed
+- **Stack-wide dependency harmonization (decision C41, picasso is the anchor).**
+  Pinned the shared numeric/GUI libs to picasso 0.11.3's shared-lib ranges so
+  monet resolves to the same numpy-2 stack as PycroFlow / picasso-workflow when
+  co-installed: `numpy>=1.23` → `numpy>=2.2.6,<3`, `pandas>=2.3` →
+  `pandas>=2.3.3,<3`, `matplotlib>=3.10` → `matplotlib>=3.10.7,<4`,
+  `pyyaml>=6.0` → `pyyaml>=6.0.3,<7`, `PyQt6>=6.5` → `PyQt6>=6.10.2,<7`. Full
+  test suite green under numpy 2.
 - Plot lines are now coloured by the wavelength's approximate visible-spectrum
   colour (`monet.util.wavelength_to_rgb`) instead of an arbitrary palette, with
   a luminance cap so light colours (yellow/green/cyan) stay legible on white.

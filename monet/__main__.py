@@ -45,6 +45,14 @@ def config_logger():
 def main():
     """Function called from the command line."""
     import argparse
+    import sys
+
+    # `token` has its own sub-command parser (add/list/revoke/rotate); dispatch
+    # before the flat parser below, which doesn't know those sub-args.
+    if len(sys.argv) > 1 and sys.argv[1] == "token":
+        from monet.tokens import token_cli
+
+        sys.exit(token_cli(sys.argv[2:]))
 
     # os.chdir(os.path.split(CONFIGS_PATH)[0])
 
@@ -55,7 +63,7 @@ def main():
         type=str,
         help=(
             'mode. One of "set", "adjust", "caliaotf", "calibrate", '
-            '"serve", "migrate", or "gui".'
+            '"serve", "migrate", "gui", or "token".'
         ),
     )
     parser.add_argument(
@@ -126,7 +134,52 @@ def main():
         import uvicorn
 
         os.environ["MONET_DB_PATH"] = args.db_path
-        from monet.server import app
+
+        # Fail-closed host guard (A9 / ADR-001, C18): refuse to *start* on a
+        # non-loopback host unless auth is active. A monet `write` actuates laser
+        # hardware, so a misconfigured networked bind must fail fast with a clear
+        # error, not serve an open actuator. The loopback dev path stays
+        # zero-config. (The request-time net in require_scope holds the invariant
+        # even when the module app is served directly.)
+        from monet import PAINT_MONET_AUTH_ENV, auth_mode
+        from monet.serviceauth import (
+            MONET_TOKENS_ENV,
+            auth_from_env,
+            is_loopback_host,
+        )
+
+        _auth = auth_from_env()
+        # PAINT_MONET_AUTH=on means "auth is required" — refuse to start without
+        # tokens even on loopback, so an intended-secure rig fails loudly on a
+        # misconfiguration instead of silently running open.
+        if auth_mode() == "on" and not _auth.enabled:
+            parser.error(
+                f"{PAINT_MONET_AUTH_ENV}=on but no tokens configured; set "
+                f"{MONET_TOKENS_ENV} (token:scope:label,...) or use "
+                f"{PAINT_MONET_AUTH_ENV}=off."
+            )
+        if not is_loopback_host(args.host) and not _auth.enabled:
+            parser.error(
+                f"refusing to bind non-loopback host {args.host!r} without "
+                f"auth: set {MONET_TOKENS_ENV} (token:scope:label,...) or bind "
+                "127.0.0.1. The serve API actuates laser hardware — see "
+                "README 'Authentication'."
+            )
+
+        # With a microscope name, build the instrument so the target-power API
+        # is live; without one, serve the DB-only app.
+        if args.name:
+            from monet.server import build_app_for_microscope
+
+            app = build_app_for_microscope(args.name, args.configs_file)
+        else:
+            from monet.server import app
+
+        # Live-reload tokens on SIGHUP (Unix) so `monet token` changes apply
+        # without a restart; a no-op on Windows (restart required there).
+        from monet.server import install_auth_reload
+
+        install_auth_reload(app)
 
         uvicorn.run(app, host=args.host, port=args.port)
     elif args.mode == "migrate":

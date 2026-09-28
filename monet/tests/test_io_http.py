@@ -218,3 +218,100 @@ class TestIOHTTP(unittest.TestCase):
         backup_path = mio.restart_database(self.server_url)
         self.assertIsInstance(backup_path, str)
         self.assertTrue(os.path.exists(backup_path))
+
+
+class TestIOHTTPClientAuth(unittest.TestCase):
+    """The io.py HTTP client must present PAINT_MONET_TOKEN so it keeps working
+    against an auth-enabled monet server — otherwise turning auth on breaks
+    monet's own calibrate/set/GUI DB writes."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        os.environ["MONET_DB_PATH"] = os.path.join(self.tmpdir, "test.db")
+        os.environ.pop("PAINT_MONET_TOKEN", None)
+
+        import monet.io as _mio
+        from monet import cache as _mcache
+
+        _mcache._set_cache_dir(self.tmpdir)
+        _mcache._clear_cache_registry()
+        _mio._last_flush_failure.clear()
+
+        from monet.serviceauth import AuthConfig, TokenInfo
+        from monet.server import create_app
+
+        # Auth-enabled server: a single write token (write is a superset of
+        # read), matching how a real deployment tokens its instrument clients.
+        app = create_app(
+            auth=AuthConfig(
+                {"wtok": TokenInfo(scope="write", label="io-client")}
+            )
+        )
+        self.test_client = TestClient(app)
+        self.test_client.__enter__()
+
+        import requests as _requests
+
+        self._orig_post = _requests.post
+        tc = self.test_client
+
+        def mock_post(url, **kwargs):
+            from urllib.parse import urlparse
+
+            path = urlparse(url).path
+            # Forward the Authorization header so the server enforces auth.
+            return _MockResponse(
+                tc.post(
+                    path,
+                    json=kwargs.get("json"),
+                    headers=kwargs.get("headers"),
+                )
+            )
+
+        _requests.post = mock_post
+        self.server_url = "http://localhost:8000"
+
+    def tearDown(self):
+        import requests as _requests
+
+        _requests.post = self._orig_post
+        self.test_client.__exit__(None, None, None)
+        os.environ.pop("PAINT_MONET_TOKEN", None)
+        from monet import cache as _mcache
+
+        _mcache._clear_cache_registry()
+        import shutil
+
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _index(self):
+        return {
+            "name": "S",
+            "wavelength [nm]": 488,
+            "laser_power [mW]": 100,
+        }
+
+    def test_auth_headers_reflect_env(self):
+        os.environ.pop("PAINT_MONET_TOKEN", None)
+        self.assertEqual(mio._auth_headers(), {})
+        os.environ["PAINT_MONET_TOKEN"] = "wtok"
+        self.assertEqual(mio._auth_headers(), {"Authorization": "Bearer wtok"})
+
+    def test_write_and_read_with_token_succeeds(self):
+        os.environ["PAINT_MONET_TOKEN"] = "wtok"
+        mio.save_calibration(
+            self.server_url,
+            self._index(),
+            {"bkg": 0.0, "amp": 1.0, "phi": 0.0},
+        )
+        loaded = mio.load_calibration(self.server_url, self._index())
+        self.assertAlmostEqual(loaded["amp"], 1.0)
+
+    def test_write_without_token_is_rejected(self):
+        os.environ.pop("PAINT_MONET_TOKEN", None)
+        with self.assertRaises(Exception):
+            mio.save_calibration(
+                self.server_url,
+                self._index(),
+                {"bkg": 0.0, "amp": 1.0, "phi": 0.0},
+            )
