@@ -61,7 +61,7 @@ class IlluminationControl:
         }
     """
 
-    def __init__(self, config, do_load_cal=True):
+    def __init__(self, config, do_load_cal=True, auto_home=True):
         """Initialize the analyzer and attenuator classes from config.
 
         Parameters
@@ -71,6 +71,14 @@ class IlluminationControl:
             'classpath' and 'init_kwargs'.
         do_load_cal : bool
             Whether to load the latest calibration.
+        auto_home : bool
+            Whether to home the attenuator once at connection. Homing the
+            Thorlabs rotation mount establishes its absolute-position
+            reference; without it, absolute moves can be offset. Done here
+            in the base ``__init__`` so it runs before any lasers are
+            enabled (see ``IlluminationLaserControl``), keeping the
+            half-wave-plate power swing dark. A no-op for attenuators
+            without a moving axis (AOTF, NI-DAQ analog-out, TestAttenuator).
         """
         self.config = config
         self.is_calibrated = False
@@ -86,6 +94,18 @@ class IlluminationControl:
         self.attenuator = load_class(
             attconfig["classpath"], attconfig["init_kwargs"], settgs
         )
+
+        self.auto_home = auto_home
+        if auto_home:
+            try:
+                self.attenuator.home()
+            except Exception as e:
+                logger.warning(
+                    "Could not home the attenuator at startup: %s. "
+                    "Absolute-position accuracy may be reduced until it "
+                    "is homed manually.",
+                    e,
+                )
 
         if do_load_cal:
             try:
@@ -166,7 +186,13 @@ class IlluminationLaserControl(IlluminationControl):
         }
     """
 
-    def __init__(self, config, do_load_cal=True, auto_enable_lasers=True):
+    def __init__(
+        self,
+        config,
+        do_load_cal=True,
+        auto_enable_lasers=True,
+        auto_home=True,
+    ):
         """Initialize the multi-laser illumination control.
 
         Parameters
@@ -178,8 +204,12 @@ class IlluminationLaserControl(IlluminationControl):
             Whether to load the latest calibration.
         auto_enable_lasers : bool
             Whether to switch on lasers at connection.
+        auto_home : bool
+            Whether to home the attenuator once at connection. Homing
+            happens in the base ``__init__`` (before lasers are loaded or
+            enabled below), so the power swing occurs with lasers dark.
         """
-        super().__init__(config, do_load_cal=do_load_cal)
+        super().__init__(config, do_load_cal=do_load_cal, auto_home=auto_home)
 
         # here, all lasers (wavelengths) and powers are loaded
         config["index"][LASER_TAG] = slice(None)

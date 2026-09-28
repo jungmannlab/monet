@@ -10,6 +10,17 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
+### Changed
+- **Auto-home the attenuator at startup.** `IlluminationControl` now homes the
+  attenuator once when the control is constructed (new `auto_home=True` flag,
+  threaded through `IlluminationLaserControl`), so every surface — GUI, CLI,
+  embedded `monet.qt` widget — starts from a known reference without an operator
+  clicking "Home". Homing runs in the base `__init__`, before any lasers are
+  loaded or enabled, so the half-wave-plate power swing happens with lasers dark;
+  it is wrapped warn-and-continue so a home failure cannot block startup. A
+  no-op for attenuators without a moving axis (AOTF, NI-DAQ, TestAttenuator).
+  Pass `auto_home=False` to opt out.
+
 ## [0.4.0] - 2026-09-28
 
 ### Changed
