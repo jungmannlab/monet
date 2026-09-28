@@ -63,9 +63,17 @@ BASE_URL="$BASE_URL" WRITE_TOKEN="$WRITE_TOKEN" READ_TOKEN="$READ_TOKEN" \
 smoke=$?
 
 echo
-echo "### [io client] monet.io against the auth-enabled DB endpoints"
-export PAINT_MONET_TOKEN="$WRITE_TOKEN"
-python - "$BASE_URL" <<'PY'
+echo "### [.env client] monet.io picks its token up from a gitignored .env"
+# Prove the real deployment path: the token lives ONLY in a per-machine .env (not
+# an exported var), and monet loads it (python-dotenv) at import. Each client
+# subprocess runs with the token UNSET in its environment and cwd = the .env dir,
+# so the .env is the only possible source.
+ENVDIR="$WORK/client"
+mkdir -p "$ENVDIR"
+printf 'PAINT_MONET_TOKEN=%s\n' "$WRITE_TOKEN" >"$ENVDIR/.env"
+(
+  cd "$ENVDIR" || exit 1
+  env -u PAINT_MONET_TOKEN -u PAINT_MONET_TOKENS python - "$BASE_URL" <<'PY'
 import sys
 import monet.io as mio
 url = sys.argv[1]
@@ -73,21 +81,36 @@ idx = {"name": "stg", "wavelength [nm]": 488, "laser_power [mW]": 100}
 mio.save_calibration(url, dict(idx), {"bkg": 0.0, "amp": 1.0, "phi": 0.0})
 got = mio.load_calibration(url, dict(idx))
 assert abs(got["amp"] - 1.0) < 1e-6, got
-print("  PASS  io client write+read with token")
-import os
-os.environ.pop("PAINT_MONET_TOKEN", None)
-try:
-    mio.save_calibration(url, dict(idx), {"bkg": 0.0, "amp": 2.0, "phi": 0.0})
-    print("  FAIL  token-less io write was accepted"); sys.exit(1)
-except Exception:
-    print("  PASS  token-less io write rejected")
+print("  PASS  client write+read with token from .env")
 PY
-ioclient=$?
+)
+env_ok=$?
+
+# Negative: no .env and token unset → the write must be rejected.
+NOENV="$WORK/client_noenv"
+mkdir -p "$NOENV"
+if (
+  cd "$NOENV" || exit 1
+  env -u PAINT_MONET_TOKEN -u PAINT_MONET_TOKENS python - "$BASE_URL" <<'PY'
+import sys
+import monet.io as mio
+url = sys.argv[1]
+idx = {"name": "stg", "wavelength [nm]": 488, "laser_power [mW]": 100}
+mio.save_calibration(url, dict(idx), {"bkg": 0.0, "amp": 9.0, "phi": 0.0})
+PY
+) 2>/dev/null; then
+  echo "  FAIL  token-less client write was accepted"
+  noenv_ok=1
+else
+  echo "  PASS  token-less client write rejected"
+  noenv_ok=0
+fi
+[ "$env_ok" = 0 ] && [ "$noenv_ok" = 0 ] && ioclient=0 || ioclient=1
 
 echo
 echo "=================== STAGING SUMMARY ==================="
 echo "  host guard refusal : $([ "$guard" = 0 ] && echo PASS || echo FAIL)"
 echo "  auth/safety smoke  : $([ "$smoke" = 0 ] && echo PASS || echo FAIL)"
-echo "  io client tokens   : $([ "$ioclient" = 0 ] && echo PASS || echo FAIL)"
+echo "  .env client tokens : $([ "$ioclient" = 0 ] && echo PASS || echo FAIL)"
 [ "$guard" = 0 ] && [ "$smoke" = 0 ] && [ "$ioclient" = 0 ] \
   && echo "  RESULT: ALL PASS" || { echo "  RESULT: FAILURES"; exit 1; }

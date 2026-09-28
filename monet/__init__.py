@@ -55,15 +55,22 @@ _PKG_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def _load_env_files(pkg_root=_PKG_ROOT):
-    """Load `.env` (package root, then cwd/parents) into os.environ, no override."""
+    """Load `.env` (package root, then cwd/parents) into os.environ, no override.
+
+    ``find_dotenv(usecwd=True)`` is required for the cwd search: plain
+    ``load_dotenv()`` searches from the *caller's* file location (this package),
+    not the working directory, so it would never find a client's cwd ``.env``.
+    """
     try:
-        from dotenv import load_dotenv
+        from dotenv import find_dotenv, load_dotenv
     except Exception:  # pragma: no cover - python-dotenv is a core dep
         logger.debug("python-dotenv unavailable; .env not loaded")
         return
     try:
         load_dotenv(os.path.join(pkg_root, ".env"), override=False)
-        load_dotenv(override=False)
+        cwd_env = find_dotenv(usecwd=True)
+        if cwd_env:
+            load_dotenv(cwd_env, override=False)
     except Exception:
         logger.debug("could not load .env", exc_info=True)
 

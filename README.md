@@ -229,6 +229,11 @@ curl -H "Authorization: Bearer $TOKEN" \
      -d '{"laser": 488, "target_power_mw": 30}'
 ```
 
+**Testing & rollout:** to validate server–client auth before touching production
+(how to generate `<wtok>`/`<rtok>`, a hardware-free harness, a two-machine dry run
+against a copy of the prod DB, and the safe cutover ordering), see
+[`docs/staging/ROLLOUT.md`](docs/staging/ROLLOUT.md).
+
 ## Usage
 
 | Mode | Command | Description |
