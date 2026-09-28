@@ -10,6 +10,14 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
+### Changed
+- **Release-prep (C40/C41/B8).** Pinned `picasso-registry[auth]` to the released
+  tag **`@v0.1.0`** (was a floating git URL; resolves the C39 caveat — not on
+  PyPI, so it stays a pinned git ref). Pinned the `[hardware]` `pycromanager` to
+  **`>=1.0,<2`** so the extra is numpy-2-compatible under the C41 harmonization
+  (the pycromanager-1.0 code migration + acq-PC validation is tracked as B8;
+  monet's pycromanager use is lazy/hardware-only).
+
 ### Security
 - `serve` now binds `127.0.0.1` by default (was `0.0.0.0`). The serve API
   actuates laser hardware, so it must not be network-exposed without

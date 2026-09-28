@@ -71,7 +71,10 @@ gui = [
 server = [
     "fastapi>=0.104",
     "uvicorn[standard]>=0.24",
-    "picasso-registry[auth] @ git+https://github.com/jungmannlab/picasso-registry.git",
+    # Pinned to the released tag v0.1.0 (C40 first release; C39 caveat resolved) --
+    # was a floating git URL. Not on PyPI, so this stays a pinned git ref, not a
+    # version specifier. Bump the tag as new picasso-registry releases land.
+    "picasso-registry[auth] @ git+https://github.com/jungmannlab/picasso-registry.git@v0.1.0",
 ]
 
 # Real-hardware SDKs. All imported lazily, so they are only required on the
@@ -84,7 +87,11 @@ hardware = [
     "ThorlabsPM100>=1.2.2",
     "microscope>=0.7",
     "nidaqmx>=1.2",
-    "pycromanager",
+    # numpy-2 harmonization (C41/B8): pin >=1.0 so the [hardware] extra is
+    # numpy-2-compatible (pycromanager <1.0 predates numpy 2's ABI break). Like
+    # PycroFlow's [hardware] bump, the pycromanager-1.0 code migration + acq-PC
+    # validation is tracked as B8 -- monet's usage is lazy-imported/hardware-only.
+    "pycromanager>=1.0,<2",
     "pycobolt @ git+https://github.com/cobolt-lasers/pycobolt.git",
     "msl-equipment @ https://github.com/MSLNZ/msl-equipment/releases/download/v0.2.0/msl_equipment-0.2.0-py3-none-any.whl",
 ]
