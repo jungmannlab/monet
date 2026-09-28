@@ -223,6 +223,13 @@ class IlluminationLaserControl(IlluminationControl):
             )
         self.curr_laser = list(self.lasers.keys())[0]
 
+        # Hard per-laser output-power ceiling (C34 safety envelope). Enforced in
+        # this control layer — below *every* actuation path (the HTTP power API,
+        # the GUI, the CLI) — so no caller can drive a laser above the limit.
+        # Parsed fail-closed: a malformed entry refuses construction rather than
+        # silently running without the limit.
+        self._max_power = self._parse_safety_envelope(config)
+
         self._factors = {}  # {laser: transmission_objective}; = P_sample/P_bfp
         self._powermeter_type = {}  # {laser: 'sample'/'bfp'}
 
@@ -414,6 +421,99 @@ class IlluminationLaserControl(IlluminationControl):
             laser = self.curr_laser
         return laser in self._factors
 
+    @staticmethod
+    def _parse_safety_envelope(config):
+        """Parse the per-laser max-power ceiling from config (fail-closed).
+
+        Reads ``config['safety']['max_power_mw']`` — a ``{wavelength: mW}``
+        mapping (the interim C34 source until WP-FLEET ships the versioned site
+        descriptor). Returns ``{int(laser): float(mW)}``. A malformed entry
+        (non-numeric key/value, non-positive or non-finite power, or a
+        non-mapping) raises ``ValueError`` so a broken safety config refuses
+        construction instead of silently disabling the interlock.
+        """
+        safety = config.get("safety") or {}
+        raw = safety.get("max_power_mw") or {}
+        if not isinstance(raw, dict):
+            raise ValueError(
+                "config 'safety.max_power_mw' must be a mapping of "
+                "{laser_wavelength: max_mW}"
+            )
+        parsed = {}
+        for key, val in raw.items():
+            try:
+                laser = int(key)
+            except (TypeError, ValueError):
+                raise ValueError(
+                    "safety.max_power_mw has a non-numeric laser key: "
+                    "{!r}".format(key)
+                )
+            try:
+                mw = float(val)
+            except (TypeError, ValueError):
+                raise ValueError(
+                    "safety.max_power_mw[{!r}] is not a number: {!r}".format(
+                        key, val
+                    )
+                )
+            if not np.isfinite(mw) or mw <= 0:
+                raise ValueError(
+                    "safety.max_power_mw[{!r}] must be a positive, finite "
+                    "power in mW, got {!r}".format(key, mw)
+                )
+            parsed[laser] = mw
+        return parsed
+
+    def max_power(self, laser=None):
+        """Return the hard per-laser output-power ceiling in mW (C34), or None.
+
+        ``None`` means no ceiling is configured for this laser.
+
+        Parameters
+        ----------
+        laser : int or str, optional
+            Laser wavelength; defaults to curr_laser.
+        """
+        if laser is None:
+            laser = self.curr_laser
+        try:
+            laser = int(laser)
+        except (TypeError, ValueError):
+            pass
+        return self._max_power.get(laser)
+
+    def clamp_to_max_power(self, pwr, laser=None):
+        """Clamp a requested sample-plane power to the per-laser ceiling.
+
+        This is the single enforcement point for the C34 safety envelope; it
+        sits below every actuation method, so the HTTP power API, the GUI and
+        the CLI are all bounded by the same hard limit.
+
+        Parameters
+        ----------
+        pwr : float
+            Requested output power in mW (sample plane).
+        laser : int or str, optional
+            Laser wavelength; defaults to curr_laser.
+
+        Returns
+        -------
+        (value, was_clamped) : tuple of (float, bool)
+            The power to actually use (never above the ceiling) and whether it
+            had to be clamped.
+        """
+        ceiling = self.max_power(laser)
+        if ceiling is not None and pwr > ceiling:
+            logger.warning(
+                "Requested power %.3f mW exceeds the safety ceiling %.3f mW "
+                "for laser %s; clamping.",
+                pwr,
+                ceiling,
+                self.curr_laser if laser is None else laser,
+            )
+            return ceiling, True
+        return pwr, False
+
     def _sample_power_ranges(self, laser=None, power_ranges=None):
         """Return calibrated output power ranges in sample-plane units.
 
@@ -488,6 +588,9 @@ class IlluminationLaserControl(IlluminationControl):
         """
         if not self.is_calibrated:
             raise ValueError("Not calibrated. Cannot set power.")
+
+        # C34 safety ceiling — enforced below the actuation layer.
+        pwr, _ = self.clamp_to_max_power(pwr)
 
         # pwr is a sample-plane power; the calibrated ranges are in
         # power-meter units. Compare both in the sample plane.
@@ -576,6 +679,9 @@ class IlluminationLaserControl(IlluminationControl):
         if laser is None:
             laser = self.curr_laser
 
+        # C34 safety ceiling — enforced below the actuation layer.
+        pwr, _ = self.clamp_to_max_power(pwr, laser)
+
         analyzers, _ = self._populate_analyzers(self.cali_db, laser)
         if len(analyzers) < 2:
             raise ValueError(
@@ -651,6 +757,9 @@ class IlluminationLaserControl(IlluminationControl):
             raise ValueError("Not calibrated. Cannot set power.")
         if laser is None:
             laser = self.curr_laser
+
+        # C34 safety ceiling — enforced below the actuation layer.
+        pwr, _ = self.clamp_to_max_power(pwr, laser)
 
         analyzers, _ = self._populate_analyzers(self.cali_db, laser)
 
@@ -1030,6 +1139,12 @@ def run_power_feedback(
             "Feedback is only supported for 'fixed_laser' and "
             "'fixed_attenuator' modes, not '{}'.".format(mode)
         )
+
+    # C34 safety ceiling — clamp the target below the actuation layer so the PI
+    # loop's setpoint can never exceed the per-laser limit, whatever the caller
+    # passed (no-op if already clamped upstream or no ceiling is configured).
+    if hasattr(instrument, "clamp_to_max_power"):
+        target_pwr, _ = instrument.clamp_to_max_power(target_pwr, laser)
 
     # `target_pwr`, the progress callbacks and the returned `measured` are in
     # the sample plane. The loop runs internally in the *physical* meter plane

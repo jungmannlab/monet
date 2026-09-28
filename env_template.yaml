@@ -1,3 +1,6 @@
+# DEPRECATED: env.yaml is superseded by .env (see .env.template). monet still
+# reads env.yaml as a fallback (with a DeprecationWarning) but new rigs should
+# set MONET_CONFIG_PATHS / MONET_PROTOCOL_PATHS in a .env file instead.
 config_paths:
 - Z:/users/grabmayr/test_powerbase/configs.yaml
 - Z:/y_Microscope_Infrastructure/powerbase/configs.yaml

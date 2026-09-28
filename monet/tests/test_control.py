@@ -489,6 +489,88 @@ class TestControl(unittest.TestCase):
         with self.assertRaises(ValueError):
             ctrl.predict_power_fixed_attenuator(75.0, laser=488)
 
+    # ── C34 per-laser safety ceiling (enforced below the actuation layer) ──
+
+    def test_parse_safety_envelope_valid(self):
+        parsed = mco.IlluminationLaserControl._parse_safety_envelope(
+            {"safety": {"max_power_mw": {488: 40, "561": 80.5}}}
+        )
+        self.assertEqual(parsed, {488: 40.0, 561: 80.5})
+
+    def test_parse_safety_envelope_absent_is_empty(self):
+        self.assertEqual(
+            mco.IlluminationLaserControl._parse_safety_envelope({}), {}
+        )
+        self.assertEqual(
+            mco.IlluminationLaserControl._parse_safety_envelope(
+                {"safety": {}}
+            ),
+            {},
+        )
+
+    def test_parse_safety_envelope_malformed_fails_closed(self):
+        """A broken ceiling config must refuse rather than silently disable."""
+        for bad in (
+            {"safety": {"max_power_mw": {488: "abc"}}},  # non-numeric value
+            {"safety": {"max_power_mw": {488: 0}}},  # non-positive
+            {"safety": {"max_power_mw": {488: -5}}},  # negative
+            {"safety": {"max_power_mw": {488: float("inf")}}},  # non-finite
+            {"safety": {"max_power_mw": {"x": 40}}},  # non-numeric key
+            {"safety": {"max_power_mw": [488, 40]}},  # not a mapping
+        ):
+            with self.assertRaises(ValueError):
+                mco.IlluminationLaserControl._parse_safety_envelope(bad)
+
+    def test_clamp_to_max_power_reports_flag(self):
+        ctrl = self._build_laser_control()
+        ctrl._max_power = {488: 25.0}
+        self.assertEqual(ctrl.clamp_to_max_power(10.0, 488), (10.0, False))
+        self.assertEqual(ctrl.clamp_to_max_power(80.0, 488), (25.0, True))
+        # a laser with no configured ceiling is never clamped
+        self.assertEqual(ctrl.clamp_to_max_power(80.0, 561), (80.0, False))
+
+    def test_power_setter_clamps_to_safety_ceiling(self):
+        """The combined-mode setter (used by the GUI and CLI) is bounded by the
+        ceiling — proving enforcement is below the actuation layer, not only in
+        the HTTP route."""
+        ctrl = self._build_laser_control()
+        ctrl._max_power = {488: 25.0}
+        ctrl.laser = 488
+        ctrl.power = 80.0  # request well above the ceiling
+        self.assertLessEqual(ctrl.power, 25.0 + 1e-6)
+
+    def test_set_power_fixed_laser_respects_ceiling(self):
+        ctrl = self._build_laser_control()
+        ctrl._max_power = {488: 20.0}
+        ctrl.laserpower = 50
+        ctrl.set_power_fixed_laser(40.0, laser=488)  # clamp 40 -> 20
+        # level-50 amp=1.0 ⇒ attenuator position == delivered power == 20
+        self.assertAlmostEqual(ctrl.attenuator.curr_pos(), 20.0, places=4)
+
+    def test_set_power_fixed_attenuator_respects_ceiling(self):
+        ctrl = self._build_laser_control()
+        ctrl._max_power = {488: 30.0}
+        ctrl.set_power_fixed_attenuator(45.0, laser=488)  # clamp 45 -> 30
+        # att=30: output = 0.6·laser_pwr ⇒ 30 mW needs laser power 50 mW
+        self.assertAlmostEqual(ctrl.lasers[488].power, 50.0, places=4)
+
+    @mock.patch("time.sleep")
+    def test_run_power_feedback_respects_ceiling(self, _sleep):
+        ctrl = self._build_laser_control()
+        ctrl._max_power = {488: 20.0}
+        pm = _AttenuatorCurvePowerMeter(ctrl, miscal=1.0)
+        result = mco.run_power_feedback(
+            ctrl,
+            pm,
+            target_pwr=50,  # asks for 50, ceiling is 20
+            laser=488,
+            mode="fixed_laser",
+            max_dev_pct=2.0,
+            max_iter=20,
+        )
+        # the loop drives to the clamped target, never toward 50
+        self.assertLessEqual(result["measured"], 20.0 * 1.05)
+
     # ── BFP-calibrated ranges (sample plane vs power-meter units) ─────────
 
     def _build_bfp_control(self, factor=0.5):

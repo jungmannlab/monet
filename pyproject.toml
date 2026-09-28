@@ -36,7 +36,9 @@ dependencies = [
     "pyyaml>=6.0",
     "icecream>=2.1",
     "requests>=2.31",
-    "importlib_resources>=5.0",
+    # Loads a per-machine .env (config/protocol paths, auth token & toggle) into
+    # the environment at import — see monet/__init__.py _load_env_files.
+    "python-dotenv>=1.0",
     # SQLAlchemy is imported eagerly via monet.io -> monet.cache -> monet.models
     # (the local SQLite cache/outbox that backs the HTTP database mode), so it is
     # required to import the core workflow even when only the Excel DB is used.
@@ -55,9 +57,16 @@ gui = [
 
 # FastAPI calibration server (`python -m monet serve`). SQLAlchemy is a core
 # dependency (see above), so only the web-server packages live here.
+#
+# picasso-registry[auth] is the shared service-auth helper (WP-3b / ADR-001):
+# monet imports `picasso_registry.auth` rather than reimplementing bearer-token
+# auth, so the two DNA-PAINT services share one audited implementation. The
+# [auth] extra is only FastAPI (already required here), so this adds no runtime
+# weight beyond the small pure-Python package itself.
 server = [
     "fastapi>=0.104",
     "uvicorn[standard]>=0.24",
+    "picasso-registry[auth] @ git+https://github.com/jungmannlab/picasso-registry.git",
 ]
 
 # Real-hardware SDKs. All imported lazily, so they are only required on the
@@ -79,6 +88,11 @@ hardware = [
 # pre-commit hook (see .pre-commit-config.yaml) agree; flake8 reads its config
 # from [tool.flake8] below via the Flake8-pyproject plugin.
 dev = [
+    # The test suite imports the FastAPI server (test_server / test_power_api /
+    # test_io_http / the create_app path), so the dev env must include [server]
+    # — otherwise `pip install -e ".[dev]"` collects tests that can't import
+    # fastapi. httpx below is FastAPI's TestClient transport.
+    "monet[server]",
     "pytest>=7.0",
     "pytest-cov>=4.0",
     "coverage>=7.10",
