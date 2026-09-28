@@ -28,12 +28,15 @@ classifiers = [
 # Core runtime dependencies: everything imported eagerly by the package and
 # needed to run calibrations/analysis against the simulated `Test*` hardware.
 dependencies = [
-    "numpy>=1.23",
-    "pandas>=2.3",
+    # Shared numeric/IO libs pinned to the stack-wide C41 harmonization ranges
+    # (picasso 0.11.3 is the anchor), so monet resolves to the same numpy-2 stack
+    # as PycroFlow / picasso-workflow when co-installed.
+    "numpy>=2.2.6,<3",
+    "pandas>=2.3.3,<3",
     "lmfit>=1.3",
-    "matplotlib>=3.10",
+    "matplotlib>=3.10.7,<4",
     "openpyxl>=3.1",
-    "pyyaml>=6.0",
+    "pyyaml>=6.0.3,<7",
     "icecream>=2.1",
     "requests>=2.31",
     # Loads a per-machine .env (config/protocol paths, auth token & toggle) into
@@ -52,7 +55,9 @@ dependencies = [
 [project.optional-dependencies]
 # PyQt6 GUI and the embeddable `monet.qt` widgets.
 gui = [
-    "PyQt6>=6.5",
+    # C41 harmonization: match the anchor PyQt6 range (shared across the stack so
+    # monet's widgets embed in-process in PycroFlow's Qt GUI).
+    "PyQt6>=6.10.2,<7",
 ]
 
 # FastAPI calibration server (`python -m monet serve`). SQLAlchemy is a core

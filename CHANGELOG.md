@@ -150,6 +150,13 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
   today") saved with every calibration of a run.
 
 ### Changed
+- **Stack-wide dependency harmonization (decision C41, picasso is the anchor).**
+  Pinned the shared numeric/GUI libs to picasso 0.11.3's shared-lib ranges so
+  monet resolves to the same numpy-2 stack as PycroFlow / picasso-workflow when
+  co-installed: `numpy>=1.23` → `numpy>=2.2.6,<3`, `pandas>=2.3` →
+  `pandas>=2.3.3,<3`, `matplotlib>=3.10` → `matplotlib>=3.10.7,<4`,
+  `pyyaml>=6.0` → `pyyaml>=6.0.3,<7`, `PyQt6>=6.5` → `PyQt6>=6.10.2,<7`. Full
+  test suite green under numpy 2.
 - Plot lines are now coloured by the wavelength's approximate visible-spectrum
   colour (`monet.util.wavelength_to_rgb`) instead of an arbitrary palette, with
   a luminance cap so light colours (yellow/green/cyan) stay legible on white.
