@@ -19,7 +19,12 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
   loaded or enabled, so the half-wave-plate power swing happens with lasers dark;
   it is wrapped warn-and-continue so a home failure cannot block startup. A
   no-op for attenuators without a moving axis (AOTF, NI-DAQ, TestAttenuator).
-  Pass `auto_home=False` to opt out.
+  Pass `auto_home=False` to opt out. The headless `serve` power API opts out
+  (`build_app_for_microscope` passes `auto_home=False`): serve must not actuate
+  hardware at startup — it has no operator to intervene and homing blocks on an
+  untimed wait, so a faulted mount would hang server startup. Motion happens
+  only via authenticated requests. The CLI `calibrate` command drops its now
+  redundant explicit `attenuator.home()` (construction already homes once).
 
 ## [0.4.0] - 2026-09-28
 

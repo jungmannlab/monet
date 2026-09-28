@@ -689,5 +689,58 @@ class TestServeHostGuard(unittest.TestCase):
                 run.assert_called_once()
 
 
+class TestServeDoesNotHomeAtStartup(unittest.TestCase):
+    """serve is a headless surface: building the power app must not actuate
+    the attenuator. Homing a real Kinesis mount blocks on an untimed wait
+    (attenuation.KinesisAttenuator._wait), which would hang server startup."""
+
+    def test_build_app_for_microscope_does_not_home(self):
+        import shutil
+
+        import yaml
+
+        from monet.server import build_app_for_microscope
+
+        config = {
+            "DefaultMicroscope": {
+                "database": "monet/tests/TestData/control/no_such_db.xlsx",
+                "index": {"name": "DefaultMicroscope"},
+                "attenuation": {
+                    "classpath": "monet.attenuation.TestAttenuator",
+                    "init_kwargs": {
+                        "bkg": 0,
+                        "amp": 50,
+                        "phi": 30,
+                        "start": 30,
+                        "step": 5,
+                    },
+                },
+                "analysis": {
+                    "classpath": "monet.analysis.LinearCurveAnalyzer",
+                    "init_kwargs": {"min": 0, "max": 100, "step": 5},
+                },
+                "lasers": {
+                    "488": {
+                        "classpath": "monet.laser.TestLaser",
+                        "init_kwargs": {"port": "COM4"},
+                    },
+                },
+            }
+        }
+        tmpdir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmpdir, ignore_errors=True)
+        cfg_path = os.path.join(tmpdir, "configs.yaml")
+        with open(cfg_path, "w") as f:
+            yaml.safe_dump(config, f)
+        os.environ["MONET_DB_PATH"] = os.path.join(tmpdir, "test.db")
+        os.environ.pop("PAINT_MONET_TOKENS", None)
+
+        with mock.patch("monet.attenuation.TestAttenuator.home") as home:
+            build_app_for_microscope(
+                "DefaultMicroscope", configs_file=cfg_path
+            )
+        home.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
