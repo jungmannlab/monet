@@ -55,6 +55,13 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
   exactly once), so consecutive runs are separated regardless of timing.
 
 ### Added
+- **`monet token` CLI** to manage server auth tokens without hand-editing files:
+  `add`/`list`/`revoke`/`rotate` generate a high-entropy token, maintain the
+  `PAINT_MONET_TOKENS` map in a `.env` (chmod 600), and print the value once with
+  the client line to paste. `list` shows scopes + labels only, never values.
+  Tokens stay plaintext at rest (the C18 model); a running `serve` applies changes
+  on restart. Run it on the server box — there is deliberately no token-minting
+  HTTP endpoint (the dashboard stays proxy-guarded per ADR-001).
 - **`.env` for per-machine settings (deprecates `env.yaml`).** monet now loads a
   gitignored `.env` from the package root at import (via `python-dotenv`,
   `override=False`). Config/protocol path lists move to `MONET_CONFIG_PATHS` /

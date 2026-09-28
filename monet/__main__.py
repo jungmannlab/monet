@@ -45,6 +45,14 @@ def config_logger():
 def main():
     """Function called from the command line."""
     import argparse
+    import sys
+
+    # `token` has its own sub-command parser (add/list/revoke/rotate); dispatch
+    # before the flat parser below, which doesn't know those sub-args.
+    if len(sys.argv) > 1 and sys.argv[1] == "token":
+        from monet.tokens import token_cli
+
+        sys.exit(token_cli(sys.argv[2:]))
 
     # os.chdir(os.path.split(CONFIGS_PATH)[0])
 
@@ -55,7 +63,7 @@ def main():
         type=str,
         help=(
             'mode. One of "set", "adjust", "caliaotf", "calibrate", '
-            '"serve", "migrate", or "gui".'
+            '"serve", "migrate", "gui", or "token".'
         ),
     )
     parser.add_argument(

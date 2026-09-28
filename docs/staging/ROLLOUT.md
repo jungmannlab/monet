@@ -13,17 +13,22 @@ separately.
 
 ## 0. Getting the tokens (`<wtok>` / `<rtok>`)
 
-A monet token is just a **high-entropy random string that you generate** — there
-is no issuing server or CA. You invent the value, register it on the server with a
-scope + label, and hand the same value to whoever holds it.
-
-Generate one per holder (must avoid `:` `,` `;` and newlines — the map
-separators; the generators below are safe):
+A monet token is a high-entropy random string, registered on the server with a
+scope + label and handed to whoever holds it. The easiest way is the **`monet
+token`** CLI on the server box — it generates the value, writes the
+`PAINT_MONET_TOKENS` map, and prints the client line once:
 
 ```bash
-python -c "import secrets; print(secrets.token_urlsafe(32))"   # e.g. Xy7...q
-# or:  openssl rand -hex 32
+monet token add --scope write --label microscope-mercury   # -> PAINT_MONET_TOKEN=…
+monet token add --scope read  --label dashboards
+monet token list        # scopes + labels (never values)
+monet token rotate --label microscope-mercury
+monet token revoke --label microscope-mercury
 ```
+
+(Equivalent by hand: generate with `python -c "import secrets;
+print(secrets.token_urlsafe(32))"` — must avoid `:` `,` `;` and newlines — and add
+one `token:scope:label` entry to `PAINT_MONET_TOKENS`.)
 
 - `<wtok>` — a **write** token: for anything that writes the DB or actuates a
   laser (a microscope running `calibrate`/`set`/GUI, the recommender). `write`

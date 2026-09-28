@@ -176,26 +176,30 @@ so both DNA-PAINT services share one audited implementation.
 
 #### Creating, storing & rotating tokens
 
-**Generate** a high-entropy token per holder. The token must not contain `:`,
-`,`, `;`, or a newline (those are the map's separators), so use a URL-safe or hex
-generator:
+**The easy way — `monet token`** (run on the server box, where the `.env` lives).
+It generates the token, writes the `PAINT_MONET_TOKENS` map for you, and prints
+the value once with the exact line to paste on the client:
 
 ```bash
-python -c "import secrets; print(secrets.token_urlsafe(32))"   # e.g. Xy7...q  (URL-safe)
-openssl rand -hex 32                                            # hex alternative
+monet token add --scope write --label microscope-mercury   # -> prints PAINT_MONET_TOKEN=…
+monet token add --scope read  --label dashboards
+monet token list        # scopes + labels only (never the values)
+monet token rotate --label microscope-mercury
+monet token revoke --label microscope-mercury
+# --env-file PATH targets a specific .env (default: the package-root .env)
 ```
 
-Assemble one entry per holder as `token:scope:label` and join with commas — give
-each machine/role its **own** token so it can be revoked independently, and make
-the `label` name the holder (used for attributable writes in the logs):
+Tokens are read at startup, so **restart `serve` to apply** a change. Give each
+machine/role its **own** label so it can be rotated/revoked independently; the
+`label` is what attributes writes in the logs.
+
+**By hand** (equivalent): a token is just a high-entropy string that must not
+contain `:` `,` `;` or a newline (the map's separators):
 
 ```bash
-export PAINT_MONET_TOKENS="$(cat <<'ENV'
-Xy7...q:write:microscope-mercury,
-Ab3...k:write:cluster,
-Zq9...t:read:dashboards
-ENV
-)"
+python -c "import secrets; print(secrets.token_urlsafe(32))"   # or: openssl rand -hex 32
+# then add one `token:scope:label` entry per holder, comma-separated, to
+# PAINT_MONET_TOKENS (see below).
 ```
 
 **Store** it out of the repo and off the DB: a per-machine, root-owned
@@ -216,11 +220,11 @@ ExecStart=/opt/monet/.venv/bin/monet serve Mercury --host 0.0.0.0 --port 8000
 A gitignored `.env` (loaded by your shell/`direnv`) or a secrets manager works
 too; the only hard rules are *never in git* and *never in the calibration DB*.
 
-**Rotate / revoke** by editing the map and restarting `serve` (tokens are read at
-startup): add the new token, redistribute it to that holder, then delete the old
-entry. Because each holder has a distinct `label`, you can revoke one microscope
-or the dashboards without disturbing the others. There is no online revocation
-list — rotation is "edit the env + restart", so keep the map small and per-role.
+**Rotate / revoke** with `monet token rotate/revoke --label <holder>` (or edit the
+map by hand), then restart `serve`. Because each holder has a distinct `label`,
+you can rotate/revoke one microscope or the dashboards without disturbing the
+others. There is no online revocation list — a change applies on restart, so keep
+the map small and per-role.
 
 ```bash
 # clients send the bearer token
@@ -245,6 +249,7 @@ against a copy of the prod DB, and the safe cutover ordering), see
 | GUI | `python -m monet gui <Name>` | Launch the PyQt6 graphical interface |
 | Serve | `python -m monet serve` | Start the database server |
 | Migrate | `python -m monet migrate --source <xlsx> --db-path <db>` | Migrate Excel database to SQLite |
+| Token | `python -m monet token add --scope write --label <holder>` | Manage server auth tokens (add/list/revoke/rotate) |
 
 ### Server options
 
