@@ -140,6 +140,50 @@ class TestCreateAppToggle(unittest.TestCase):
         self.assertFalse(app.state.auth.enabled)
 
 
+class TestAuthReload(unittest.TestCase):
+    """SIGHUP live-reload: server.reload_auth picks up .env token changes."""
+
+    def tearDown(self):
+        _clear("PAINT_MONET_AUTH", "PAINT_MONET_TOKENS")
+
+    def test_reload_auth_picks_up_new_tokens_from_env_file(self):
+        from monet.server import create_app, reload_auth
+
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        cwd = os.getcwd()
+        self.addCleanup(os.chdir, cwd)
+        _clear("PAINT_MONET_TOKENS", "PAINT_MONET_AUTH")
+        os.chdir(d)
+
+        app = create_app()
+        self.assertFalse(app.state.auth.enabled)  # no tokens yet
+
+        # an admin runs `monet token add`, writing the .env in the server's cwd
+        with open(os.path.join(d, ".env"), "w") as f:
+            f.write("PAINT_MONET_TOKENS=wtok:write:mercury\n")
+
+        cfg = reload_auth(app)  # what the SIGHUP handler calls
+        self.assertTrue(cfg.enabled)
+        self.assertIs(app.state.auth, cfg)
+        self.assertEqual(app.state.auth.resolve("wtok").label, "mercury")
+
+    def test_install_auth_reload_installs_on_unix(self):
+        import signal
+
+        from monet.server import create_app, install_auth_reload
+
+        app = create_app()
+        installed = install_auth_reload(app)
+        if hasattr(signal, "SIGHUP"):
+            self.assertTrue(installed)
+            self.assertTrue(callable(signal.getsignal(signal.SIGHUP)))
+            # restore default so we don't leak the handler into other tests
+            signal.signal(signal.SIGHUP, signal.SIG_DFL)
+        else:  # Windows
+            self.assertFalse(installed)
+
+
 class TestServeGuardToggle(unittest.TestCase):
     def tearDown(self):
         _clear("PAINT_MONET_AUTH", "PAINT_MONET_TOKENS")

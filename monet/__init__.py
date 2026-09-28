@@ -54,12 +54,16 @@ logger = logging.getLogger(__name__)
 _PKG_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-def _load_env_files(pkg_root=_PKG_ROOT):
-    """Load `.env` (package root, then cwd/parents) into os.environ, no override.
+def _load_env_files(pkg_root=_PKG_ROOT, override=False):
+    """Load `.env` (package root, then cwd/parents) into os.environ.
 
     ``find_dotenv(usecwd=True)`` is required for the cwd search: plain
     ``load_dotenv()`` searches from the *caller's* file location (this package),
     not the working directory, so it would never find a client's cwd ``.env``.
+
+    ``override`` is False at import (an already-exported var / systemd
+    EnvironmentFile wins). A live token reload (``server.reload_auth``) passes
+    ``override=True`` so a value *changed* in the .env replaces the stale one.
     """
     try:
         from dotenv import find_dotenv, load_dotenv
@@ -67,10 +71,10 @@ def _load_env_files(pkg_root=_PKG_ROOT):
         logger.debug("python-dotenv unavailable; .env not loaded")
         return
     try:
-        load_dotenv(os.path.join(pkg_root, ".env"), override=False)
+        load_dotenv(os.path.join(pkg_root, ".env"), override=override)
         cwd_env = find_dotenv(usecwd=True)
         if cwd_env:
-            load_dotenv(cwd_env, override=False)
+            load_dotenv(cwd_env, override=override)
     except Exception:
         logger.debug("could not load .env", exc_info=True)
 

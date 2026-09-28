@@ -19,7 +19,8 @@ token-minting endpoint — see ``docs/staging/ROLLOUT.md`` and ADR-001 / C18.
 Tokens are stored in **plaintext** in the ``.env`` (the ratified C18 model), so
 the value is recoverable from that file by anyone with box access; this tool
 prints it once on add/rotate for convenience. A running ``monet serve`` reads the
-map at startup, so **restart serve to apply** a change.
+map at startup; on Unix, ``kill -HUP <serve-pid>`` live-reloads it without a
+restart (``server.install_auth_reload``), else restart ``serve``.
 
 :authors: Heinrich Grabmayr, 2024
 :copyright: Copyright (c) 2024 Jungmann Lab, MPI of Biochemistry
@@ -86,7 +87,8 @@ def _print_new(env_file, value, scope, label):
         "Created a {} token for {!r}.\n".format(scope, label)
         + "Stored in {} (PAINT_MONET_TOKENS). This tool won't print it "
         "again —\ncopy it now (it is also readable from that file).\n\n"
-        "  On the server:  restart `monet serve` to apply.\n"
+        "  On the server:  restart `monet serve`, or `kill -HUP <serve-pid>`\n"
+        "                  (Unix) to apply without downtime.\n"
         "  On the client:  add this line to that machine's .env:\n\n"
         "    PAINT_MONET_TOKEN={}\n".format(env_file, value)
     )
@@ -134,8 +136,8 @@ def _revoke(env_file, label):
         return 2
     _write_map(env_file, remaining)
     print(
-        "revoked {} token(s) labelled {!r} — restart `monet serve` to "
-        "apply.".format(removed, label)
+        "revoked {} token(s) labelled {!r} — restart `monet serve` (or "
+        "`kill -HUP <serve-pid>` on Unix) to apply.".format(removed, label)
     )
     return 0
 

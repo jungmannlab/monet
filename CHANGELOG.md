@@ -59,9 +59,13 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
   `add`/`list`/`revoke`/`rotate` generate a high-entropy token, maintain the
   `PAINT_MONET_TOKENS` map in a `.env` (chmod 600), and print the value once with
   the client line to paste. `list` shows scopes + labels only, never values.
-  Tokens stay plaintext at rest (the C18 model); a running `serve` applies changes
-  on restart. Run it on the server box — there is deliberately no token-minting
-  HTTP endpoint (the dashboard stays proxy-guarded per ADR-001).
+  Tokens stay plaintext at rest (the C18 model). Run it on the server box — there
+  is deliberately no token-minting HTTP endpoint (the dashboard stays
+  proxy-guarded per ADR-001).
+- **Live token reload on SIGHUP** (Unix). `monet serve` installs a SIGHUP handler
+  that re-reads the tokens from `.env` and refreshes the running auth config
+  (`server.reload_auth`) — so `monet token add/revoke/rotate` applies without a
+  restart via `kill -HUP <serve-pid>`. No-op on Windows (restart there).
 - **`.env` for per-machine settings (deprecates `env.yaml`).** monet now loads a
   gitignored `.env` from the package root at import (via `python-dotenv`,
   `override=False`). Config/protocol path lists move to `MONET_CONFIG_PATHS` /

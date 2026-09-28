@@ -189,7 +189,8 @@ monet token revoke --label microscope-mercury
 # --env-file PATH targets a specific .env (default: the package-root .env)
 ```
 
-Tokens are read at startup, so **restart `serve` to apply** a change. Give each
+Tokens are read at startup. To apply a change, restart `serve` — or, on Unix,
+`kill -HUP <serve-pid>` **live-reloads** the tokens with no downtime. Give each
 machine/role its **own** label so it can be rotated/revoked independently; the
 `label` is what attributes writes in the logs.
 

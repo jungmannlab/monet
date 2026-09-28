@@ -175,6 +175,12 @@ def main():
         else:
             from monet.server import app
 
+        # Live-reload tokens on SIGHUP (Unix) so `monet token` changes apply
+        # without a restart; a no-op on Windows (restart required there).
+        from monet.server import install_auth_reload
+
+        install_auth_reload(app)
+
         uvicorn.run(app, host=args.host, port=args.port)
     elif args.mode == "migrate":
         from monet.migrate import migrate_excel_to_sqlite

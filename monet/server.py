@@ -88,6 +88,50 @@ async def lifespan(app: FastAPI):
         _engine.dispose()
 
 
+def reload_auth(app):
+    """Re-read the tokens from ``.env`` and refresh ``app.state.auth`` in place.
+
+    Lets ``monet token add/revoke/rotate`` take effect on a running server
+    without a restart (tokens are otherwise read only at startup). Re-reads the
+    .env with ``override=True`` so a *changed* ``PAINT_MONET_TOKENS`` replaces the
+    value already in the process env, then rebuilds the (toggle-aware) config.
+    Reassigning ``app.state.auth`` is a single attribute set, so an in-flight
+    request sees either the old or the new config — both valid.
+    """
+    from monet import _load_env_files
+
+    _load_env_files(override=True)
+    app.state.auth = auth_from_env()
+    return app.state.auth
+
+
+def install_auth_reload(app):
+    """Install a SIGHUP handler that live-reloads auth (Unix only).
+
+    Returns True if installed. SIGHUP doesn't exist on Windows, where a token
+    change needs a ``serve`` restart instead. Must be called from the main thread
+    (before ``uvicorn.run``); uvicorn only claims SIGINT/SIGTERM, so SIGHUP is
+    ours.
+    """
+    import signal
+
+    if not hasattr(signal, "SIGHUP"):
+        return False
+
+    def _handler(signum, frame):
+        try:
+            cfg = reload_auth(app)
+            logger.info(
+                "SIGHUP: reloaded auth (%d token(s) configured)",
+                len(cfg.tokens),
+            )
+        except Exception:
+            logger.warning("SIGHUP auth reload failed", exc_info=True)
+
+    signal.signal(signal.SIGHUP, _handler)
+    return True
+
+
 def _record_from_row(row: Calibration) -> CalibrationRecord:
     return CalibrationRecord(
         device_name=row.device_name,
