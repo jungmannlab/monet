@@ -34,7 +34,7 @@ pip install -e .                # core
 pip install -e ".[gui]"         # PyQt6 GUI  -> python -m monet gui
 pip install -e ".[server]"      # FastAPI DB server -> python -m monet serve
 pip install -e ".[hardware]"    # real-instrument SDKs (pyvisa, nidaqmx, ...)
-pip install -e ".[dev]"         # test tooling (pytest, pytest-cov, coverage, httpx)
+pip install -e ".[dev]"         # test tooling + [server] (needed to run the suite)
 pip install -e ".[all]"         # everything
 
 # Run (console script `monet` and `python -m monet` are equivalent)

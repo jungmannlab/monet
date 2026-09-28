@@ -89,6 +89,11 @@ hardware = [
 # pre-commit hook (see .pre-commit-config.yaml) agree; flake8 reads its config
 # from [tool.flake8] below via the Flake8-pyproject plugin.
 dev = [
+    # The test suite imports the FastAPI server (test_server / test_power_api /
+    # test_io_http / the create_app path), so the dev env must include [server]
+    # — otherwise `pip install -e ".[dev]"` collects tests that can't import
+    # fastapi. httpx below is FastAPI's TestClient transport.
+    "monet[server]",
     "pytest>=7.0",
     "pytest-cov>=4.0",
     "coverage>=7.10",
