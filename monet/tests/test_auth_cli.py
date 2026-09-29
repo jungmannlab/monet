@@ -16,11 +16,14 @@ from monet import authcheck
 
 
 class _FakeResp:
-    def __init__(self, status_code, json_body=None):
+    def __init__(self, status_code, json_body=None, json_raises=False):
         self.status_code = status_code
         self._json = json_body or {}
+        self._json_raises = json_raises
 
     def json(self):
+        if self._json_raises:
+            raise ValueError("not JSON")
         return self._json
 
 
@@ -85,6 +88,49 @@ class TestCheckServerAuth(unittest.TestCase):
         self.assertFalse(r["reachable"])
         self.assertIn("unreachable", r["detail"])
 
+    def test_non_json_200_does_not_raise(self):
+        os.environ["PAINT_MONET_TOKEN"] = "tok"
+
+        def fake_get(url, **kw):
+            if url.endswith("/health"):
+                return _FakeResp(200)
+            if url.endswith("/auth/whoami"):
+                return _FakeResp(200, json_raises=True)  # proxy HTML page
+            raise AssertionError("unexpected url " + url)
+
+        with mock.patch.object(mio.requests, "get", side_effect=fake_get):
+            r = mio.check_server_auth("http://server:8000")  # must not raise
+        self.assertFalse(r["ok"])
+        self.assertIn("not JSON", r["detail"])
+
+    def test_request_exception_reported_not_raised(self):
+        def fake_get(url, **kw):
+            raise mio.requests.exceptions.SSLError("bad cert")
+
+        with mock.patch.object(mio.requests, "get", side_effect=fake_get):
+            r = mio.check_server_auth("https://server:8000")
+        self.assertFalse(r["reachable"])
+        self.assertFalse(r["ok"])
+
+    def test_fallback_indeterminate_on_404_power(self):
+        os.environ["PAINT_MONET_TOKEN"] = "tok"
+
+        def fake_get(url, **kw):
+            if url.endswith("/health"):
+                return _FakeResp(200)
+            if url.endswith("/auth/whoami"):
+                return _FakeResp(404)
+            if "/power" in url:
+                return _FakeResp(404)  # not a monet server / route missing
+            raise AssertionError("unexpected url " + url)
+
+        with mock.patch.object(mio.requests, "get", side_effect=fake_get):
+            r = mio.check_server_auth("http://server:8000")
+        # 404 on the fallback route is indeterminate, not a green verdict
+        self.assertFalse(r["authenticated"])
+        self.assertFalse(r["ok"])
+        self.assertIn("could not determine", r["detail"])
+
     def test_fallback_old_server_token_accepted(self):
         os.environ["PAINT_MONET_TOKEN"] = "tok"
 
@@ -124,6 +170,7 @@ class TestAuthCli(unittest.TestCase):
             "auth_enabled": True,
             "label": "skylab",
             "scope": "write",
+            "ok": True,
             "detail": "ok",
         }
         with mock.patch("monet.io.check_server_auth", return_value=good):
@@ -140,6 +187,7 @@ class TestAuthCli(unittest.TestCase):
             "auth_enabled": True,
             "label": None,
             "scope": None,
+            "ok": False,
             "detail": "401",
         }
         with mock.patch("monet.io.check_server_auth", return_value=bad):

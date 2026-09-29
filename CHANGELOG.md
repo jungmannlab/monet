@@ -23,6 +23,8 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
   without it, `auth test` falls back to a read-scoped route to still report
   accepted/rejected (label unavailable until the server is upgraded).
 
+## [0.4.2] - 2026-09-29
+
 ### Added
 - **systemd deployment template, setup script + docs.** `deploy/monet.service`
   (a unit template for running the DB-only calibration server as a managed

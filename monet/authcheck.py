@@ -30,10 +30,10 @@ def _resolve_url(name, url):
                 "unknown microscope {!r}; pass --url, or use a name present "
                 "in the config.".format(name)
             )
+        from monet.io import _is_server_url
+
         db = cfg.get("database") if isinstance(cfg, dict) else None
-        if not (
-            isinstance(db, str) and db.startswith(("http://", "https://"))
-        ):
+        if not (isinstance(db, str) and _is_server_url(db)):
             raise SystemExit(
                 "microscope {!r} has no server URL in its 'database' entry "
                 "(got {!r}); pass --url instead.".format(name, db)
@@ -57,7 +57,7 @@ def _print_report(r):
                 "enabled" if r["auth_enabled"] else "disabled"
             )
         )
-    ok = r["authenticated"] or r["auth_enabled"] is False
+    ok = r["ok"]
     print("Authenticated: {} — {}".format("YES" if ok else "NO", r["detail"]))
     if r["label"]:
         print("Token label:   {}".format(r["label"]))
@@ -70,8 +70,7 @@ def _auth_test(name, url):
     result = io.check_server_auth(_resolve_url(name, url))
     _print_report(result)
     # Exit 0 when the server accepted us (or auth is disabled); else 1.
-    ok = result["authenticated"] or result["auth_enabled"] is False
-    return 0 if ok else 1
+    return 0 if result["ok"] else 1
 
 
 def auth_cli(argv):

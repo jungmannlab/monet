@@ -87,9 +87,10 @@ def check_server_auth(server_url, timeout=10):
     ``set`` / the GUI would send. Hits ``GET /health`` (reachability) then
     ``GET /auth/whoami`` (auth + the token's server-side ``(scope, label)``).
 
-    Returns a dict with: ``reachable``, ``health_status``, ``token_present``,
-    ``whoami_status``, ``authenticated``, ``auth_enabled``, ``label``,
-    ``scope``, and a human-readable ``detail``. Never raises on a network or
+    Returns a dict with: ``server_url``, ``reachable``, ``health_status``,
+    ``token_present``, ``whoami_status``, ``authenticated``, ``auth_enabled``,
+    ``label``, ``scope``, ``ok`` (the accept verdict — authenticated, or auth
+    disabled), and a human-readable ``detail``. Never raises on a network or
     HTTP error — the failure is reported in the dict.
     """
     server_url = server_url.rstrip("/")
@@ -103,15 +104,25 @@ def check_server_auth(server_url, timeout=10):
         "auth_enabled": None,
         "label": None,
         "scope": None,
+        "ok": False,
         "detail": "",
     }
+
+    def _finish():
+        # Single source of truth for the accept verdict: a valid token, or a
+        # server that isn't enforcing auth at all.
+        result["ok"] = (
+            result["authenticated"] or result["auth_enabled"] is False
+        )
+        return result
+
     try:
         h = requests.get(f"{server_url}/health", timeout=timeout)
         result["reachable"] = True
         result["health_status"] = h.status_code
-    except _CONNECTION_ERRORS as exc:
+    except requests.exceptions.RequestException as exc:
         result["detail"] = f"server unreachable: {exc}"
-        return result
+        return _finish()
 
     try:
         w = requests.get(
@@ -119,13 +130,20 @@ def check_server_auth(server_url, timeout=10):
             headers=_auth_headers(),
             timeout=timeout,
         )
-    except _CONNECTION_ERRORS as exc:
-        result["detail"] = f"server unreachable during whoami: {exc}"
-        return result
+    except requests.exceptions.RequestException as exc:
+        result["detail"] = f"could not reach /auth/whoami: {exc}"
+        return _finish()
 
     result["whoami_status"] = w.status_code
     if w.status_code == 200:
-        body = w.json()
+        try:
+            body = w.json()
+        except ValueError:
+            result["detail"] = (
+                "200 from /auth/whoami but the body was not JSON — is a proxy "
+                "or a different service answering on this URL?"
+            )
+            return _finish()
         result["authenticated"] = bool(body.get("authenticated"))
         result["auth_enabled"] = body.get("auth_enabled")
         result["label"] = body.get("label")
@@ -141,8 +159,9 @@ def check_server_auth(server_url, timeout=10):
     elif w.status_code == 401:
         result["auth_enabled"] = True
         result["detail"] = (
-            "401 — token missing or invalid; the server enforces auth. Set "
-            "PAINT_MONET_TOKEN to a token the server accepts."
+            "401 — token missing or invalid (or the server is refusing an "
+            "off-box unauthenticated request). Set PAINT_MONET_TOKEN to a "
+            "token the server accepts."
         )
     elif w.status_code == 403:
         result["auth_enabled"] = True
@@ -159,16 +178,18 @@ def check_server_auth(server_url, timeout=10):
         result["detail"] = "unexpected status {} from /auth/whoami".format(
             w.status_code
         )
-    return result
+    return _finish()
 
 
 def _auth_test_fallback(server_url, timeout):
     """For a server too old to have /auth/whoami: probe a read-scoped route.
 
-    ``GET /power`` is read-scoped and returns 401 when the token is rejected,
-    or 503/200 once auth has passed (503 = DB-only server, no instrument) — so
-    anything other than 401/403 means the token is accepted. Returns
-    ``(accepted, detail)`` where ``accepted`` is True/False/None.
+    ``GET /power`` is read-scoped, so 401/403 mean the token was rejected,
+    while a status only the route handler produces (200/409/422/503) means
+    auth passed. A 404 or 5xx does not imply the auth dependency ran (the
+    route may be missing / it may not be a monet server), so it is reported as
+    indeterminate. Returns ``(accepted, detail)`` where ``accepted`` is
+    True / False / None (None = indeterminate).
     """
     try:
         r = requests.get(
@@ -176,21 +197,16 @@ def _auth_test_fallback(server_url, timeout):
             headers=_auth_headers(),
             timeout=timeout,
         )
-    except _CONNECTION_ERRORS as exc:
-        return None, f"server unreachable during fallback probe: {exc}"
-    if r.status_code == 401:
-        return False, (
-            "server has no /auth/whoami (upgrade it for the token label); "
-            "token was REJECTED (401)"
-        )
-    if r.status_code == 403:
-        return False, (
-            "server has no /auth/whoami (upgrade it); token valid but wrong "
-            "scope (403)"
-        )
-    return True, (
-        "server has no /auth/whoami (upgrade it to see the token label); "
-        "token ACCEPTED (status {})".format(r.status_code)
+    except requests.exceptions.RequestException as exc:
+        return None, f"could not reach the fallback probe route: {exc}"
+    note = "server has no /auth/whoami (upgrade it to see the token label); "
+    if r.status_code in (401, 403):
+        return False, note + "token was REJECTED ({})".format(r.status_code)
+    if r.status_code in (200, 409, 422, 503):
+        return True, note + "token ACCEPTED (status {})".format(r.status_code)
+    return None, note + (
+        "could not determine auth (status {} — the probe route may be "
+        "missing on this server)".format(r.status_code)
     )
 
 
