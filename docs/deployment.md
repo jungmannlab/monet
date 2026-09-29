@@ -22,6 +22,17 @@ sudo bash deploy/setup-server.sh
 sudo GIT_REF=v0.4.0 MONET_HOST=127.0.0.1 bash deploy/setup-server.sh
 ```
 
+Prerequisites: `git` and **Python ≥3.10** with `venv`. On Ubuntu 20.04 the
+system `python3` is 3.8 (too old) — install a newer one via deadsnakes:
+
+```bash
+sudo add-apt-repository -y ppa:deadsnakes/ppa
+sudo apt update && sudo apt install -y python3.10 python3.10-venv git
+```
+
+The script auto-detects `python3.10/3.11/3.12`; override with `PYTHON=…` (but
+not an interpreter under `/root` — the service user can't read it).
+
 The manual steps below are what the script automates, for when you want to
 understand or customise them.
 

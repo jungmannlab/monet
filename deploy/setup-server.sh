@@ -63,9 +63,40 @@ else
   git -C "$SRC_DIR" checkout --quiet "$GIT_REF"
 fi
 
-if [ ! -x "$VENV_DIR/bin/python" ]; then
-  log "creating venv $VENV_DIR"
-  "$PYTHON" -m venv "$VENV_DIR"
+# monet needs Python >=3.10. Auto-detect one (or honour $PYTHON); the system
+# python3 on older distros (e.g. Ubuntu 20.04 = 3.8) is too old.
+pick_python() {
+  local c
+  for c in "${PYTHON:-}" python3.12 python3.11 python3.10; do
+    [ -n "$c" ] || continue
+    command -v "$c" >/dev/null 2>&1 || continue
+    if "$c" -c 'import sys;raise SystemExit(0 if sys.version_info[:2]>=(3,10) else 1)' 2>/dev/null; then
+      command -v "$c"; return 0
+    fi
+  done
+  return 1
+}
+PYBIN="$(pick_python)" || {
+  cat >&2 <<'MSG'
+ERROR: monet needs Python >=3.10 and none was found.
+On Ubuntu 20.04 (focal), install one via deadsnakes:
+  sudo add-apt-repository -y ppa:deadsnakes/ppa
+  sudo apt update && sudo apt install -y python3.10 python3.10-venv
+Then re-run. Or pass a 3.10+ interpreter: PYTHON=/path/to/python3.10 bash deploy/setup-server.sh
+(it must NOT be under /root — the service user cannot read /root).
+MSG
+  exit 1
+}
+case "$PYBIN" in
+  /root/*) echo "WARNING: $PYBIN is under /root; the '$MONET_USER' user cannot read it — the service will fail. Use a system python3.10." >&2 ;;
+esac
+
+# Recreate the venv if it is missing OR incomplete (a failed ensurepip leaves a
+# bin/python but no bin/pip).
+if [ ! -x "$VENV_DIR/bin/pip" ]; then
+  log "creating venv $VENV_DIR from $PYBIN ($("$PYBIN" -V 2>&1))"
+  rm -rf "$VENV_DIR"
+  "$PYBIN" -m venv "$VENV_DIR"
 fi
 log "installing monet[server] into the venv"
 "$VENV_DIR/bin/pip" install --quiet --upgrade pip
