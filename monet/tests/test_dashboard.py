@@ -183,5 +183,72 @@ class TestDashboard(unittest.TestCase):
         self.assertEqual(records[0]["device_name"], "ScopeA")
 
 
+class TestDashboardAuth(unittest.TestCase):
+    """The dashboard data routes require a token when the server enforces auth;
+    the HTML shell stays public so the login UI can load."""
+
+    def _client(self, auth):
+        import shutil
+
+        self.tmpdir = tempfile.mkdtemp()
+        os.environ["MONET_DB_PATH"] = os.path.join(self.tmpdir, "test.db")
+        os.environ.pop("PAINT_MONET_TOKENS", None)
+        from monet.server import create_app
+
+        client = TestClient(create_app(auth=auth))
+        client.__enter__()
+        self.addCleanup(client.__exit__, None, None, None)
+        self.addCleanup(lambda: shutil.rmtree(self.tmpdir, ignore_errors=True))
+        return client
+
+    def test_html_shell_is_public(self):
+        from monet.serviceauth import AuthConfig, TokenInfo
+
+        client = self._client(
+            AuthConfig({"r": TokenInfo(scope="read", label="viewer")})
+        )
+        # The page must load without a token so the login UI can render.
+        self.assertEqual(client.get("/dashboard/").status_code, 200)
+
+    def test_data_routes_require_read_token(self):
+        from monet.serviceauth import AuthConfig, TokenInfo
+
+        client = self._client(
+            AuthConfig({"r": TokenInfo(scope="read", label="viewer")})
+        )
+        # no token -> 401 on every data route
+        self.assertEqual(client.get("/dashboard/api/filters").status_code, 401)
+        self.assertEqual(
+            client.post("/dashboard/api/timeseries", json={}).status_code, 401
+        )
+        self.assertEqual(
+            client.get("/dashboard/api/transmission_objectives").status_code,
+            401,
+        )
+        # read token -> 200
+        h = {"Authorization": "Bearer r"}
+        self.assertEqual(
+            client.get("/dashboard/api/filters", headers=h).status_code, 200
+        )
+        self.assertEqual(
+            client.post(
+                "/dashboard/api/timeseries", json={}, headers=h
+            ).status_code,
+            200,
+        )
+        self.assertEqual(
+            client.get(
+                "/dashboard/api/transmission_objectives", headers=h
+            ).status_code,
+            200,
+        )
+
+    def test_auth_disabled_needs_no_token(self):
+        from monet.serviceauth import AuthConfig
+
+        client = self._client(AuthConfig({}))  # disabled (loopback dev)
+        self.assertEqual(client.get("/dashboard/api/filters").status_code, 200)
+
+
 if __name__ == "__main__":
     unittest.main()

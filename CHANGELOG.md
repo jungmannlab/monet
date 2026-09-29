@@ -10,6 +10,19 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
+### Security
+- **The web dashboard now requires a token to view and edit.** Its data routes
+  (`/dashboard/api/filters`, `/timeseries`, `/transmission_objectives`) are now
+  `read`-scoped, and edits already go through the `write`-scoped main API — so a
+  browser needs a valid token to see any data and a `write` token to delete.
+  The HTML shell (`GET /dashboard/`) stays public so a small **login prompt** can
+  load; the page collects the token, keeps it in `localStorage`, sends it as
+  `Authorization: Bearer` on every request, re-prompts on 401, shows the signed-in
+  `label`/`scope` (via `/auth/whoami`), and greys the delete controls for a
+  read-only token. On an auth-disabled loopback server nothing changes (no login).
+  Previously the dashboard was unauthenticated and relied on a reverse proxy
+  (ADR-001); it is now self-authenticating too.
+
 ### Added
 - **`monet auth test` CLI + `GET /auth/whoami`.** A client-side command to
   verify a rig can authenticate to a monet server and see the `(scope, label)`

@@ -13,7 +13,7 @@ to avoid circular-import issues).
 import json
 from typing import List, Optional
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -22,8 +22,18 @@ from sqlalchemy import select
 # load time (server.py imports this module at its very bottom).
 import monet.server as _server  # noqa: E402
 from monet.models import Calibration, Factor
+from monet.serviceauth import require_scope
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
+
+# The dashboard's data routes are `read`-scoped: the browser sends the bearer
+# token (from localStorage) that the page's JS collected at its login prompt.
+# GET /dashboard/ (the HTML shell) stays public so the login UI can load; the
+# data only comes back with a valid token. Edits go through the main API's
+# write-scoped routes (e.g. POST /calibrations/delete), so a read token can
+# view but not edit. On an auth-disabled loopback server require_scope returns
+# None, so zero-config dev is unchanged.
+_READ = [Depends(require_scope("read"))]
 
 
 # ── Pydantic schema ────────────────────────────────────────────────────────────
@@ -40,7 +50,7 @@ class TimeseriesRequest(BaseModel):
 # ── API endpoints ──────────────────────────────────────────────────────────────
 
 
-@router.get("/api/filters")
+@router.get("/api/filters", dependencies=_READ)
 def get_filters():
     """Return unique filter values and date range for sidebar population."""
     with _server._get_session() as session:
@@ -68,7 +78,7 @@ def get_filters():
     }
 
 
-@router.get("/api/transmission_objectives")
+@router.get("/api/transmission_objectives", dependencies=_READ)
 def get_transmission_objectives(device: str = None):
     """Return all transmission_objective factor records, optionally filtered by device."""
     with _server._get_session() as session:
@@ -91,7 +101,7 @@ def get_transmission_objectives(device: str = None):
     ]
 
 
-@router.post("/api/timeseries")
+@router.post("/api/timeseries", dependencies=_READ)
 def get_timeseries(req: TimeseriesRequest):
     """Return filtered calibration records for the dashboard charts."""
     with _server._get_session() as session:
@@ -182,6 +192,18 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
     .plotly-chart { min-height: 160px; }
     #db-table-wrap table { font-size: 0.8rem; }
     #db-table-wrap tr.selected { background: #fff3cd !important; }
+    #login-overlay {
+      display: none; position: fixed; top: 0; left: 0;
+      width: 100%; height: 100%; background: rgba(0,0,0,0.45);
+      z-index: 10000; align-items: center; justify-content: center;
+    }
+    #login-card {
+      background: #fff; border-radius: 8px; padding: 1.5rem;
+      width: 360px; max-width: 92vw; box-shadow: 0 6px 24px rgba(0,0,0,0.2);
+    }
+    #login-error { color: #dc3545; min-height: 1.2em; }
+    #auth-bar { font-size: 0.75rem; }
+    button[disabled] { opacity: 0.5; cursor: not-allowed; }
   </style>
 </head>
 <body>
@@ -193,11 +215,28 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
   </div>
 </div>
 
+<!-- Login overlay (shown when the server requires a token) -->
+<div id="login-overlay">
+  <div id="login-card">
+    <h6 class="fw-bold mb-2 text-primary">Monet Dashboard — sign in</h6>
+    <p class="small text-muted mb-2">
+      This server requires a token. Paste a monet token
+      (a <code>read</code> token can view; a <code>write</code> token can also
+      edit). Get one from the server admin (<code>monet token add</code>).
+    </p>
+    <input type="password" id="login-token" class="form-control form-control-sm mb-2"
+           placeholder="paste token" onkeydown="if(event.key==='Enter')doLogin()">
+    <div id="login-error" class="small mb-2"></div>
+    <button class="btn btn-primary btn-sm w-100" onclick="doLogin()">Sign in</button>
+  </div>
+</div>
+
 <div class="d-flex" style="height:100vh;">
 
   <!-- ── Sidebar ──────────────────────────────────────────────────────────── -->
   <div id="sidebar">
-    <h6 class="fw-bold mb-3 text-primary">Monet Dashboard</h6>
+    <h6 class="fw-bold mb-1 text-primary">Monet Dashboard</h6>
+    <div id="auth-bar" class="text-muted mb-2" style="display:none;"></div>
 
     <label class="form-label small fw-semibold mb-1">Microscopes</label>
     <div class="d-flex gap-1 mb-1">
@@ -276,9 +315,9 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
                  onchange="toggleSelectAll(this.checked)">
           <label class="form-check-label small" for="select-all-cb">Select all</label>
         </div>
-        <button class="btn btn-sm btn-outline-danger"
+        <button id="btn-del-selected" class="btn btn-sm btn-outline-danger"
                 onclick="deleteSelected()">Delete selected</button>
-        <button class="btn btn-sm btn-danger"
+        <button id="btn-del-all" class="btn btn-sm btn-danger"
                 onclick="deleteAllInView()">Delete all in view</button>
         <span id="db-table-status" class="small text-muted ms-2"></span>
       </div>
@@ -290,6 +329,127 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
 
 <script>
 'use strict';
+
+// ── Authentication (bearer token kept in localStorage) ────────────────────────
+// The browser can't send a bearer header on navigation, so GET /dashboard/ is
+// public and the token is collected here: read from localStorage, sent on every
+// data request, and (re)prompted whenever the server answers 401. `read` views,
+// `write` also edits. When the server has auth disabled (loopback dev), whoami
+// reports authenticated=false and no login is required.
+const TOKEN_KEY = 'monet_dashboard_token';
+let AUTH = {
+  token: localStorage.getItem(TOKEN_KEY) || '',
+  scope: null, label: null, enforced: false,
+};
+let CAN_EDIT = true;  // recomputed by applyScope() once the scope is known
+
+function authHeaders(extra) {
+  const h = Object.assign({}, extra || {});
+  if (AUTH.token) h['Authorization'] = 'Bearer ' + AUTH.token;
+  return h;
+}
+
+async function authedFetch(url, opts) {
+  opts = opts || {};
+  opts.headers = authHeaders(opts.headers);
+  const res = await fetch(url, opts);
+  if (res.status === 401) {
+    showLogin('Your token was rejected. Paste a valid token to continue.');
+    throw new Error('unauthorized');
+  }
+  return res;
+}
+
+function showLogin(msg) {
+  document.getElementById('login-error').textContent = msg || '';
+  document.getElementById('login-overlay').style.display = 'flex';
+  const inp = document.getElementById('login-token');
+  inp.value = '';
+  inp.focus();
+}
+function hideLogin() {
+  document.getElementById('login-overlay').style.display = 'none';
+}
+
+async function doLogin() {
+  const token = document.getElementById('login-token').value.trim();
+  if (!token) {
+    document.getElementById('login-error').textContent = 'Enter a token.';
+    return;
+  }
+  AUTH.token = token;
+  localStorage.setItem(TOKEN_KEY, token);
+  const ok = await checkAuth();
+  if (ok && AUTH.enforced && !AUTH.scope) {
+    // whoami returned but didn't authenticate us — treat as a bad token.
+    showLogin('That token was not accepted by the server.');
+    return;
+  }
+  hideLogin();
+  await init();
+}
+
+function signOut() {
+  localStorage.removeItem(TOKEN_KEY);
+  AUTH = { token: '', scope: null, label: null, enforced: true };
+  applyScope();
+  updateAuthBar();
+  showLogin('Signed out.');
+}
+
+function updateAuthBar() {
+  const bar = document.getElementById('auth-bar');
+  if (!AUTH.enforced || !AUTH.scope) { bar.style.display = 'none'; return; }
+  bar.style.display = 'block';
+  bar.innerHTML =
+    '\\uD83D\\uDD13 ' + (AUTH.label || '?') + ' (' + AUTH.scope + ') \\u00b7 ' +
+    '<a href="#" onclick="signOut();return false;">Sign out</a>';
+}
+
+function applyScope() {
+  CAN_EDIT = (!AUTH.enforced) || AUTH.scope === 'write';
+  ['btn-del-selected', 'btn-del-all'].forEach(function (id) {
+    const b = document.getElementById(id);
+    if (!b) return;
+    b.disabled = !CAN_EDIT;
+    b.title = CAN_EDIT ? '' : 'Read-only token — editing needs a write token';
+  });
+}
+
+// Returns true if we may proceed (authenticated, or auth disabled); false if a
+// login is required. The data fetches' own 401 handling is the backstop, so a
+// missing/older whoami just falls through to "try, and prompt if refused".
+async function checkAuth() {
+  let res;
+  try {
+    res = await fetch('/auth/whoami', { headers: authHeaders() });
+  } catch (e) {
+    AUTH.enforced = false; applyScope(); return true;
+  }
+  if (res.status === 401) { AUTH.enforced = true; applyScope(); return false; }
+  if (!res.ok) { AUTH.enforced = false; applyScope(); return true; }
+  let body;
+  try { body = await res.json(); } catch (e) {
+    AUTH.enforced = false; applyScope(); return true;
+  }
+  if (body.authenticated) {
+    AUTH.enforced = true; AUTH.scope = body.scope; AUTH.label = body.label;
+  } else {
+    AUTH.enforced = false; AUTH.scope = null; AUTH.label = null;
+  }
+  applyScope();
+  updateAuthBar();
+  return true;
+}
+
+async function boot() {
+  const ok = await checkAuth();
+  if (ok) {
+    await init();
+  } else {
+    showLogin('This dashboard requires a token. Paste your monet token to view.');
+  }
+}
 
 // ── Device color + marker palette (cycles markers when colors repeat) ─────────
 const _DEV_COLORS = [
@@ -360,7 +520,7 @@ function populate(id, values, labelFn, valueFn) {
 async function init() {
   showLoading(true);
   try {
-    const res  = await fetch('/dashboard/api/filters');
+    const res  = await authedFetch('/dashboard/api/filters');
     const data = await res.json();
     populate('sel-devices',     data.devices,      v => v,           v => v);
     populate('sel-wavelengths', data.wavelengths,  v => v + '\\u202fnm', v => v);
@@ -392,7 +552,7 @@ async function update() {
       date_from: document.getElementById('date-from').value || null,
       date_to:   document.getElementById('date-to').value   || null,
     };
-    const res  = await fetch('/dashboard/api/timeseries', {
+    const res  = await authedFetch('/dashboard/api/timeseries', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(body),
@@ -845,12 +1005,17 @@ async function _deleteRecords(recsToDelete) {
   let deleted = 0;
   for (const r of recsToDelete) {
     try {
-      const res = await fetch('/calibrations/delete', {
+      const res = await authedFetch('/calibrations/delete', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify(_recordToDeletePayload(r)),
       });
-      if (res.ok) deleted += (await res.json()).deleted_count || 1;
+      if (res.ok) {
+        deleted += (await res.json()).deleted_count || 1;
+      } else if (res.status === 403) {
+        alert('Your token is read-only — deleting needs a write token.');
+        break;
+      }
     } catch (e) {
       console.error('delete error', e);
     }
@@ -858,7 +1023,16 @@ async function _deleteRecords(recsToDelete) {
   return deleted;
 }
 
+function _requireEdit() {
+  if (!CAN_EDIT) {
+    alert('Read-only token — deleting needs a write token.');
+    return false;
+  }
+  return true;
+}
+
 async function deleteSingle(idx) {
+  if (!_requireEdit()) return;
   const r = _dbTableRecords[idx];
   if (!confirm(
     `Delete this record?\\n${r.device} | ${r.wavelength} nm | ${r.laser_power} mW | ${r.date} ${r.time}`
@@ -871,6 +1045,7 @@ async function deleteSingle(idx) {
 }
 
 async function deleteSelected() {
+  if (!_requireEdit()) return;
   const checked = document.querySelectorAll('#db-main-table .row-cb:checked');
   if (!checked.length) { alert('No rows selected.'); return; }
   const idxs  = Array.from(checked).map(cb => parseInt(cb.closest('tr').dataset.idx));
@@ -884,6 +1059,7 @@ async function deleteSelected() {
 }
 
 async function deleteAllInView() {
+  if (!_requireEdit()) return;
   const n = _dbTableRecords.length;
   if (!n) { alert('No records in the current view.'); return; }
   if (!confirm(`Delete all ${n} record(s) in the current filtered view? This cannot be undone.`))
@@ -904,7 +1080,7 @@ async function renderTransmission() {
 
   let allRecs;
   try {
-    const res = await fetch('/dashboard/api/transmission_objectives');
+    const res = await authedFetch('/dashboard/api/transmission_objectives');
     allRecs = await res.json();
   } catch (err) {
     container.appendChild(emptyMsg('Could not load transmission data: ' + err));
@@ -981,7 +1157,7 @@ async function renderTransmission() {
 }
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
-window.addEventListener('DOMContentLoaded', init);
+window.addEventListener('DOMContentLoaded', boot);
 </script>
 </body>
 </html>"""
