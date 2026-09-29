@@ -22,6 +22,14 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
   read-only token. On an auth-disabled loopback server nothing changes (no login).
   Previously the dashboard was unauthenticated and relied on a reverse proxy
   (ADR-001); it is now self-authenticating too.
+- **Dashboard: escape DB record fields before rendering (stored-XSS fix).** The
+  All-Records / Latest-Calibrations tables interpolated calibration fields
+  (device name, date, parameters) into `innerHTML` unescaped, so a record
+  written via `POST /calibrations` with a device named e.g.
+  `<img src=x onerror=…>` would execute in another viewer's browser — and, now
+  that the dashboard stores a bearer token in `localStorage`, could exfiltrate
+  it. All dynamic fields are now HTML-escaped (`esc()`); chart labels already
+  used `textContent`. A pre-existing sink, hardened here alongside the auth work.
 
 ### Added
 - **`monet auth test` CLI + `GET /auth/whoami`.** A client-side command to

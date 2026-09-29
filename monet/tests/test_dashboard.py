@@ -79,6 +79,20 @@ class TestDashboard(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertIn("text/html", resp.headers["content-type"])
 
+    def test_record_fields_are_html_escaped(self):
+        # Stored-XSS guard: the table renderers must HTML-escape DB record
+        # fields before building innerHTML, so a device named
+        # "<img src=x onerror=...>" (writable via POST /calibrations) cannot
+        # execute in another viewer's browser (and steal the localStorage
+        # token). See esc() in the dashboard JS.
+        from monet.dashboard import _DASHBOARD_HTML as html
+
+        self.assertIn("function esc(", html)
+        self.assertIn("${esc(r.device)}", html)
+        self.assertIn("${esc(r.date)}", html)
+        # the raw, unescaped interpolation must be gone from the tables
+        self.assertNotIn("<td>${r.device}</td>", html)
+
     # ── /dashboard/api/filters ───────────────────────────────────────────
 
     def test_filters_empty(self):

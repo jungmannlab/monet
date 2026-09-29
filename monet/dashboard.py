@@ -403,8 +403,8 @@ function updateAuthBar() {
   if (!AUTH.enforced || !AUTH.scope) { bar.style.display = 'none'; return; }
   bar.style.display = 'block';
   bar.innerHTML =
-    '\\uD83D\\uDD13 ' + (AUTH.label || '?') + ' (' + AUTH.scope + ') \\u00b7 ' +
-    '<a href="#" onclick="signOut();return false;">Sign out</a>';
+    '\\uD83D\\uDD13 ' + esc(AUTH.label || '?') + ' (' + esc(AUTH.scope) + ') ' +
+    '\\u00b7 <a href="#" onclick="signOut();return false;">Sign out</a>';
 }
 
 function applyScope() {
@@ -466,6 +466,22 @@ function deviceStyle(idx) {
   const color  = _DEV_COLORS[idx % n];
   const symbol = _DEV_MARKERS[Math.floor(idx / n) % _DEV_MARKERS.length];
   return { color, symbol };
+}
+
+// HTML-escape a value before interpolating it into an innerHTML string. DB
+// record fields (device name, date, parameters) are written via POST
+// /calibrations, so without this a stored value like a device named
+// "<img src=x onerror=...>" would execute in another viewer's dashboard
+// (stored XSS) — which, since the dashboard keeps a bearer token in
+// localStorage, could exfiltrate that token. Chart labels use textContent (safe)
+// already; the tables below build innerHTML, so escape every dynamic field.
+function esc(v) {
+  return String(v == null ? '' : v)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 // ── Wavelength → color ────────────────────────────────────────────────────────
@@ -891,17 +907,16 @@ function renderLatestTable(records) {
     const mt       = modelType(r.parameters);
     const paramStr = JSON.stringify(r.parameters);
     const shortP   = paramStr.length > 58 ? paramStr.slice(0, 55) + '\\u2026' : paramStr;
-    const safePS   = paramStr.replace(/&/g,'&amp;').replace(/"/g,'&quot;');
 
     const tr = document.createElement('tr');
     tr.innerHTML = `
-      <td>${r.device}</td>
-      <td><span class="wl-dot" style="background:${color}"></span>${r.wavelength}</td>
-      <td>${r.laser_power}</td>
-      <td>${r.date}</td>
-      <td>${r.time}</td>
-      <td><span class="badge bg-secondary">${mt}</span></td>
-      <td class="params-cell" title="${safePS}">${shortP}</td>`;
+      <td>${esc(r.device)}</td>
+      <td><span class="wl-dot" style="background:${color}"></span>${esc(r.wavelength)}</td>
+      <td>${esc(r.laser_power)}</td>
+      <td>${esc(r.date)}</td>
+      <td>${esc(r.time)}</td>
+      <td><span class="badge bg-secondary">${esc(mt)}</span></td>
+      <td class="params-cell" title="${esc(paramStr)}">${esc(shortP)}</td>`;
     tbody.appendChild(tr);
   }
   table.appendChild(tbody);
@@ -950,19 +965,18 @@ function renderDatabaseTable(records) {
         Object.entries(r.parameters).filter(([k]) => k !== 'powermeter_type')
       ));
     const shortP   = paramStr.length > 50 ? paramStr.slice(0, 47) + '\\u2026' : paramStr;
-    const safePS   = paramStr.replace(/&/g,'&amp;').replace(/"/g,'&quot;');
 
     const tr = document.createElement('tr');
     tr.dataset.idx = i;
     tr.innerHTML = `
       <td><input type="checkbox" class="row-cb" onchange="onRowCbChange()"></td>
-      <td>${r.device}</td>
-      <td><span class="wl-dot" style="background:${color}"></span>${r.wavelength}</td>
-      <td>${r.laser_power}</td>
-      <td>${r.date}</td>
-      <td>${r.time}</td>
-      <td><span class="badge bg-secondary">${pmType}</span></td>
-      <td class="params-cell" title="${safePS}">${shortP}</td>
+      <td>${esc(r.device)}</td>
+      <td><span class="wl-dot" style="background:${color}"></span>${esc(r.wavelength)}</td>
+      <td>${esc(r.laser_power)}</td>
+      <td>${esc(r.date)}</td>
+      <td>${esc(r.time)}</td>
+      <td><span class="badge bg-secondary">${esc(pmType)}</span></td>
+      <td class="params-cell" title="${esc(paramStr)}">${esc(shortP)}</td>
       <td><button class="btn btn-outline-danger btn-sm py-0 px-1"
             onclick="deleteSingle(${i})">✕</button></td>`;
     tbody.appendChild(tr);
