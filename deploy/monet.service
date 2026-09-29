@@ -1,0 +1,54 @@
+# monet calibration server — systemd unit template.
+#
+# Copy to /etc/systemd/system/monet.service, edit the marked values, then:
+#   sudo systemctl daemon-reload && sudo systemctl enable --now monet
+# See docs/deployment.md for the full walkthrough (user, env file, tokens).
+#
+# This template models the DB-only calibration server (no microscope name, no
+# hardware) running as a dedicated `monet` system user. For an instrument
+# server that actuates lasers, add the microscope name to ExecStart and run it
+# on the rig PC — see docs/deployment.md.
+
+[Unit]
+Description=monet calibration server (DB-only)
+Documentation=https://github.com/jungmannlab/monet
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Dedicated system account (see docs/deployment.md). If you instead run as root
+# with a conda/venv under /root, set User=root/Group=root AND remove the
+# ProtectHome line below — ProtectHome=true hides /root and the service could
+# not exec its interpreter.
+User=monet
+Group=monet
+
+# monet opens ./monet.log (a RELATIVE path) at import, and some paths use
+# $HOME/.monet — so keep CWD and HOME on a writable, service-owned dir.
+# Without WorkingDirectory, CWD is / and the log write fails under
+# ProtectSystem=strict (OSError: Read-only file system: '/monet.log').
+WorkingDirectory=/var/lib/monet
+Environment=HOME=/var/lib/monet
+
+# Tokens + per-machine settings. Point `monet token --env-file` at this same
+# file. The leading '-' makes a missing file non-fatal (auth stays disabled
+# until you add tokens). SIGHUP does NOT reload a systemd EnvironmentFile —
+# `systemctl restart monet` to apply token changes.
+EnvironmentFile=-/var/lib/monet/monet.env
+
+# Edit the venv path, host/port, and db-path for your box.
+ExecStart=/opt/monet/.venv/bin/monet serve --host 0.0.0.0 --port 8000 --db-path /var/lib/monet/calibrations.db
+
+Restart=on-failure
+RestartSec=2
+
+# Hardening.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/monet
+
+[Install]
+WantedBy=multi-user.target
