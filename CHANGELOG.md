@@ -10,6 +10,8 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-09-29
+
 ### Fixed
 - **`import monet` no longer crashes from an unwritable working directory.**
   `config_logger()` opened `monet.log` (a relative path) at import and raised
