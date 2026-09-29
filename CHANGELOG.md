@@ -10,6 +10,8 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-09-29
+
 ### Added
 - **systemd deployment template, setup script + docs.** `deploy/monet.service`
   (a unit template for running the DB-only calibration server as a managed
