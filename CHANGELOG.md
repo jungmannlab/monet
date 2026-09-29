@@ -10,6 +10,13 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
+### Added
+- **systemd deployment template + docs.** `deploy/monet.service` (a unit
+  template for running the DB-only calibration server as a managed service) and
+  `docs/deployment.md` (dedicated service user, `EnvironmentFile` tokens under
+  `/var/lib/monet`, stop/restart, and troubleshooting for `217/USER` /
+  `203/EXEC` / the `ProtectHome`-vs-`/root` interpreter gotcha).
+
 ### Changed
 - **Auto-home the attenuator at startup.** `IlluminationControl` now homes the
   attenuator once when the control is constructed (new `auto_home=True` flag,
