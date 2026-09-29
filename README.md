@@ -174,9 +174,13 @@ so both DNA-PAINT services share one audited implementation.
   (startup guard) and any non-loopback request (request-time net). Loopback dev
   stays zero-config.
 - **TLS:** terminate TLS at a reverse proxy (Caddy/nginx) or run uvicorn with
-  `--ssl-keyfile`/`--ssl-certfile`; put the browser **dashboard** behind the same
-  proxy with HTTP Basic / lab SSO (the dashboard is not bearer-guarded, per
-  ADR-001). Do not expose plain HTTP off-box.
+  `--ssl-keyfile`/`--ssl-certfile`. Do not expose plain HTTP off-box.
+- **Dashboard:** the browser dashboard (`/dashboard/`) is **bearer-guarded** —
+  when auth is enabled it shows a login prompt, and you paste a token (a `read`
+  token views; a `write` token also deletes). The token is kept in the browser's
+  `localStorage` and sent as `Authorization: Bearer` on each request; sign out
+  clears it. You may still add a reverse-proxy layer (HTTP Basic / lab SSO) in
+  front, per ADR-001.
 
 #### Creating, storing & rotating tokens
 
@@ -206,6 +210,17 @@ Tokens are read at startup. To apply a change, restart `serve` — or, on Unix,
 Give each machine/role its **own** label so it can be rotated/revoked
 independently; the
 `label` is what attributes writes in the logs.
+
+**Verify from a client — `monet auth test`.** On a rig whose `.env` has
+`PAINT_MONET_TOKEN`, check the whole chain (reachability + auth) and see the
+label/scope the server knows the token by:
+
+```bash
+monet auth test --url http://<server>:8000   # or: monet auth test <MicroscopeName>
+# -> Authenticated: YES — 'microscope-mercury' (scope: write)
+```
+
+Exit code is 0 when the server accepts the token (or auth is off), 1 otherwise.
 
 **By hand** (equivalent): a token is just a high-entropy string that must not
 contain `:` `,` `;` or a newline (the map's separators):
@@ -340,7 +355,9 @@ When running in server mode, monet exposes these HTTP endpoints:
 | `/laser/set` | POST | `write` | Enable/disable one laser's emission. Requires `serve <Name>` |
 | `/laser/off` | POST | `write` | Disable ALL lasers (fail-safe, A10/C21). Requires `serve <Name>` |
 | `/laser` | GET | `read` | Per-laser enabled state + current laser. Requires `serve <Name>` |
-| `/dashboard` | GET | proxy | Browser dashboard (guard at the reverse proxy, not by bearer token) |
+| `/dashboard/` | GET | public | Browser dashboard HTML shell (public so the login UI loads) |
+| `/dashboard/api/*` | GET/POST | `read` | Dashboard data (bearer token via the page's login) |
+| `/auth/whoami` | GET | `read` | Report the caller's token `(label, scope)` — used by `monet auth test` and the dashboard login |
 | `/health` | GET | public | Health check |
 
 Scopes are enforced only when `PAINT_MONET_TOKENS` is set; see [Authentication](#authentication).
