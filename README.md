@@ -174,9 +174,13 @@ so both DNA-PAINT services share one audited implementation.
   (startup guard) and any non-loopback request (request-time net). Loopback dev
   stays zero-config.
 - **TLS:** terminate TLS at a reverse proxy (Caddy/nginx) or run uvicorn with
-  `--ssl-keyfile`/`--ssl-certfile`; put the browser **dashboard** behind the same
-  proxy with HTTP Basic / lab SSO (the dashboard is not bearer-guarded, per
-  ADR-001). Do not expose plain HTTP off-box.
+  `--ssl-keyfile`/`--ssl-certfile`. Do not expose plain HTTP off-box.
+- **Dashboard:** the browser dashboard (`/dashboard/`) is **bearer-guarded** —
+  when auth is enabled it shows a login prompt, and you paste a token (a `read`
+  token views; a `write` token also deletes). The token is kept in the browser's
+  `localStorage` and sent as `Authorization: Bearer` on each request; sign out
+  clears it. You may still add a reverse-proxy layer (HTTP Basic / lab SSO) in
+  front, per ADR-001.
 
 #### Creating, storing & rotating tokens
 
@@ -351,7 +355,9 @@ When running in server mode, monet exposes these HTTP endpoints:
 | `/laser/set` | POST | `write` | Enable/disable one laser's emission. Requires `serve <Name>` |
 | `/laser/off` | POST | `write` | Disable ALL lasers (fail-safe, A10/C21). Requires `serve <Name>` |
 | `/laser` | GET | `read` | Per-laser enabled state + current laser. Requires `serve <Name>` |
-| `/dashboard` | GET | proxy | Browser dashboard (guard at the reverse proxy, not by bearer token) |
+| `/dashboard/` | GET | public | Browser dashboard HTML shell (public so the login UI loads) |
+| `/dashboard/api/*` | GET/POST | `read` | Dashboard data (bearer token via the page's login) |
+| `/auth/whoami` | GET | `read` | Report the caller's token `(label, scope)` — used by `monet auth test` and the dashboard login |
 | `/health` | GET | public | Health check |
 
 Scopes are enforced only when `PAINT_MONET_TOKENS` is set; see [Authentication](#authentication).

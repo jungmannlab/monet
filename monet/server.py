@@ -805,9 +805,12 @@ def create_app(
             scope=token_info.scope,
         )
 
-    # Dashboard UI — imported here to avoid circular-import issues. Browser
-    # access is guarded at the reverse proxy (HTTP Basic / lab SSO per ADR-001),
-    # not by bearer tokens, so the router is mounted as-is.
+    # Dashboard UI — imported here to avoid circular-import issues. The HTML
+    # shell (GET /dashboard/) is public so its login UI can load; the data
+    # routes (/dashboard/api/*) are `read`-scoped and edits go through the
+    # write-scoped main API, so a token is required to view and to edit (the
+    # page's JS sends the bearer it collected at login). A reverse proxy may
+    # still add its own layer (HTTP Basic / SSO per ADR-001).
     from monet import dashboard as _dashboard_module
 
     app.include_router(_dashboard_module.router)
