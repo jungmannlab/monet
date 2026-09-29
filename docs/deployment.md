@@ -9,6 +9,22 @@ analogous to the picasso-registry service). For the **instrument** server
 
 A committed unit template lives at [`deploy/monet.service`](../deploy/monet.service).
 
+## Quick start (scripted)
+
+[`deploy/setup-server.sh`](../deploy/setup-server.sh) does the whole
+dedicated-user install below in one shot — creates the `monet` user, installs a
+venv under `/opt/monet`, preserves any existing token file and calibration DB,
+writes the unit, and starts it. Safe to re-run.
+
+```bash
+sudo bash deploy/setup-server.sh
+# override defaults via env, e.g.:
+sudo GIT_REF=v0.4.0 MONET_HOST=127.0.0.1 bash deploy/setup-server.sh
+```
+
+The manual steps below are what the script automates, for when you want to
+understand or customise them.
+
 ## 1. Dedicated service user
 
 Run the service as a locked-down system account, not root:
@@ -96,6 +112,7 @@ kill <PID>                       # graceful; kill -9 if it refuses
 |---|---|---|
 | `status=217/USER` | `User=`/`Group=` names a non-existent account, or the unit was edited without `daemon-reload` | create the user (step 1), or fix `User=`, then `sudo systemctl daemon-reload` |
 | `status=203/EXEC` | interpreter path wrong, **or** `ProtectHome=true` while the venv is under `/root` | fix the `ExecStart` path; if under `/root`, run as root and remove `ProtectHome` (see below), or relocate to `/opt` |
+| `status=1/FAILURE` + `OSError: Read-only file system: '/monet.log'` | monet opens `./monet.log` (relative) at import; with no `WorkingDirectory` the CWD is `/`, read-only under `ProtectSystem=strict` | set `WorkingDirectory=/var/lib/monet` (writable + in `ReadWritePaths`); the template and script already do this |
 | Fails to start, no obvious error | missing non-optional `EnvironmentFile` | prefix with `-` (`EnvironmentFile=-/var/lib/monet/monet.env`) or create the file |
 | `refusing to bind non-loopback host … without auth` | `--host 0.0.0.0` with no tokens configured | add a token (step 3), or bind `127.0.0.1` |
 

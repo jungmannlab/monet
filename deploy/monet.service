@@ -24,6 +24,13 @@ Type=simple
 User=monet
 Group=monet
 
+# monet opens ./monet.log (a RELATIVE path) at import, and some paths use
+# $HOME/.monet — so keep CWD and HOME on a writable, service-owned dir.
+# Without WorkingDirectory, CWD is / and the log write fails under
+# ProtectSystem=strict (OSError: Read-only file system: '/monet.log').
+WorkingDirectory=/var/lib/monet
+Environment=HOME=/var/lib/monet
+
 # Tokens + per-machine settings. Point `monet token --env-file` at this same
 # file. The leading '-' makes a missing file non-fatal (auth stays disabled
 # until you add tokens). SIGHUP does NOT reload a systemd EnvironmentFile —

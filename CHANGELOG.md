@@ -11,11 +11,16 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 ## [Unreleased]
 
 ### Added
-- **systemd deployment template + docs.** `deploy/monet.service` (a unit
-  template for running the DB-only calibration server as a managed service) and
-  `docs/deployment.md` (dedicated service user, `EnvironmentFile` tokens under
-  `/var/lib/monet`, stop/restart, and troubleshooting for `217/USER` /
-  `203/EXEC` / the `ProtectHome`-vs-`/root` interpreter gotcha).
+- **systemd deployment template, setup script + docs.** `deploy/monet.service`
+  (a unit template for running the DB-only calibration server as a managed
+  service), `deploy/setup-server.sh` (one-shot dedicated-user install into
+  `/opt/monet` that preserves an existing token file + DB), and
+  `docs/deployment.md`. The unit sets `WorkingDirectory`/`HOME` to a writable
+  service-owned dir (monet opens a relative `monet.log` at import, which fails
+  under `ProtectSystem=strict` when CWD is `/`). Docs cover the dedicated service
+  user, `EnvironmentFile` tokens, stop/restart, and troubleshooting for
+  `217/USER` / `203/EXEC` / the read-only-`/monet.log` crash / the
+  `ProtectHome`-vs-`/root` interpreter gotcha.
 
 ### Changed
 - **Auto-home the attenuator at startup.** `IlluminationControl` now homes the
