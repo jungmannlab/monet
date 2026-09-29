@@ -862,18 +862,14 @@ class MonetSetInteractive(cmd.Cmd):
     def do_multi_laser(self, arg):
         if arg.upper() == "0" or arg.upper() == "FALSE":
             self.multi_laser_operation = False
-            print(
-                """
+            print("""
                 Switching multi-laser operation off.
-                Only one laser is on at a time."""
-            )
+                Only one laser is on at a time.""")
         else:
             self.multi_laser_operation = True
-            print(
-                """
+            print("""
                 Switching multi-laser operation on.
-                Explicitly switch lasers off when not using."""
-            )
+                Explicitly switch lasers off when not using.""")
 
     def do_laser(self, laser):
         """Activate a laser, and open the beam path for it.
