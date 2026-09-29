@@ -10,6 +10,8 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-09-29
+
 ### Security
 - **The web dashboard now requires a token to view and edit.** Its data routes
   (`/dashboard/api/filters`, `/timeseries`, `/transmission_objectives`) are now
