@@ -100,7 +100,9 @@ systemctl status monet
 journalctl -u monet -f
 ```
 
-Verify: `curl -s http://localhost:8000/health` → `200`.
+Verify: `curl -s http://localhost:8000/health` → `200`. To check auth end-to-end
+(reachability + token identity), run `monet auth test --url
+http://localhost:8000` on a machine with `PAINT_MONET_TOKEN` set.
 
 ## Stopping / restarting
 

@@ -10,6 +10,42 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-09-29
+
+### Security
+- **The web dashboard now requires a token to view and edit.** Its data routes
+  (`/dashboard/api/filters`, `/timeseries`, `/transmission_objectives`) are now
+  `read`-scoped, and edits already go through the `write`-scoped main API — so a
+  browser needs a valid token to see any data and a `write` token to delete.
+  The HTML shell (`GET /dashboard/`) stays public so a small **login prompt** can
+  load; the page collects the token, keeps it in `localStorage`, sends it as
+  `Authorization: Bearer` on every request, re-prompts on 401, shows the signed-in
+  `label`/`scope` (via `/auth/whoami`), and greys the delete controls for a
+  read-only token. On an auth-disabled loopback server nothing changes (no login).
+  Previously the dashboard was unauthenticated and relied on a reverse proxy
+  (ADR-001); it is now self-authenticating too.
+- **Dashboard: escape DB record fields before rendering (stored-XSS fix).** The
+  All-Records / Latest-Calibrations tables interpolated calibration fields
+  (device name, date, parameters) into `innerHTML` unescaped, so a record
+  written via `POST /calibrations` with a device named e.g.
+  `<img src=x onerror=…>` would execute in another viewer's browser — and, now
+  that the dashboard stores a bearer token in `localStorage`, could exfiltrate
+  it. All dynamic fields are now HTML-escaped (`esc()`); chart labels already
+  used `textContent`. A pre-existing sink, hardened here alongside the auth work.
+
+### Added
+- **`monet auth test` CLI + `GET /auth/whoami`.** A client-side command to
+  verify a rig can authenticate to a monet server and see the `(scope, label)`
+  its token maps to server-side — replacing the ad-hoc curl/probe. Reads the
+  same `PAINT_MONET_TOKEN` / `PAINT_MONET_AUTH` the DB client uses, hits
+  `/health` (reachability) then the new `/auth/whoami` (auth + identity), and
+  prints a verdict (exit 0 = accepted or auth-off, 1 = rejected/unreachable).
+  Usage: `monet auth test --url http://server:8000` or `monet auth test <Name>`
+  (reads the server URL from that microscope's `database`). `GET /auth/whoami`
+  is read-scoped and returns the caller's `TokenInfo`; against an older server
+  without it, `auth test` falls back to a read-scoped route to still report
+  accepted/rejected (label unavailable until the server is upgraded).
+
 ## [0.4.2] - 2026-09-29
 
 ### Added
