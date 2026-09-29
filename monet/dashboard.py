@@ -380,8 +380,9 @@ async function doLogin() {
   AUTH.token = token;
   localStorage.setItem(TOKEN_KEY, token);
   const ok = await checkAuth();
-  if (ok && AUTH.enforced && !AUTH.scope) {
-    // whoami returned but didn't authenticate us — treat as a bad token.
+  if (!ok) {
+    // checkAuth() returns false only when the server answered 401 — the token
+    // was rejected. Re-prompt cleanly instead of flashing an empty dashboard.
     showLogin('That token was not accepted by the server.');
     return;
   }
