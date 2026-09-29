@@ -742,5 +742,50 @@ class TestServeDoesNotHomeAtStartup(unittest.TestCase):
         home.assert_not_called()
 
 
+class TestWhoAmI(_AppMixin, unittest.TestCase):
+    """GET /auth/whoami reports the caller's token identity (for
+    `monet auth test`)."""
+
+    def test_whoami_returns_label_and_scope(self):
+        auth = AuthConfig(
+            {
+                "rtok": TokenInfo(scope="read", label="reader"),
+                "wtok": TokenInfo(scope="write", label="microscope-skylab"),
+            }
+        )
+        client = self._make_client(auth=auth)
+        body = client.get(
+            "/auth/whoami", headers={"Authorization": "Bearer wtok"}
+        ).json()
+        self.assertTrue(body["authenticated"])
+        self.assertTrue(body["auth_enabled"])
+        self.assertEqual(body["label"], "microscope-skylab")
+        self.assertEqual(body["scope"], "write")
+        # a read token also works — whoami needs only read scope
+        rbody = client.get(
+            "/auth/whoami", headers={"Authorization": "Bearer rtok"}
+        ).json()
+        self.assertEqual(rbody["label"], "reader")
+        self.assertEqual(rbody["scope"], "read")
+
+    def test_whoami_rejects_missing_or_bad_token_when_enforced(self):
+        auth = AuthConfig({"wtok": TokenInfo(scope="write", label="w")})
+        client = self._make_client(auth=auth)
+        self.assertEqual(client.get("/auth/whoami").status_code, 401)
+        self.assertEqual(
+            client.get(
+                "/auth/whoami", headers={"Authorization": "Bearer nope"}
+            ).status_code,
+            401,
+        )
+
+    def test_whoami_auth_disabled(self):
+        client = self._make_client()  # no auth configured (loopback dev)
+        body = client.get("/auth/whoami").json()
+        self.assertFalse(body["authenticated"])
+        self.assertFalse(body["auth_enabled"])
+        self.assertIsNone(body["label"])
+
+
 if __name__ == "__main__":
     unittest.main()

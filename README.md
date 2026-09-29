@@ -207,6 +207,17 @@ Give each machine/role its **own** label so it can be rotated/revoked
 independently; the
 `label` is what attributes writes in the logs.
 
+**Verify from a client — `monet auth test`.** On a rig whose `.env` has
+`PAINT_MONET_TOKEN`, check the whole chain (reachability + auth) and see the
+label/scope the server knows the token by:
+
+```bash
+monet auth test --url http://<server>:8000   # or: monet auth test <MicroscopeName>
+# -> Authenticated: YES — 'microscope-mercury' (scope: write)
+```
+
+Exit code is 0 when the server accepts the token (or auth is off), 1 otherwise.
+
 **By hand** (equivalent): a token is just a high-entropy string that must not
 contain `:` `,` `;` or a newline (the map's separators):
 
