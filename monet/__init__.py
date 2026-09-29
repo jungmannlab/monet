@@ -29,16 +29,34 @@ def config_logger():
     formatter = logging.Formatter(
         "%(asctime)s | %(name)s | %(levelname)s -> %(message)s"
     )
-    file_handler = handlers.RotatingFileHandler(
-        "monet.log", maxBytes=1e6, backupCount=5
+    # Log-file location is configurable so monet can run from a read-only or
+    # unwritable working directory (e.g. a systemd service whose CWD is `/`):
+    # MONET_LOG_FILE sets the full path; MONET_LOG_DIR sets a directory (file
+    # is monet.log). Neither set ⇒ ``monet.log`` in the CWD, as before.
+    log_file = os.environ.get("MONET_LOG_FILE") or os.path.join(
+        os.environ.get("MONET_LOG_DIR", ""), "monet.log"
     )
+    try:
+        file_handler = handlers.RotatingFileHandler(
+            log_file, maxBytes=int(1e6), backupCount=5
+        )
+    except OSError as exc:
+        # An unwritable log path must not crash `import monet` (which would
+        # take down the CLI, GUI and server). Fall back to stderr and warn.
+        stream_handler = logging.StreamHandler()
+        stream_handler.setFormatter(formatter)
+        stream_handler.setLevel(logging.WARNING)
+        logger.addHandler(stream_handler)
+        logger.warning(
+            "Could not open log file %r (%s); logging to stderr only. Set "
+            "MONET_LOG_FILE or MONET_LOG_DIR to a writable path.",
+            log_file,
+            exc,
+        )
+        return
     file_handler.setFormatter(formatter)
     file_handler.setLevel(logging.DEBUG)
-    stream_handler = logging.StreamHandler()
-    stream_handler.setFormatter(formatter)
-    stream_handler.setLevel(logging.WARNING)
     logger.addHandler(file_handler)
-    # logger.addHandler(stream_handler)
 
 
 config_logger()

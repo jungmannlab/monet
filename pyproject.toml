@@ -88,9 +88,10 @@ hardware = [
     "microscope>=0.7",
     "nidaqmx>=1.2",
     # numpy-2 harmonization (C41/B8): pin >=1.0 so the [hardware] extra is
-    # numpy-2-compatible (pycromanager <1.0 predates numpy 2's ABI break). Like
-    # PycroFlow's [hardware] bump, the pycromanager-1.0 code migration + acq-PC
-    # validation is tracked as B8 -- monet's usage is lazy-imported/hardware-only.
+    # numpy-2-compatible (pycromanager <1.0 predates numpy 2's ABI break). The
+    # pycromanager-1.0 code migration (B8) is complete and validated on the
+    # acquisition PCs running Micro-Manager nightly build 260917: monet uses only
+    # the 1.0 API (Core/Studio), lazy-imported and hardware-only.
     "pycromanager>=1.0,<2",
     "pycobolt @ git+https://github.com/cobolt-lasers/pycobolt.git",
     "msl-equipment @ https://github.com/MSLNZ/msl-equipment/releases/download/v0.2.0/msl_equipment-0.2.0-py3-none-any.whl",

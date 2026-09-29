@@ -804,8 +804,9 @@ def build_app_for_microscope(name, configs_file=None):
     from ``PAINT_MONET_TOKENS`` as usual.
 
     The instrument is built with ``auto_enable_lasers=False`` so that loading the
-    calibration never starts emission; ``POST /power/set`` enables the laser
-    explicitly when it actuates.
+    calibration never starts emission, and ``auto_home=False`` so startup never
+    actuates the attenuator; ``POST /power/set`` enables the laser and moves the
+    attenuator explicitly when it actuates.
     """
     import yaml as _yaml
 
@@ -827,8 +828,16 @@ def build_app_for_microscope(name, configs_file=None):
     # do_load_cal=False so the calibration is loaded exactly once, by the
     # explicit call below (whose success/failure we surface), rather than also
     # implicitly in the constructor.
+    # auto_home=False: serve must not actuate hardware at startup. It is a
+    # headless surface with no operator to intervene, and homing blocks on an
+    # untimed wait (attenuation.KinesisAttenuator._wait), so a faulted mount
+    # would hang server startup. Motion happens only via authenticated
+    # requests.
     instrument = IlluminationLaserControl(
-        config, do_load_cal=False, auto_enable_lasers=False
+        config,
+        do_load_cal=False,
+        auto_enable_lasers=False,
+        auto_home=False,
     )
     try:
         instrument.load_calibration_database()

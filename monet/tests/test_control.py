@@ -246,6 +246,57 @@ class TestControl(unittest.TestCase):
             "load_calibration_database must not enable any laser",
         )
 
+    def _minimal_control_config(self):
+        """A bare IlluminationControl config (no lasers, no DB access)."""
+        return {
+            "index": {"name": "DefaultMicroscope"},
+            "attenuation": {
+                "classpath": "monet.attenuation.TestAttenuator",
+                "init_kwargs": {
+                    "bkg": 0,
+                    "amp": 50,
+                    "phi": 30,
+                    "start": 30,
+                    "step": 5,
+                },
+            },
+            "analysis": {
+                "classpath": "monet.analysis.LinearCurveAnalyzer",
+                "init_kwargs": {"min": 0, "max": 100, "step": 5},
+            },
+        }
+
+    def test_auto_home_homes_attenuator_on_startup(self):
+        """By default the attenuator is homed once at construction."""
+        with mock.patch("monet.attenuation.TestAttenuator.home") as mock_home:
+            ctrl = mco.IlluminationControl(
+                self._minimal_control_config(), do_load_cal=False
+            )
+        self.assertTrue(ctrl.auto_home)  # default preserved
+        mock_home.assert_called_once_with()
+
+    def test_auto_home_can_be_disabled(self):
+        """auto_home=False leaves the attenuator untouched at construction."""
+        with mock.patch("monet.attenuation.TestAttenuator.home") as mock_home:
+            ctrl = mco.IlluminationControl(
+                self._minimal_control_config(),
+                do_load_cal=False,
+                auto_home=False,
+            )
+        self.assertFalse(ctrl.auto_home)
+        mock_home.assert_not_called()
+
+    def test_auto_home_failure_does_not_block_construction(self):
+        """A home() that raises must not prevent the control from building."""
+        with mock.patch(
+            "monet.attenuation.TestAttenuator.home",
+            side_effect=RuntimeError("mount not responding"),
+        ):
+            ctrl = mco.IlluminationControl(
+                self._minimal_control_config(), do_load_cal=False
+            )
+        self.assertIsNotNone(ctrl.attenuator)
+
     @mock.patch("time.sleep")
     def test_run_power_feedback_fixed_attenuator(self, _sleep):
         """Feedback in fixed_attenuator mode scales the laser power until the

@@ -340,7 +340,8 @@ class MonetCalibrateInteractive(cmd.Cmd):
         """Perform a power calibration with the settings as described
         in the configuration.
         """
-        self.pc.instrument.attenuator.home()
+        # The attenuator is already homed once when the protocol's control
+        # was constructed (auto_home default), so no explicit home here.
         if not self.run_2d:
             self.pc.calibrate()
         else:
