@@ -31,6 +31,13 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
   the docstring — the `pycore_config` argument is accepted for call-site
   compatibility but not used (the Micro-Manager config is loaded in the MM GUI).
   No behaviour change.
+- **pycromanager 1.0 migration complete (B8).** monet's Micro-Manager
+  integration targets the pycromanager 1.0 API exclusively — `beampath` connects
+  via `Core()` and the `util` acquisition-comment / GUI-refresh helpers use
+  `Studio()`; no 0.x API (`Bridge`, etc.) remains. The `>=1.0,<2` `[hardware]`
+  pin from 0.4.0 is now validated against the acquisition PCs running
+  Micro-Manager nightly build **260917**. (numpy 2, `numpy>=2.2.6,<3`, was
+  already in place, so no numeric-stack change was needed.)
 
 ## [0.4.0] - 2026-09-28
 
