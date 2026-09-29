@@ -22,6 +22,18 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
   `217/USER` / `203/EXEC` / the read-only-`/monet.log` crash / the
   `ProtectHome`-vs-`/root` interpreter gotcha.
 
+## [0.4.1] - 2026-09-29
+
+### Fixed
+- **`import monet` no longer crashes from an unwritable working directory.**
+  `config_logger()` opened `monet.log` (a relative path) at import and raised
+  `OSError` if the CWD was read-only — e.g. a systemd service with `CWD=/` under
+  `ProtectSystem=strict` (`OSError: Read-only file system: '/monet.log'`). The
+  log location is now configurable via `MONET_LOG_FILE` (full path) or
+  `MONET_LOG_DIR` (directory), and an unwritable path falls back to stderr with a
+  warning instead of taking down the CLI/GUI/server. Default is unchanged
+  (`monet.log` in the CWD).
+
 ### Changed
 - **Auto-home the attenuator at startup.** `IlluminationControl` now homes the
   attenuator once when the control is constructed (new `auto_home=True` flag,
