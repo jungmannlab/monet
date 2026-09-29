@@ -79,6 +79,15 @@ class TestDashboard(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertIn("text/html", resp.headers["content-type"])
 
+    def test_dashboard_shows_monet_version(self):
+        import monet
+
+        resp = self.client.get("/dashboard/")
+        self.assertEqual(resp.status_code, 200)
+        # the version is injected into the shell; the placeholder is gone
+        self.assertIn("v" + monet.__version__, resp.text)
+        self.assertNotIn("__MONET_VERSION__", resp.text)
+
     def test_record_fields_are_html_escaped(self):
         # Stored-XSS guard: the table renderers must HTML-escape DB record
         # fields before building innerHTML, so a device named
