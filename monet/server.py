@@ -57,6 +57,7 @@ from monet.schemas import (
     PowerSetRequest,
     PowerSetResponse,
     RestartResponse,
+    WhoAmIResponse,
 )
 from monet.serviceauth import AuthConfig, auth_from_env, require_scope
 
@@ -784,6 +785,25 @@ def create_app(
     def health():
         """Health check endpoint."""
         return {"status": "ok"}
+
+    @app.get("/auth/whoami", response_model=WhoAmIResponse)
+    def whoami(token_info=Depends(require_scope("read"))):
+        """Report the caller's token identity, for `monet auth test`.
+
+        ``require_scope`` returns the matched ``TokenInfo`` (so the client can
+        see the ``(scope, label)`` its token maps to server-side), or ``None``
+        on the auth-disabled path. Any valid token (read or write) is accepted;
+        an invalid/missing token when auth is enforced is rejected upstream
+        (401), so reaching this handler already means the token is good.
+        """
+        if token_info is None:
+            return WhoAmIResponse(authenticated=False, auth_enabled=False)
+        return WhoAmIResponse(
+            authenticated=True,
+            auth_enabled=True,
+            label=token_info.label,
+            scope=token_info.scope,
+        )
 
     # Dashboard UI — imported here to avoid circular-import issues. Browser
     # access is guarded at the reverse proxy (HTTP Basic / lab SSO per ADR-001),

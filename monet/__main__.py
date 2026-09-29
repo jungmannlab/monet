@@ -47,12 +47,17 @@ def main():
     import argparse
     import sys
 
-    # `token` has its own sub-command parser (add/list/revoke/rotate); dispatch
-    # before the flat parser below, which doesn't know those sub-args.
+    # `token` and `auth` have their own sub-command parsers; dispatch before the
+    # flat parser below, which doesn't know those sub-args.
     if len(sys.argv) > 1 and sys.argv[1] == "token":
         from monet.tokens import token_cli
 
         sys.exit(token_cli(sys.argv[2:]))
+
+    if len(sys.argv) > 1 and sys.argv[1] == "auth":
+        from monet.authcheck import auth_cli
+
+        sys.exit(auth_cli(sys.argv[2:]))
 
     # os.chdir(os.path.split(CONFIGS_PATH)[0])
 
@@ -63,7 +68,7 @@ def main():
         type=str,
         help=(
             'mode. One of "set", "adjust", "caliaotf", "calibrate", '
-            '"serve", "migrate", "gui", or "token".'
+            '"serve", "migrate", "gui", "token", or "auth".'
         ),
     )
     parser.add_argument(
@@ -857,14 +862,18 @@ class MonetSetInteractive(cmd.Cmd):
     def do_multi_laser(self, arg):
         if arg.upper() == "0" or arg.upper() == "FALSE":
             self.multi_laser_operation = False
-            print("""
+            print(
+                """
                 Switching multi-laser operation off.
-                Only one laser is on at a time.""")
+                Only one laser is on at a time."""
+            )
         else:
             self.multi_laser_operation = True
-            print("""
+            print(
+                """
                 Switching multi-laser operation on.
-                Explicitly switch lasers off when not using.""")
+                Explicitly switch lasers off when not using."""
+            )
 
     def do_laser(self, laser):
         """Activate a laser, and open the beam path for it.
