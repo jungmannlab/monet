@@ -10,6 +10,47 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-09-29
+
+### Fixed
+- **`import monet` no longer crashes from an unwritable working directory.**
+  `config_logger()` opened `monet.log` (a relative path) at import and raised
+  `OSError` if the CWD was read-only — e.g. a systemd service with `CWD=/` under
+  `ProtectSystem=strict` (`OSError: Read-only file system: '/monet.log'`). The
+  log location is now configurable via `MONET_LOG_FILE` (full path) or
+  `MONET_LOG_DIR` (directory), and an unwritable path falls back to stderr with a
+  warning instead of taking down the CLI/GUI/server. Default is unchanged
+  (`monet.log` in the CWD).
+
+### Changed
+- **Auto-home the attenuator at startup.** `IlluminationControl` now homes the
+  attenuator once when the control is constructed (new `auto_home=True` flag,
+  threaded through `IlluminationLaserControl`), so every surface — GUI, CLI,
+  embedded `monet.qt` widget — starts from a known reference without an operator
+  clicking "Home". Homing runs in the base `__init__`, before any lasers are
+  loaded or enabled, so the half-wave-plate power swing happens with lasers dark;
+  it is wrapped warn-and-continue so a home failure cannot block startup. A
+  no-op for attenuators without a moving axis (AOTF, NI-DAQ, TestAttenuator).
+  Pass `auto_home=False` to opt out. The headless `serve` power API opts out
+  (`build_app_for_microscope` passes `auto_home=False`): serve must not actuate
+  hardware at startup — it has no operator to intervene and homing blocks on an
+  untimed wait, so a faulted mount would hang server startup. Motion happens
+  only via authenticated requests. The CLI `calibrate` command drops its now
+  redundant explicit `attenuator.home()` (construction already homes once).
+- **`beampath.get_pycromgr` cleanup.** Collapsed the two identical
+  `if pycore_config is None / else` branches (both just call `Core()`) into a
+  single path, removed the commented-out `pymmcore` scaffolding, and corrected
+  the docstring — the `pycore_config` argument is accepted for call-site
+  compatibility but not used (the Micro-Manager config is loaded in the MM GUI).
+  No behaviour change.
+- **pycromanager 1.0 migration complete (B8).** monet's Micro-Manager
+  integration targets the pycromanager 1.0 API exclusively — `beampath` connects
+  via `Core()` and the `util` acquisition-comment / GUI-refresh helpers use
+  `Studio()`; no 0.x API (`Bridge`, etc.) remains. The `>=1.0,<2` `[hardware]`
+  pin from 0.4.0 is now validated against the acquisition PCs running
+  Micro-Manager nightly build **260917**. (numpy 2, `numpy>=2.2.6,<3`, was
+  already in place, so no numeric-stack change was needed.)
+
 ## [0.4.0] - 2026-09-28
 
 ### Changed
