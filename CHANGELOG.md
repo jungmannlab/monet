@@ -28,6 +28,10 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
   **"Managing tokens on the deployed server"** section, and a note that the
   service does **not** use any conda env — clearing up the "`monet: command not
   found`, which install is which?" confusion.
+- **Dashboard shows the running monet version.** `GET /dashboard/` injects
+  `monet.__version__` under the title, so an operator can confirm which build is
+  deployed (e.g. whether the dashboard-auth from 0.4.3 is actually running) —
+  useful when "is the server up to date?" is the question.
 
 ## [0.4.3] - 2026-09-29
 
