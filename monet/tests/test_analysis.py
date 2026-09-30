@@ -210,6 +210,24 @@ class TestCompareModels(unittest.TestCase):
         self.assertTrue(ranking[0]["model"].startswith("poly"))
         self.assertLess(ranking[0]["rms_pct"], 1.0)
 
+    def test_compare_models_multi_pools_across_curves(self):
+        x = np.arange(30.0, 131.0, 5.0)
+        y1 = 1.0 + 40.0 * (1 + np.sin(4 * np.pi / 180 * (x + 15))) / 2
+        y2 = 0.5 + 30.0 * (1 + np.sin(4 * np.pi / 180 * (x + 15))) / 2
+        ranking = man.compare_models_multi(
+            [(x, y1), (x, y2)], self.ANA, degrees=(3, 4)
+        )
+        names = {r["model"] for r in ranking}
+        self.assertIn("sinus", names)
+        # every model was fit on both curves
+        for r in ranking:
+            self.assertEqual(r["n_curves"], 2)
+        # sorted ascending by pooled RMS; sinus fits the sinusoids well
+        rms = [r["rms_pct"] for r in ranking]
+        self.assertEqual(rms, sorted(rms))
+        sinus = next(r for r in ranking if r["model"] == "sinus")
+        self.assertLess(sinus["rms_pct"], 2.0)
+
 
 class TestLinearAnalyzer(unittest.TestCase):
 

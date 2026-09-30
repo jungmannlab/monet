@@ -177,6 +177,48 @@ class TestCalibrateTabVerify(unittest.TestCase):
         self.assertIn("sinus", datas)
         self.assertIn("poly deg 5", datas)
         self.assertIn("linear", datas)
+        self.assertIsNotNone(tab._btn_set_default)
+        self.assertFalse(tab._btn_set_default.isEnabled())
+
+    def test_model_combo_shows_current_and_annotates_default(self):
+        import monet.gui as g
+
+        tab = CalibrateTab()
+
+        class _Inst:
+            config = {
+                "analysis": {
+                    "classpath": "monet.analysis."
+                    "PolynomAttenuationCurveAnalyzer",
+                    "init_kwargs": {"polydegree": 5},
+                }
+            }
+
+        class _PC:
+            instrument = _Inst()
+            _microscope_name = "__unittest_scope__"
+
+        g.CONFIGS["__unittest_scope__"] = {
+            "analysis": {
+                "classpath": "monet.analysis." "SinusAttenuationCurveAnalyzer",
+                "init_kwargs": {},
+            }
+        }
+        try:
+            tab._pc = _PC()
+            tab._sync_model_combo()
+            # the dropdown reflects the session model (poly deg 5)
+            self.assertEqual(tab._model_combo.currentData(), "poly deg 5")
+            # the persisted default (sinus) is annotated "(default)"
+            texts = [
+                tab._model_combo.itemText(i)
+                for i in range(tab._model_combo.count())
+            ]
+            self.assertTrue(
+                any("Sinusoidal (default)" == t for t in texts), texts
+            )
+        finally:
+            g.CONFIGS.pop("__unittest_scope__", None)
 
 
 class TestExpertView(unittest.TestCase):

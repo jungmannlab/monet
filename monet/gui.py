@@ -898,6 +898,14 @@ class CalibrateTab(QWidget):
             self._on_model_combo_changed
         )
         model_row.addWidget(self._model_combo)
+        self._btn_set_default = QPushButton("Set as default")
+        self._btn_set_default.setEnabled(False)
+        self._btn_set_default.setToolTip(
+            "Persist the selected model as this microscope's default (written "
+            "to the config file, loaded on the next start)."
+        )
+        self._btn_set_default.clicked.connect(self._on_set_default_model)
+        model_row.addWidget(self._btn_set_default)
         model_row.addStretch()
         layout.addLayout(model_row)
 
@@ -1698,74 +1706,66 @@ class CalibrateTab(QWidget):
         self._verify_worker = worker
         worker.start()
 
-    def _worst_curve(self):
-        """Return ``(x, y, label)`` of the worst-fitting calibration curve.
+    def _all_curves(self):
+        """Every raw calibration curve from this session as ``[(x, y), ...]``.
 
-        Uses the per-curve fit quality to pick the worst curve of a protocol
-        run; falls back to the single 1D curve. Returns ``None`` if no raw
-        curve from this session is available.
+        All (wavelength, power) curves for a protocol run, or the single 1D
+        curve; empty if none are available.
         """
         curves = getattr(self._pc, "last_curves", None)
         if curves:
-            fqs = getattr(self._pc, "fit_qualities", None) or {}
-            if fqs:
-                key = max(fqs, key=lambda k: fqs[k]["rms_pct"])
-            else:
-                key = next(iter(curves))
-            x, y = curves[key]
-            return x, y, " ({} nm @ {} mW)".format(key[0], key[1])
+            return list(curves.values())
         cur = getattr(self._pc, "last_curve", None)
-        if cur is None:
-            return None
-        return cur[0], cur[1], ""
+        return [cur] if cur is not None else []
 
     def _on_compare_models(self):
-        """Fit sinus + polynomial models to the worst curve and rank them."""
+        """Rank models pooled across all calibration curves (all λ / powers)."""
         if self._pc is None:
             return
-        picked = self._worst_curve()
-        if picked is None:
+        curves = self._all_curves()
+        if not curves:
             self._log.append("No calibration curve available to compare.")
             return
-        x, y, label = picked
         ana_cfg = self._pc.instrument.config["analysis"]["init_kwargs"]
         try:
-            ranking = analysis.compare_models(x, y, ana_cfg)
+            ranking = analysis.compare_models_multi(curves, ana_cfg)
         except Exception as exc:
             self._log.append("Compare models failed: {}".format(exc))
             return
-        self._log.append("Model comparison{}:".format(label))
+        self._log.append(
+            "Model comparison across {} curve(s):".format(len(curves))
+        )
         for r in ranking:
             self._log.append(
                 "  {:<12s} RMS {:.1f}%, max {:.1f}%".format(
                     r["model"], r["rms_pct"], r["max_pct"]
                 )
             )
-        best = ranking[0]
-        self._log.append(
-            "Best fit: {} (RMS {:.1f}%). Use 'Apply best model + recal' to "
-            "switch to it.".format(best["model"], best["rms_pct"])
-        )
+        if ranking:
+            best = ranking[0]
+            self._log.append(
+                "Best fit: {} (RMS {:.1f}%). Use 'Apply best model + recal' "
+                "to switch to it.".format(best["model"], best["rms_pct"])
+            )
 
     def _on_apply_best_model(self):
         """Switch the analysis model to the best one and recalibrate."""
         if self._pc is None:
             return
-        # Prefer the fresh-verify winner; else the best fit on the worst curve.
+        # Prefer the fresh-verify winner; else best fit pooled over all curves.
         best_name = None
         ms = self._last_model_summary
         if ms:
             best_name = min(ms, key=lambda k: ms[k]["verify_rms_pct"])
             basis = "verify"
         else:
-            picked = self._worst_curve()
-            if picked is None:
+            curves = self._all_curves()
+            if not curves:
                 self._log.append("No calibration curve available.")
                 return
-            x, y, _ = picked
             ana_cfg = self._pc.instrument.config["analysis"]["init_kwargs"]
             try:
-                ranking = analysis.compare_models(x, y, ana_cfg)
+                ranking = analysis.compare_models_multi(curves, ana_cfg)
             except Exception as exc:
                 self._log.append("Compare models failed: {}".format(exc))
                 return
@@ -1781,16 +1781,17 @@ class CalibrateTab(QWidget):
             "Apply model & recalibrate",
             "Switch this microscope's analysis model to '{}' (best by {} "
             "residual) and recalibrate?\nThis changes the model for all "
-            "lasers.".format(best_name, basis),
+            "lasers and sets it as the default.".format(best_name, basis),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply != QMessageBox.StandardButton.Yes:
             return
-        self._apply_analysis_model(best_name, recalibrate=True)
+        self._apply_analysis_model(best_name, recalibrate=True, persist=True)
 
-    def _apply_analysis_model(self, name, recalibrate=False):
-        """Switch the microscope's analysis model, persist it, invalidate the
-        old (different-model) calibration, and optionally recalibrate."""
+    def _apply_analysis_model(self, name, recalibrate=False, persist=False):
+        """Switch the analysis model for this session, invalidating the old
+        (different-model) calibration. Persists to config only if ``persist``;
+        optionally recalibrates."""
         if self._pc is None:
             return False
         classpath, extra = analysis.model_spec(name)
@@ -1809,7 +1810,23 @@ class CalibrateTab(QWidget):
             return False
         # The old calibration was fit with a different model; invalidate it.
         self._pc.instrument.is_calibrated = False
+        if persist:
+            self._persist_default_model()
+        self._sync_model_combo()
+        if recalibrate:
+            self._log.append("Applied model '{}'. Recalibrating…".format(name))
+            self._on_start()
+        else:
+            self._log.append(
+                "Model set to '{}' for this session. 'Set as default' to "
+                "persist; recalibrate to apply.".format(name)
+            )
+        return True
+
+    def _persist_default_model(self):
+        """Write the current session analysis model to the config file."""
         scope = getattr(self._pc, "_microscope_name", None)
+        ana = self._pc.instrument.config.get("analysis", {})
         try:
             written = set_config_analysis(scope, {**ana}) if scope else None
         except Exception as exc:
@@ -1818,20 +1835,39 @@ class CalibrateTab(QWidget):
                 "Could not persist model to config: {}".format(exc)
             )
         if written:
-            self._log.append("Saved model to config ({}).".format(written))
+            self._log.append(
+                "Saved as default in config ({}).".format(written)
+            )
         else:
             self._log.append(
-                "Model applied for this session only (config not persisted)."
+                "Could not persist as default (no writable config)."
             )
-        self._sync_model_combo()
-        if recalibrate:
-            self._log.append("Applied model '{}'. Recalibrating…".format(name))
-            self._on_start()
-        else:
-            self._log.append(
-                "Model set to '{}'. Recalibrate to apply it.".format(name)
+        return written
+
+    def _on_set_default_model(self):
+        self._persist_default_model()
+        self._annotate_model_combo()
+
+    def _default_model_name(self):
+        """The persisted-default model name for this microscope, or None."""
+        scope = getattr(self._pc, "_microscope_name", None)
+        if scope and scope in CONFIGS:
+            ana = CONFIGS[scope].get("analysis", {})
+            return analysis.model_name_from_config(
+                ana.get("classpath"), ana.get("init_kwargs")
             )
-        return True
+        return None
+
+    def _annotate_model_combo(self):
+        """Mark the persisted-default option with '(default)'."""
+        labels = {k: lbl for lbl, k in self._MODEL_CHOICES}
+        default = self._default_model_name()
+        for i in range(self._model_combo.count()):
+            key = self._model_combo.itemData(i)
+            base = labels.get(key, str(key))
+            self._model_combo.setItemText(
+                i, base + (" (default)" if key == default else "")
+            )
 
     def _sync_model_combo(self):
         """Reflect the instrument's current analysis model in the combo."""
@@ -1841,15 +1877,16 @@ class CalibrateTab(QWidget):
         cur = analysis.model_name_from_config(
             ana.get("classpath"), ana.get("init_kwargs")
         )
-        idx = self._model_combo.findData(cur)
         self._model_combo.blockSignals(True)
-        if idx >= 0:
-            self._model_combo.setCurrentIndex(idx)
-        else:
+        idx = self._model_combo.findData(cur)
+        if idx < 0:
             # Unrecognized model: show it as a read-only entry.
             self._model_combo.insertItem(0, cur, cur)
-            self._model_combo.setCurrentIndex(0)
+            idx = 0
+        self._model_combo.setCurrentIndex(idx)
         self._model_combo.blockSignals(False)
+        self._annotate_model_combo()
+        self._btn_set_default.setEnabled(True)
 
     def _on_model_combo_changed(self, _idx):
         if self._pc is None:
@@ -1864,15 +1901,16 @@ class CalibrateTab(QWidget):
         reply = QMessageBox.question(
             self,
             "Change analysis model",
-            "Switch this microscope's analysis model to '{}'?\nThis "
-            "invalidates the current calibration (all lasers); recalibrate "
-            "to apply.".format(name),
+            "Switch this microscope's analysis model to '{}' for this "
+            "session?\nThis invalidates the current calibration (all "
+            "lasers); recalibrate to apply. Use 'Set as default' to keep it "
+            "after a restart.".format(name),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply != QMessageBox.StandardButton.Yes:
             self._sync_model_combo()  # revert selection
             return
-        self._apply_analysis_model(name, recalibrate=False)
+        self._apply_analysis_model(name, recalibrate=False, persist=False)
 
     def cancel_worker_and_wait(self):
         if self._worker and self._worker.isRunning():

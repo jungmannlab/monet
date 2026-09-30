@@ -31,9 +31,11 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ### Added
 - **Calibrate tab: analysis-model selector.** A dropdown shows the model in use
-  (Sinusoidal / Linear / Polynomial deg 3–6) and lets it be changed; the change
-  is persisted to the microscope's config and invalidates the current
-  calibration (recalibrate to apply). "Apply best model" reuses the same path.
+  (Sinusoidal / Linear / Polynomial deg 3–6) and **annotates the persisted
+  default** `(default)`; changing it switches the model for the session and
+  invalidates the current calibration (recalibrate to apply). A **"Set as
+  default"** button persists the current selection to the config. "Apply best
+  model" switches, recalibrates and sets the default in one step.
 - **Expert-view toggle.** A toolbar checkbox (default off) hides controls a
   regular user shouldn't need — the Set Power tab's Backlash check, Refresh
   hardware state, and the direct Attenuator / Laser-power controls — and reveals
@@ -77,10 +79,11 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
   lasers off again. Unlike the fit residual this is a *fresh* cross-check, so it
   catches drift and laser-power-setting effects (e.g. a deviation that grows
   only at certain laser powers). Each point records its laser and laser power.
-- **Model comparison (Compare models button, Calibrate tab).** `compare_models`
-  fits the sinusoidal model and polynomials of degree 3–6 to the worst
-  calibration curve and ranks them by relative residual, so the better analysis
-  model can be chosen from data instead of guessed.
+- **Model comparison across all curves (Compare models button).**
+  `compare_models_multi` fits the sinusoidal and polynomial (deg 3–6) models to
+  *every* calibration curve (all wavelengths / powers) and ranks them by the
+  residual pooled across all of them — so the model is chosen from the whole
+  calibration, not one curve. (`compare_models` remains for a single curve.)
 - **Verify against every candidate model.** `verify_calibration` now also
   evaluates each fresh measurement against the sinusoidal and polynomial models
   (`model_summary`: per-model *fit* RMS vs *verify* RMS). This separates model

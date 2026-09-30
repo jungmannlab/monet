@@ -1068,6 +1068,57 @@ def compare_models(x, y, analysis_parameters, degrees=(3, 4, 5, 6)):
     return results
 
 
+def compare_models_multi(curves, analysis_parameters, degrees=(3, 4, 5, 6)):
+    """Rank candidate models pooled across several calibration curves.
+
+    Fits each candidate model to every ``(x, y)`` curve in ``curves`` and pools
+    the relative residuals across all curves per model, so the model is chosen
+    from the whole calibration (all wavelengths / powers) rather than one
+    curve.
+
+    Parameters
+    ----------
+    curves : iterable of (x, y)
+        The per-condition calibration curves.
+    analysis_parameters : dict
+        The analyzer config (``min``/``max``/...) for the sinusoidal fit.
+    degrees : iterable of int
+        Polynomial degrees to try.
+
+    Returns
+    -------
+    list of dict
+        ``[{'model', 'rms_pct', 'max_pct', 'n_curves'}, ...]`` sorted by pooled
+        ``rms_pct`` (best first).
+    """
+    pooled = {}
+    counts = {}
+    for x, y in curves:
+        fits = fit_candidate_models(x, y, analysis_parameters, degrees)
+        yy = np.asarray(y, dtype=float)
+        for f in fits:
+            pred = np.asarray(f["predict"](np.asarray(x, float)), dtype=float)
+            ok = np.isfinite(yy) & np.isfinite(pred) & (yy > 0)
+            if not ok.any():
+                continue
+            rel = np.abs(yy[ok] - pred[ok]) / yy[ok]
+            pooled.setdefault(f["model"], []).extend(rel.tolist())
+            counts[f["model"]] = counts.get(f["model"], 0) + 1
+    results = []
+    for name, rel in pooled.items():
+        arr = np.asarray(rel, dtype=float)
+        results.append(
+            {
+                "model": name,
+                "rms_pct": float(np.sqrt(np.mean(arr**2)) * 100.0),
+                "max_pct": float(np.max(arr) * 100.0),
+                "n_curves": counts.get(name, 0),
+            }
+        )
+    results.sort(key=lambda r: r["rms_pct"])
+    return results
+
+
 def test_PolynomAttenuationCurveAnalyzer():
     x = np.arange(21)
     y = np.array(
