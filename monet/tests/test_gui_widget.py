@@ -71,6 +71,49 @@ class TestMonetWidget(unittest.TestCase):
             self.assertEqual(received, [("ping", 500)])
 
 
+class TestMeasureReadiness(unittest.TestCase):
+    """The Measure-button readiness hint (why a reading may be ~0)."""
+
+    def test_no_laser_selected_is_silent(self):
+        ready, short, _ = SetPowerTab._measure_readiness(
+            None, False, True, False
+        )
+        self.assertIsNone(ready)
+        self.assertEqual(short, "")
+
+    def test_laser_off_warns(self):
+        ready, short, detail = SetPowerTab._measure_readiness(
+            561, False, True, True
+        )
+        self.assertFalse(ready)
+        self.assertIn("OFF", short)
+        self.assertIn("zero", detail.lower())
+
+    def test_no_beampath_preset_warns(self):
+        ready, short, detail = SetPowerTab._measure_readiness(
+            561, True, True, False
+        )
+        self.assertFalse(ready)
+        self.assertIn("beam-path", short)
+        self.assertIn("561", detail)
+
+    def test_ready_with_preset(self):
+        ready, short, detail = SetPowerTab._measure_readiness(
+            561, True, True, True
+        )
+        self.assertTrue(ready)
+        self.assertIn("light expected", short)
+        self.assertIn("561", detail)
+
+    def test_ready_without_beampath_hardware(self):
+        # No beam path configured at all -> laser-on is enough to expect light.
+        ready, short, _ = SetPowerTab._measure_readiness(
+            488, True, False, False
+        )
+        self.assertTrue(ready)
+        self.assertIn("light expected", short)
+
+
 class TestCalibrationPlots(unittest.TestCase):
     """Regression tests for the live calibration plots / wavelength toggles."""
 

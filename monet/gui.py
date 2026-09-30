@@ -1996,6 +1996,10 @@ class SetPowerTab(QWidget):
         self._btn_measure = QPushButton("Measure")
         self._btn_measure.clicked.connect(self._on_measure)
         measure_row.addWidget(self._btn_measure)
+        # Readiness hint: says whether light is expected to reach the sensor
+        # (laser on, beam path set) so a 0-reading isn't a mystery.
+        self._measure_hint = QLabel("")
+        measure_row.addWidget(self._measure_hint)
         measure_row.addStretch()
         layout.addLayout(measure_row)
 
@@ -2172,6 +2176,7 @@ class SetPowerTab(QWidget):
         # line (populate only — not applied to hardware).
         self._apply_saved_state_to_ui(laser)
         self._update_range_label()
+        self._update_measure_hint()
 
     # --- helpers ---
 
@@ -2206,6 +2211,71 @@ class SetPowerTab(QWidget):
                 for obid, pos in positions.items()
             )
         )
+
+    @staticmethod
+    def _measure_readiness(laser, laser_on, use_beampath, has_bp_preset):
+        """Whether light is expected to reach the sensor when measuring.
+
+        Pure helper (no hardware / Qt) so it is unit-testable. Returns
+        ``(ready, short, detail)`` where ``ready`` is True/False/None (None =
+        nothing to say yet), ``short`` is a one-line chip for next to the
+        button, and ``detail`` is the button tooltip.
+
+        The common "why did it read 0?" causes are the laser being off or the
+        beam path not routing light to the meter. The shutter is not checked
+        separately: with autoshutter it opens automatically with the laser.
+        """
+        if laser is None:
+            return (None, "", "")
+        if not laser_on:
+            return (
+                False,
+                "⚠ laser OFF — will read ≈ 0",
+                "The selected laser is off, so the meter will read about "
+                "zero. Switch the laser ON before measuring.",
+            )
+        if use_beampath and not has_bp_preset:
+            return (
+                False,
+                "⚠ no beam-path preset — check filter/shutter",
+                "No beam-path preset is configured for {} nm, so Measure "
+                "will not set the filter/light path. Verify the correct "
+                "filter is in and the path is open, or the meter may read "
+                "about zero.".format(laser),
+            )
+        if has_bp_preset:
+            detail = (
+                "Laser is ON and Measure sets the filter/beam path for {} nm "
+                "(the shutter opens automatically with the laser, "
+                "autoshutter). Light is expected to reach the sensor.".format(
+                    laser
+                )
+            )
+        else:
+            detail = "Laser is ON. Light is expected to reach the sensor."
+        return (True, "✓ light expected", detail)
+
+    def _update_measure_hint(self):
+        """Refresh the readiness chip/tooltip next to the Measure button."""
+        if self._pc is None:
+            self._measure_hint.setText("")
+            self._btn_measure.setToolTip("")
+            return
+        laser = self._laser_combo.currentData()
+        laser_on = self._btn_onoff.isChecked()
+        use_beampath = getattr(self._pc.instrument, "use_beampath", False)
+        protocol = getattr(self._pc, "protocol", None) or {}
+        bp = protocol.get("beampath") or {}
+        has_bp_preset = bool(bp.get(laser))
+        ready, short, detail = self._measure_readiness(
+            laser, laser_on, use_beampath, has_bp_preset
+        )
+        self._measure_hint.setText(short)
+        color = {True: "green", False: "#b36b00"}.get(ready, "")
+        self._measure_hint.setStyleSheet(
+            "color: {};".format(color) if color else ""
+        )
+        self._btn_measure.setToolTip(detail)
 
     def _refresh_bp_label(self):
         """Re-read the beam-path state and update the label."""
@@ -2302,6 +2372,7 @@ class SetPowerTab(QWidget):
             self._status.setText(
                 f'Laser {laser} nm {"on" if checked else "off"}.'
             )
+            self._update_measure_hint()
             self._emit_status("Ready", 2000)
 
         self._run_hw(
@@ -2983,6 +3054,7 @@ class SetPowerTab(QWidget):
             self._status.setText("All lasers switched off.")
             self._btn_onoff.setChecked(False)
             self._btn_onoff.setText("switch ON")
+            self._update_measure_hint()
             self._emit_status("Ready", 2000)
 
         self._run_hw(_do, "Switching all lasers off…", on_done=_done)

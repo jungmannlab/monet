@@ -10,6 +10,15 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
+### Added
+- **Set Power tab: a readiness hint next to the Measure button.** A chip
+  (and button tooltip) now says whether light is expected to reach the sensor
+  — warning `⚠ laser OFF — will read ≈ 0` when the selected laser is off, or
+  `⚠ no beam-path preset` when the path won't be routed to the meter, and
+  `✓ light expected` otherwise. This explains the common "why did Measure
+  return 0?" confusion. The shutter is not called out separately since
+  autoshutter opens it with the laser.
+
 ### Changed
 - **Power meters are now put into power auto-range at open (default on).**
   monet never configured the meter range — and on the TLPM path `open()`
