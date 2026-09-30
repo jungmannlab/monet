@@ -19,6 +19,13 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
   return 0?" confusion. The shutter is not called out separately since
   autoshutter opens it with the laser.
 
+- **Attenuator backlash check (Set Power tab).** A "Backlash check" button
+  re-approaches the current attenuator angle from below and from above, reading
+  the power each time; a large power spread points at rotation-mount hysteresis
+  — the prime suspect for a calibrate-vs-measure deviation when both are done in
+  the same plane (where the objective transmission factor cancels). Backed by
+  `IlluminationControl.attenuator_hysteresis_probe()`, which restores the angle
+  and clamps both approaches to the calibrated range.
 - **Transmission-factor offset-bias diagnostic.** The objective transmission
   factor is stored as a mean of pointwise `P_sample/P_bfp` ratios, which biases
   by tens of percent when one plane has a large additive offset (stray light /

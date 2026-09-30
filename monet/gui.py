@@ -2000,6 +2000,18 @@ class SetPowerTab(QWidget):
         # (laser on, beam path set) so a 0-reading isn't a mystery.
         self._measure_hint = QLabel("")
         measure_row.addWidget(self._measure_hint)
+        # Backlash check: re-approach the current attenuator angle from both
+        # sides to see if rotation-mount hysteresis explains a calibrate-vs-
+        # measure deviation.
+        self._btn_backlash = QPushButton("Backlash check")
+        self._btn_backlash.setToolTip(
+            "Re-approach the current attenuator angle from below and from "
+            "above, reading the power each time. A large power spread means "
+            "rotation-mount backlash — a likely cause of calibrate-vs-measure "
+            "deviation. Moves the attenuator briefly, then restores it."
+        )
+        self._btn_backlash.clicked.connect(self._on_backlash_check)
+        measure_row.addWidget(self._btn_backlash)
         measure_row.addStretch()
         layout.addLayout(measure_row)
 
@@ -2314,6 +2326,7 @@ class SetPowerTab(QWidget):
             self._btn_turret_obj,
             self._btn_turret_pm,
             self._btn_measure,
+            self._btn_backlash,
             self._btn_alloff,
             self._btn_hw_refresh,
             self._btn_hw_att_set,
@@ -3016,6 +3029,47 @@ class SetPowerTab(QWidget):
 
         self._run_hw(_do, "Measuring power…", on_result=_on_val)
 
+    def _on_backlash_check(self):
+        """Re-approach the current attenuator angle from both sides and report
+        the power spread — a direct test for rotation-mount backlash."""
+        if self._pc is None:
+            return
+
+        def _do():
+            return self._pc.instrument.attenuator_hysteresis_probe(
+                read_power=self._pc.powermeter.read
+            )
+
+        def _on_val(res):
+            try:
+                unit = self._pc.powermeter.unit
+            except Exception:
+                unit = "a.u."
+            spread = res.get("power_spread_frac")
+            if isinstance(spread, float) and spread == spread:
+                spread_txt = "{:.1f}%".format(spread * 100.0)
+            else:
+                spread_txt = "n/a"
+            msg = (
+                "Backlash check @ {:.2f}: from below {:.3f} {}, from above "
+                "{:.3f} {} → power spread {}".format(
+                    res["target"],
+                    res["power_from_below"],
+                    unit,
+                    res["power_from_above"],
+                    unit,
+                    spread_txt,
+                )
+            )
+            self._status.setText(msg)
+            self._emit_status(msg, 8000)
+
+        self._run_hw(
+            _do,
+            "Backlash check (re-approaching from both sides)…",
+            on_result=_on_val,
+        )
+
     def _toggle_pi_params(self):
         visible = not self._pi_panel.isVisible()
         self._pi_panel.setVisible(visible)
@@ -3040,6 +3094,7 @@ class SetPowerTab(QWidget):
     def set_powermeter_available(self, available):
         """Enable or disable powermeter-dependent controls."""
         self._btn_measure.setEnabled(available)
+        self._btn_backlash.setEnabled(available)
         self._update_feedback_enabled()
 
     def _on_all_off(self):

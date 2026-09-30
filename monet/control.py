@@ -139,6 +139,83 @@ class IlluminationControl:
         """Set the attenuator value."""
         self.attenuator.set(value)
 
+    def attenuator_hysteresis_probe(self, read_power, delta=5.0, settle=0.5):
+        """Quantify attenuator backlash by re-approaching one angle two ways.
+
+        Re-commands the *current* attenuator angle approached first from below
+        (angle - ``delta``) and then from above (angle + ``delta``), reading
+        the power after each approach. A rotation-mount / half-wave-plate with
+        backlash returns different powers for the two directions even though the
+        commanded angle is identical — and because the squared-sine attenuation
+        curve is steep, a fraction of a degree of hysteresis becomes a large
+        power swing. That makes this the prime suspect for a calibrate-vs-
+        measure deviation when both are done in the same plane (where the
+        objective transmission factor cancels out).
+
+        The attenuator is returned to the starting angle. Both approaches are
+        clamped to the calibrated angle range. ``read_power`` is a zero-arg
+        callable returning a power reading (the caller supplies the meter).
+
+        Parameters
+        ----------
+        read_power : callable
+            Zero-arg callable returning a power reading (e.g.
+            ``powermeter.read``).
+        delta : float
+            How far to move away before re-approaching, in attenuator units.
+        settle : float
+            Seconds to wait after each move before reading.
+
+        Returns
+        -------
+        dict
+            ``target``, ``approach_below``/``approach_above`` (the away
+            positions), ``pos_from_below``/``pos_from_above`` (read-back
+            angles), ``power_from_below``/``power_from_above``, and
+            ``power_spread_frac`` = \\|Δpower\\| / mean power.
+        """
+        import time
+
+        att = self.attenuator
+        target = att.curr_pos()
+
+        # Keep both approaches inside the calibrated angle range.
+        params = getattr(self.analyzer, "analysis_parameters", {}) or {}
+        lo_lim = params.get("min")
+        hi_lim = params.get("max")
+        below = target - delta
+        above = target + delta
+        if lo_lim is not None and np.isfinite(lo_lim):
+            below = max(below, lo_lim)
+        if hi_lim is not None and np.isfinite(hi_lim):
+            above = min(above, hi_lim)
+
+        def _approach(via):
+            att.set(via)
+            time.sleep(settle)
+            att.set(target)
+            time.sleep(settle)
+            return att.curr_pos(), read_power()
+
+        pos_lo, p_lo = _approach(below)
+        pos_hi, p_hi = _approach(above)
+        att.set(target)  # leave it where we found it
+
+        mean = (p_lo + p_hi) / 2.0
+        spread = abs(p_hi - p_lo) / mean if mean else float("nan")
+        result = {
+            "target": target,
+            "approach_below": below,
+            "approach_above": above,
+            "pos_from_below": pos_lo,
+            "pos_from_above": pos_hi,
+            "power_from_below": p_lo,
+            "power_from_above": p_hi,
+            "power_spread_frac": spread,
+        }
+        logger.info("attenuator hysteresis probe: %s", result)
+        return result
+
     def load_calibration(self, time_idx="latest"):
         """Load a calibration from the database and set the analyzer model.
 
