@@ -139,6 +139,83 @@ class IlluminationControl:
         """Set the attenuator value."""
         self.attenuator.set(value)
 
+    def attenuator_hysteresis_probe(self, read_power, delta=5.0, settle=0.5):
+        """Quantify attenuator backlash by re-approaching one angle two ways.
+
+        Re-commands the *current* attenuator angle approached first from below
+        (angle - ``delta``) and then from above (angle + ``delta``), reading
+        the power after each approach. A rotation-mount / half-wave-plate with
+        backlash returns different powers for the two directions even though the
+        commanded angle is identical — and because the squared-sine attenuation
+        curve is steep, a fraction of a degree of hysteresis becomes a large
+        power swing. That makes this the prime suspect for a calibrate-vs-
+        measure deviation when both are done in the same plane (where the
+        objective transmission factor cancels out).
+
+        The attenuator is returned to the starting angle. Both approaches are
+        clamped to the calibrated angle range. ``read_power`` is a zero-arg
+        callable returning a power reading (the caller supplies the meter).
+
+        Parameters
+        ----------
+        read_power : callable
+            Zero-arg callable returning a power reading (e.g.
+            ``powermeter.read``).
+        delta : float
+            How far to move away before re-approaching, in attenuator units.
+        settle : float
+            Seconds to wait after each move before reading.
+
+        Returns
+        -------
+        dict
+            ``target``, ``approach_below``/``approach_above`` (the away
+            positions), ``pos_from_below``/``pos_from_above`` (read-back
+            angles), ``power_from_below``/``power_from_above``, and
+            ``power_spread_frac`` = \\|Δpower\\| / mean power.
+        """
+        import time
+
+        att = self.attenuator
+        target = att.curr_pos()
+
+        # Keep both approaches inside the calibrated angle range.
+        params = getattr(self.analyzer, "analysis_parameters", {}) or {}
+        lo_lim = params.get("min")
+        hi_lim = params.get("max")
+        below = target - delta
+        above = target + delta
+        if lo_lim is not None and np.isfinite(lo_lim):
+            below = max(below, lo_lim)
+        if hi_lim is not None and np.isfinite(hi_lim):
+            above = min(above, hi_lim)
+
+        def _approach(via):
+            att.set(via)
+            time.sleep(settle)
+            att.set(target)
+            time.sleep(settle)
+            return att.curr_pos(), read_power()
+
+        pos_lo, p_lo = _approach(below)
+        pos_hi, p_hi = _approach(above)
+        att.set(target)  # leave it where we found it
+
+        mean = (p_lo + p_hi) / 2.0
+        spread = abs(p_hi - p_lo) / mean if mean else float("nan")
+        result = {
+            "target": target,
+            "approach_below": below,
+            "approach_above": above,
+            "pos_from_below": pos_lo,
+            "pos_from_above": pos_hi,
+            "power_from_below": p_lo,
+            "power_from_above": p_hi,
+            "power_spread_frac": spread,
+        }
+        logger.info("attenuator hysteresis probe: %s", result)
+        return result
+
     def load_calibration(self, time_idx="latest"):
         """Load a calibration from the database and set the analyzer model.
 
@@ -153,7 +230,21 @@ class IlluminationControl:
             fname, self.config["index"], time_idx=time_idx
         )
 
-        self.analyzer.load_model(cali_pars)
+        # The stored calibration may have been fit with a different analysis
+        # model than the current config (e.g. sinusoidal before switching to
+        # polynomial); loading it into the current analyzer then raises. Stay
+        # uncalibrated with a clear warning rather than crashing.
+        try:
+            self.analyzer.load_model(cali_pars)
+        except Exception as exc:
+            logger.warning(
+                "Stored calibration is incompatible with the current "
+                "analysis model (%s); recalibrate. Leaving the instrument "
+                "uncalibrated.",
+                exc,
+            )
+            self.is_calibrated = False
+            return
         self.is_calibrated = True
 
     def disconnect(self):
@@ -286,6 +377,23 @@ class IlluminationLaserControl(IlluminationControl):
                     e,
                 )
 
+    def _analyzers_for(self, laser):
+        """Analyzers/power-ranges for ``laser`` under the current model.
+
+        Like :meth:`_populate_analyzers`, but raises a clear error when no
+        stored calibration is compatible with the current analysis model
+        (e.g. after switching the model before recalibrating) instead of
+        letting callers crash on an empty mapping.
+        """
+        analyzers, power_ranges = self._populate_analyzers(self.cali_db, laser)
+        if not analyzers:
+            raise ValueError(
+                "No calibration compatible with the current analysis model "
+                "for laser {}; recalibrate this laser with the current "
+                "model.".format(laser)
+            )
+        return analyzers, power_ranges
+
     def _populate_analyzers(self, db, laser):
         """Create analyzers for various power settings from the database.
 
@@ -304,9 +412,9 @@ class IlluminationLaserControl(IlluminationControl):
         power_ranges : pandas DataFrame
             Indexed by laser power settings, with columns 'min', 'max'.
         """
-        if not self.is_calibrated:
+        if db is None:
             raise KeyError(
-                "Cannot populate analyzers: no calibration present."
+                "Cannot populate analyzers: no calibration database loaded."
             )
         laser = int(laser)
         ic(db)
@@ -316,20 +424,39 @@ class IlluminationLaserControl(IlluminationControl):
         analyzers = {}
         power_ranges = pd.DataFrame(columns=["min", "max"])
         for pwr, cali_pars in subdb.groupby(POWER_TAG):
+            # Use the most recent calibration for this power. The DB may hold
+            # older rows from a different analysis model (e.g. sinusoidal
+            # before switching to polynomial); the latest row matches the
+            # current model, and any still-incompatible row is skipped below.
+            try:
+                cali_pars = cali_pars.sort_index()
+            except Exception:
+                pass
+            row = cali_pars.iloc[-1]
             pars = {}
             for col in cali_pars.columns:
-                val = cali_pars[col].to_numpy()[0]
+                val = row[col]
                 try:
                     if not np.isnan(val):
                         pars[col] = val
                 except (TypeError, ValueError):
                     pass  # skip non-numeric columns (e.g. powermeter_type)
-            analyzers[pwr] = load_class(
+            analyzer = load_class(
                 anaconfig["classpath"], anaconfig["init_kwargs"]
             )
-            analyzers[pwr].load_model(pars)
-
-            power_ranges.loc[pwr, :] = sorted(analyzers[pwr].output_range())
+            try:
+                analyzer.load_model(pars)
+                power_ranges.loc[pwr, :] = sorted(analyzer.output_range())
+            except Exception as exc:
+                logger.warning(
+                    "Skipping laser power %s: stored calibration is "
+                    "incompatible with the current analysis model (%s). "
+                    "Recalibrate this power with the current model.",
+                    pwr,
+                    exc,
+                )
+                continue
+            analyzers[pwr] = analyzer
         ic(power_ranges)
         return analyzers, power_ranges
 
@@ -363,12 +490,29 @@ class IlluminationLaserControl(IlluminationControl):
             self.config["index"][LASER_TAG] = laser
             if self.auto_enable_lasers:
                 self.lasers[self.curr_laser].enabled = True
-            if self.is_calibrated:
+            # Gate on having a database, not on is_calibrated: switching to a
+            # laser with a valid calibration must re-establish it even if a
+            # previously-selected laser (incompatible with the current model)
+            # cleared the flag — otherwise the instrument stays locked out.
+            if getattr(self, "cali_db", None) is not None:
                 ic(self.cali_db)
                 self._analyzers, self._power_ranges = self._populate_analyzers(
                     self.cali_db, self.curr_laser
                 )
-                self.laserpower = self._power_ranges.index.min()
+                if len(self._power_ranges.index) == 0:
+                    # No calibration compatible with the current analysis
+                    # model (e.g. just after switching the model, before
+                    # recalibrating). Stay uncalibrated rather than setting
+                    # laserpower to NaN and later KeyError'ing on it.
+                    logger.warning(
+                        "No calibration compatible with the current analysis "
+                        "model for laser %s; recalibrate.",
+                        self.curr_laser,
+                    )
+                    self.is_calibrated = False
+                else:
+                    self.is_calibrated = True
+                    self.laserpower = self._power_ranges.index.min()
             else:
                 logger.debug(
                     "Calibration not available, not setting analyzers."
@@ -712,7 +856,7 @@ class IlluminationLaserControl(IlluminationControl):
         # C34 safety ceiling — enforced below the actuation layer.
         pwr, _ = self.clamp_to_max_power(pwr, laser)
 
-        analyzers, _ = self._populate_analyzers(self.cali_db, laser)
+        analyzers, _ = self._analyzers_for(laser)
         if len(analyzers) < 2:
             raise ValueError(
                 "At least 2 calibrated laser power levels are required for "
@@ -791,7 +935,7 @@ class IlluminationLaserControl(IlluminationControl):
         # C34 safety ceiling — enforced below the actuation layer.
         pwr, _ = self.clamp_to_max_power(pwr, laser)
 
-        analyzers, _ = self._populate_analyzers(self.cali_db, laser)
+        analyzers, _ = self._analyzers_for(laser)
 
         # Find the calibrated level nearest to the current hardware laser power
         curr_lp = float(self.lasers[laser].power)
@@ -850,7 +994,7 @@ class IlluminationLaserControl(IlluminationControl):
         if laser is None:
             laser = self.curr_laser
 
-        analyzers, _ = self._populate_analyzers(self.cali_db, laser)
+        analyzers, _ = self._analyzers_for(laser)
         att_pos = self.attenuator.curr_pos()
 
         laser_pwrs = []
@@ -906,7 +1050,7 @@ class IlluminationLaserControl(IlluminationControl):
         if same_laser:
             pr = getattr(self, "_power_ranges", None)
         else:
-            _, pr = self._populate_analyzers(self.cali_db, laser)
+            _, pr = self._analyzers_for(laser)
         if pr is None or pr.empty:
             raise ValueError("No calibration power ranges available.")
         # power-meter units → sample plane (no-op unless BFP-calibrated)

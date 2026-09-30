@@ -374,3 +374,57 @@ for defpath in default_protocol_paths:
         pass
 if PROTOCOLS == {}:
     PROTOCOLS = {"test_2D": calibration_protocol}
+
+
+def set_config_analysis(name, analysis):
+    """Persist a microscope's analysis-model config to the config file.
+
+    Updates ``CONFIGS[name]['analysis']`` in memory and rewrites
+    ``CONFIGS_PATH`` (the loaded config YAML), backing the previous file up to
+    ``<path>.bak`` first. Used by the GUI's "Apply best model" so a chosen
+    analysis model survives a restart. The model is a per-microscope setting,
+    so this changes it for all of that microscope's lasers.
+
+    Parameters
+    ----------
+    name : str
+        The microscope key in :data:`CONFIGS`.
+    analysis : dict
+        The new ``analysis`` section (``classpath`` + ``init_kwargs``).
+
+    Returns
+    -------
+    str or None
+        The config-file path written, or ``None`` if the microscope is unknown
+        or there is no writable config file (e.g. defaults, or an
+        externally-managed config); the in-memory ``CONFIGS`` is still updated
+        when the name is known.
+    """
+    if name not in CONFIGS:
+        logger.warning(
+            "set_config_analysis: unknown microscope %r; not persisted.", name
+        )
+        return None
+    CONFIGS[name]["analysis"] = analysis
+    if not CONFIGS_PATH or not os.path.isfile(CONFIGS_PATH):
+        logger.warning(
+            "set_config_analysis: no writable config file (CONFIGS_PATH=%r); "
+            "change applied in memory only.",
+            CONFIGS_PATH,
+        )
+        return None
+    try:
+        import shutil as _shutil
+
+        _shutil.copyfile(CONFIGS_PATH, CONFIGS_PATH + ".bak")
+    except Exception:
+        logger.debug("could not back up config file", exc_info=True)
+    with open(CONFIGS_PATH, "w") as f:
+        _yaml.dump(CONFIGS, f, default_flow_style=False, sort_keys=False)
+    logger.info(
+        "Persisted analysis model for %s to %s (backup at %s.bak).",
+        name,
+        CONFIGS_PATH,
+        CONFIGS_PATH,
+    )
+    return CONFIGS_PATH

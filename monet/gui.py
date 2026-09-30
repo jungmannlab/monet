@@ -44,6 +44,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+import monet.analysis as analysis
 import monet.io as io
 from monet import (
     CONFIGS,
@@ -52,11 +53,16 @@ from monet import (
     POWERMETER_BFP,
     POWERMETER_SAMPLE,
     PROTOCOLS,
+    set_config_analysis,
 )
 from monet import __version__ as _monet_version
-from monet.beampath import NikonNosepiece
+from monet.beampath import NikonFilterWheel, NikonNosepiece
 from monet.control import run_power_feedback
-from monet.util import update_mm_acquisition_comment, wavelength_to_rgb
+from monet.util import (
+    load_class,
+    update_mm_acquisition_comment,
+    wavelength_to_rgb,
+)
 
 # Window-title prefix, e.g. 'Monet v0.3.3'. Falls back to plain 'Monet' when
 # the package metadata is unavailable (running from an uninstalled source
@@ -183,6 +189,9 @@ class ConnectWorker(QThread):
                 pc = mca.CalibrationProtocol2D(self._config, self._protocol)
             else:
                 pc = mca.CalibrationProtocol1D(self._config)
+            # Remember the CONFIGS key so tabs can persist config changes
+            # (e.g. Apply best model) back to the right microscope entry.
+            pc._microscope_name = self._name
             if not getattr(pc, "powermeter_available", True):
                 msg = (
                     "PowerMeter not available — calibration and power "
@@ -850,6 +859,9 @@ class CalibrateTab(QWidget):
         self._worker = None
         self._discard_worker = None  # keep alive to prevent GC
         self._history_worker = None  # keep alive to prevent GC
+        self._verify_worker = None  # keep alive to prevent GC
+        self._pm_available = True
+        self._last_model_summary = None  # per-model verify residuals
         self._checkboxes = {}
         # Latest outlier report from CalibrationPlots (list of dicts).
         self._flagged_report = []
@@ -859,8 +871,43 @@ class CalibrateTab(QWidget):
         """Emit a status message; ``timeout_ms=0`` means persistent."""
         self.status.emit(msg, timeout_ms)
 
+    _MODEL_CHOICES = [
+        ("Sinusoidal", "sinus"),
+        ("Linear", "linear"),
+        ("Polynomial (deg 3)", "poly deg 3"),
+        ("Polynomial (deg 4)", "poly deg 4"),
+        ("Polynomial (deg 5)", "poly deg 5"),
+        ("Polynomial (deg 6)", "poly deg 6"),
+    ]
+
     def _build_ui(self):
         layout = QVBoxLayout(self)
+
+        # Analysis model — shows the model in use and lets it be changed.
+        model_row = QHBoxLayout()
+        model_row.addWidget(QLabel("Analysis model:"))
+        self._model_combo = QComboBox()
+        for label, key in self._MODEL_CHOICES:
+            self._model_combo.addItem(label, key)
+        self._model_combo.setToolTip(
+            "The attenuation-curve model fit during calibration. Changing it "
+            "invalidates the current calibration (all lasers); recalibrate to "
+            "apply. Persisted to the microscope's config."
+        )
+        self._model_combo.currentIndexChanged.connect(
+            self._on_model_combo_changed
+        )
+        model_row.addWidget(self._model_combo)
+        self._btn_set_default = QPushButton("Set as default")
+        self._btn_set_default.setEnabled(False)
+        self._btn_set_default.setToolTip(
+            "Persist the selected model as this microscope's default (written "
+            "to the config file, loaded on the next start)."
+        )
+        self._btn_set_default.clicked.connect(self._on_set_default_model)
+        model_row.addWidget(self._btn_set_default)
+        model_row.addStretch()
+        layout.addLayout(model_row)
 
         # Wavelength selection group
         self._wl_group = QGroupBox("Wavelengths to calibrate")
@@ -997,14 +1044,55 @@ class CalibrateTab(QWidget):
             "Delete the calibration records written by the last run from "
             "the database."
         )
+        self._btn_verify = QPushButton("Verify")
+        self._btn_verify.setEnabled(False)
+        self._btn_verify.setToolTip(
+            "Re-measure a few attenuator angles at each calibrated laser "
+            "power and compare to the fitted model. A fresh cross-check that "
+            "catches drift and laser-power-setting effects the fit residual "
+            "cannot."
+        )
+        self._btn_compare = QPushButton("Compare models")
+        self._btn_compare.setEnabled(False)
+        self._btn_compare.setToolTip(
+            "Fit the sinusoidal and polynomial (deg 3–6) models to the worst "
+            "calibration curve and report each one's residual, so you can pick "
+            "the model that best describes this attenuator."
+        )
+        self._btn_apply_model = QPushButton("Apply best model + recal")
+        self._btn_apply_model.setEnabled(False)
+        self._btn_apply_model.setToolTip(
+            "Switch this microscope's analysis model to the best one (by fresh "
+            "verify residual if available, else fit residual) and recalibrate."
+        )
         self._btn_start.clicked.connect(self._on_start)
         self._btn_cancel.clicked.connect(self._on_cancel)
         self._btn_discard.clicked.connect(self._on_discard)
+        self._btn_verify.clicked.connect(self._on_verify)
+        self._btn_compare.clicked.connect(self._on_compare_models)
+        self._btn_apply_model.clicked.connect(self._on_apply_best_model)
         btn_row2.addWidget(self._btn_start)
         btn_row2.addWidget(self._btn_cancel)
         btn_row2.addWidget(self._btn_discard)
+        btn_row2.addWidget(self._btn_verify)
+        btn_row2.addWidget(self._btn_compare)
+        btn_row2.addWidget(self._btn_apply_model)
         btn_row2.addStretch()
         layout.addLayout(btn_row2)
+
+    @staticmethod
+    def _fit_quality_text(q, prefix="Fit quality"):
+        """One-line summary of a _fit_quality dict for the calibration log."""
+        txt = "{}: RMS {:.1f}%, max {:.1f}% at {:.2f}".format(
+            prefix, q["rms_pct"], q["max_pct"], q["max_at"]
+        )
+        drift = q.get("drift_pct")
+        if isinstance(drift, (int, float)) and drift == drift:
+            txt += ", drift {:+.1f}%".format(drift)
+        if q["rms_pct"] > 5.0:
+            txt += "  ⚠ model may not fit well — a set power can deviate by a"
+            txt += " similar amount"
+        return txt
 
     def set_pc(self, pc):
         self._pc = pc
@@ -1013,6 +1101,8 @@ class CalibrateTab(QWidget):
         # Drop history overlaid from any previous connection.
         self._plots.set_history({})
         self._update_discard_enabled()
+        if pc is not None:
+            self._sync_model_combo()
         has_beampath = (
             pc is not None
             and hasattr(pc, "instrument")
@@ -1026,6 +1116,7 @@ class CalibrateTab(QWidget):
             idx = self._pm_pos_combo.findData(POWERMETER_SAMPLE)
             if idx >= 0:
                 self._pm_pos_combo.setCurrentIndex(idx)
+        self._update_verify_enabled()
 
     def _rebuild_checkboxes(self):
         # Remove old checkboxes (keep the button row at index 0)
@@ -1102,11 +1193,15 @@ class CalibrateTab(QWidget):
                 )
                 self._plots.add_curve(laser, lpwr, ctrl_vals, powers)
                 self._log.append("Done.")
+                q = getattr(self._pc, "last_fit_quality", None)
+                if q:
+                    self._log.append(self._fit_quality_text(q))
                 self._emit_status("Calibration complete.", 5000)
             except Exception as exc:
                 QMessageBox.critical(self, "Error", str(exc))
                 self._emit_status("Calibration failed.", 5000)
             self._btn_discard.setEnabled(bool(self._pc.saved_calibrations))
+            self._update_verify_enabled()
             return
 
         selected = self._selected_lasers()
@@ -1219,12 +1314,26 @@ class CalibrateTab(QWidget):
 
     def _on_finished(self):
         self._log.append("Calibration complete.")
+        fqs = getattr(self._pc, "fit_qualities", None) or {}
+        if fqs:
+            (laser, lpwr), q = max(
+                fqs.items(), key=lambda kv: kv[1]["rms_pct"]
+            )
+            self._log.append(
+                self._fit_quality_text(
+                    q,
+                    prefix="Fit quality (worst: {} nm @ {} mW)".format(
+                        laser, lpwr
+                    ),
+                )
+            )
         self._progress.setFormat("Done")
         self._btn_start.setEnabled(True)
         self._btn_cancel.setEnabled(False)
         self._update_discard_enabled()
         self._worker = None
         self._update_flagged_buttons()
+        self._update_verify_enabled()
         self._emit_status("Calibration complete.", 5000)
         self.calibration_finished.emit()
 
@@ -1473,11 +1582,335 @@ class CalibrateTab(QWidget):
 
     def set_powermeter_available(self, available):
         """Enable or disable calibration controls per powermeter state."""
+        self._pm_available = available
         self._btn_start.setEnabled(available)
+        self._update_verify_enabled()
         if not available:
             self._log.append(
                 "WARNING: PowerMeter not available. Calibration is disabled."
             )
+
+    def _update_verify_enabled(self):
+        """Enable Verify only when calibrated and the meter is available."""
+        calibrated = bool(
+            self._pc is not None
+            and getattr(self._pc, "instrument", None) is not None
+            and getattr(self._pc.instrument, "is_calibrated", False)
+        )
+        self._btn_verify.setEnabled(calibrated and self._pm_available)
+        has_curves = bool(
+            self._pc is not None
+            and (
+                getattr(self._pc, "last_curves", None)
+                or getattr(self._pc, "last_curve", None) is not None
+            )
+        )
+        self._btn_compare.setEnabled(has_curves)
+        self._btn_apply_model.setEnabled(has_curves)
+
+    def _on_verify(self):
+        """Re-measure a few angles per laser power and compare to the model."""
+        if self._pc is None:
+            return
+
+        pm_type = self._pm_pos_combo.currentData() or POWERMETER_SAMPLE
+
+        def _do():
+            return self._pc.verify_calibration(powermeter_type=pm_type)
+
+        def _on_result(res):
+            for p in res["points"]:
+                lp = p["laser_power"]
+                laser = p.get("laser")
+                who = "{} nm ".format(laser) if laser is not None else ""
+                who += "{} mW".format(lp) if lp is not None else "current"
+                self._log.append(
+                    "  verify {}: angle {:.2f} → measured {:.3f}, "
+                    "predicted {:.3f}  ({:+.1f}%)".format(
+                        who,
+                        p["angle"],
+                        p["measured"],
+                        p["predicted"],
+                        p["dev_pct"],
+                    )
+                )
+            self._log.append(
+                "Verification: RMS {:.1f}%, max |dev| {:.1f}% over {} "
+                "point(s).".format(
+                    res["rms_pct"], res["max_pct"], len(res["points"])
+                )
+            )
+            ms = res.get("model_summary") or {}
+            self._last_model_summary = ms or None
+            if ms:
+                self._log.append("Per-model (fit RMS vs fresh-verify RMS):")
+                for name, s in sorted(
+                    ms.items(), key=lambda kv: kv[1]["verify_rms_pct"]
+                ):
+                    self._log.append(
+                        "  {:<12s} fit {:.1f}%  →  verify {:.1f}%".format(
+                            name, s["fit_rms_pct"], s["verify_rms_pct"]
+                        )
+                    )
+                vr = [
+                    s["verify_rms_pct"]
+                    for s in ms.values()
+                    if s["verify_rms_pct"] == s["verify_rms_pct"]
+                ]
+                if len(vr) >= 2:
+                    spread = max(vr) - min(vr)
+                    best = min(
+                        ms.items(), key=lambda kv: kv[1]["verify_rms_pct"]
+                    )
+                    if spread < 2.0:
+                        self._log.append(
+                            "→ All models verify within {:.1f}% — points at "
+                            "repeatability/drift, not the model.".format(
+                                spread
+                            )
+                        )
+                    else:
+                        self._log.append(
+                            "→ '{}' verifies best ({:.1f}%) — a better model "
+                            "would help (model accuracy).".format(
+                                best[0], best[1]["verify_rms_pct"]
+                            )
+                        )
+            self._update_verify_enabled()
+            self._emit_status(
+                "Verification: RMS {:.1f}%, max {:.1f}%".format(
+                    res["rms_pct"], res["max_pct"]
+                ),
+                8000,
+            )
+
+        def _on_error(msg):
+            self._log.append(f"ERROR verifying calibration: {msg}")
+            QMessageBox.critical(self, "Verify error", msg)
+            self._emit_status(f"Verify failed: {msg}", 5000)
+
+        def _on_finished():
+            self._btn_start.setEnabled(self._pm_available)
+            self._update_verify_enabled()
+            self._verify_worker = None
+
+        self._btn_start.setEnabled(False)
+        self._btn_verify.setEnabled(False)
+        self._log.append("Verifying calibration (re-measuring angles)…")
+        self._emit_status("Verifying calibration…")
+
+        worker = GenericWorker(_do)
+        worker.result.connect(_on_result)
+        worker.error.connect(_on_error)
+        worker.finished.connect(_on_finished)
+        self._verify_worker = worker
+        worker.start()
+
+    def _all_curves(self):
+        """Every raw calibration curve from this session as ``[(x, y), ...]``.
+
+        All (wavelength, power) curves for a protocol run, or the single 1D
+        curve; empty if none are available.
+        """
+        curves = getattr(self._pc, "last_curves", None)
+        if curves:
+            return list(curves.values())
+        cur = getattr(self._pc, "last_curve", None)
+        return [cur] if cur is not None else []
+
+    def _on_compare_models(self):
+        """Rank models pooled across all calibration curves (all λ / powers)."""
+        if self._pc is None:
+            return
+        curves = self._all_curves()
+        if not curves:
+            self._log.append("No calibration curve available to compare.")
+            return
+        ana_cfg = self._pc.instrument.config["analysis"]["init_kwargs"]
+        try:
+            ranking = analysis.compare_models_multi(curves, ana_cfg)
+        except Exception as exc:
+            self._log.append("Compare models failed: {}".format(exc))
+            return
+        self._log.append(
+            "Model comparison across {} curve(s):".format(len(curves))
+        )
+        for r in ranking:
+            self._log.append(
+                "  {:<12s} RMS {:.1f}%, max {:.1f}%".format(
+                    r["model"], r["rms_pct"], r["max_pct"]
+                )
+            )
+        if ranking:
+            best = ranking[0]
+            self._log.append(
+                "Best fit: {} (RMS {:.1f}%). Use 'Apply best model + recal' "
+                "to switch to it.".format(best["model"], best["rms_pct"])
+            )
+
+    def _on_apply_best_model(self):
+        """Switch the analysis model to the best one and recalibrate."""
+        if self._pc is None:
+            return
+        # Prefer the fresh-verify winner; else best fit pooled over all curves.
+        best_name = None
+        ms = self._last_model_summary
+        if ms:
+            best_name = min(ms, key=lambda k: ms[k]["verify_rms_pct"])
+            basis = "verify"
+        else:
+            curves = self._all_curves()
+            if not curves:
+                self._log.append("No calibration curve available.")
+                return
+            ana_cfg = self._pc.instrument.config["analysis"]["init_kwargs"]
+            try:
+                ranking = analysis.compare_models_multi(curves, ana_cfg)
+            except Exception as exc:
+                self._log.append("Compare models failed: {}".format(exc))
+                return
+            if ranking:
+                best_name = ranking[0]["model"]
+            basis = "fit"
+        if best_name is None:
+            self._log.append("Could not determine a best model.")
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "Apply model & recalibrate",
+            "Switch this microscope's analysis model to '{}' (best by {} "
+            "residual) and recalibrate?\nThis changes the model for all "
+            "lasers and sets it as the default.".format(best_name, basis),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        self._apply_analysis_model(best_name, recalibrate=True, persist=True)
+
+    def _apply_analysis_model(self, name, recalibrate=False, persist=False):
+        """Switch the analysis model for this session, invalidating the old
+        (different-model) calibration. Persists to config only if ``persist``;
+        optionally recalibrates."""
+        if self._pc is None:
+            return False
+        classpath, extra = analysis.model_spec(name)
+        ana = self._pc.instrument.config["analysis"]
+        new_kwargs = dict(ana.get("init_kwargs", {}))
+        new_kwargs.pop("polydegree", None)
+        new_kwargs.update(extra)
+        ana["classpath"] = classpath
+        ana["init_kwargs"] = new_kwargs
+        try:
+            self._pc.instrument.analyzer = load_class(classpath, new_kwargs)
+        except Exception as exc:
+            self._log.append(
+                "Could not build model '{}': {}".format(name, exc)
+            )
+            return False
+        # The old calibration was fit with a different model; invalidate it.
+        self._pc.instrument.is_calibrated = False
+        if persist:
+            self._persist_default_model()
+        self._sync_model_combo()
+        if recalibrate:
+            self._log.append("Applied model '{}'. Recalibrating…".format(name))
+            self._on_start()
+        else:
+            self._log.append(
+                "Model set to '{}' for this session. 'Set as default' to "
+                "persist; recalibrate to apply.".format(name)
+            )
+        return True
+
+    def _persist_default_model(self):
+        """Write the current session analysis model to the config file."""
+        scope = getattr(self._pc, "_microscope_name", None)
+        ana = self._pc.instrument.config.get("analysis", {})
+        try:
+            written = set_config_analysis(scope, {**ana}) if scope else None
+        except Exception as exc:
+            written = None
+            self._log.append(
+                "Could not persist model to config: {}".format(exc)
+            )
+        if written:
+            self._log.append(
+                "Saved as default in config ({}).".format(written)
+            )
+        else:
+            self._log.append(
+                "Could not persist as default (no writable config)."
+            )
+        return written
+
+    def _on_set_default_model(self):
+        self._persist_default_model()
+        self._annotate_model_combo()
+
+    def _default_model_name(self):
+        """The persisted-default model name for this microscope, or None."""
+        scope = getattr(self._pc, "_microscope_name", None)
+        if scope and scope in CONFIGS:
+            ana = CONFIGS[scope].get("analysis", {})
+            return analysis.model_name_from_config(
+                ana.get("classpath"), ana.get("init_kwargs")
+            )
+        return None
+
+    def _annotate_model_combo(self):
+        """Mark the persisted-default option with '(default)'."""
+        labels = {k: lbl for lbl, k in self._MODEL_CHOICES}
+        default = self._default_model_name()
+        for i in range(self._model_combo.count()):
+            key = self._model_combo.itemData(i)
+            base = labels.get(key, str(key))
+            self._model_combo.setItemText(
+                i, base + (" (default)" if key == default else "")
+            )
+
+    def _sync_model_combo(self):
+        """Reflect the instrument's current analysis model in the combo."""
+        if self._pc is None:
+            return
+        ana = self._pc.instrument.config.get("analysis", {})
+        cur = analysis.model_name_from_config(
+            ana.get("classpath"), ana.get("init_kwargs")
+        )
+        self._model_combo.blockSignals(True)
+        idx = self._model_combo.findData(cur)
+        if idx < 0:
+            # Unrecognized model: show it as a read-only entry.
+            self._model_combo.insertItem(0, cur, cur)
+            idx = 0
+        self._model_combo.setCurrentIndex(idx)
+        self._model_combo.blockSignals(False)
+        self._annotate_model_combo()
+        self._btn_set_default.setEnabled(True)
+
+    def _on_model_combo_changed(self, _idx):
+        if self._pc is None:
+            return
+        name = self._model_combo.currentData()
+        cur = analysis.model_name_from_config(
+            self._pc.instrument.config.get("analysis", {}).get("classpath"),
+            self._pc.instrument.config.get("analysis", {}).get("init_kwargs"),
+        )
+        if name == cur:
+            return
+        reply = QMessageBox.question(
+            self,
+            "Change analysis model",
+            "Switch this microscope's analysis model to '{}' for this "
+            "session?\nThis invalidates the current calibration (all "
+            "lasers); recalibrate to apply. Use 'Set as default' to keep it "
+            "after a restart.".format(name),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            self._sync_model_combo()  # revert selection
+            return
+        self._apply_analysis_model(name, recalibrate=False, persist=False)
 
     def cancel_worker_and_wait(self):
         if self._worker and self._worker.isRunning():
@@ -1783,10 +2216,29 @@ class SetPowerTab(QWidget):
         self._active_worker = None  # keep alive to prevent GC
         self._cancel_feedback = False
         self._laser_state: dict = {}  # {laser: (pwr_value, mode_data)}
+        self._last_bp_positions = None  # last-read beam-path positions
+        self._expert = False
         self._build_ui()
+        self.set_expert_view(self._expert)
 
     def _emit_status(self, msg, timeout_ms=0):
         self.status.emit(msg, timeout_ms)
+
+    def set_expert_view(self, expert):
+        """Show/hide advanced controls not meant for a regular user.
+
+        Hidden in the normal view: the Backlash check, Refresh hardware state,
+        and the direct Attenuator / Laser-power controls.
+        """
+        self._expert = bool(expert)
+        for w in (
+            self._btn_backlash,
+            self._btn_hw_refresh,
+            self._hw_att_group,
+            self._hw_pwr_group,
+            self._hw_sep,
+        ):
+            w.setVisible(self._expert)
 
     def _build_ui(self):
         layout = QVBoxLayout(self)
@@ -1996,6 +2448,22 @@ class SetPowerTab(QWidget):
         self._btn_measure = QPushButton("Measure")
         self._btn_measure.clicked.connect(self._on_measure)
         measure_row.addWidget(self._btn_measure)
+        # Readiness hint: says whether light is expected to reach the sensor
+        # (laser on, beam path set) so a 0-reading isn't a mystery.
+        self._measure_hint = QLabel("")
+        measure_row.addWidget(self._measure_hint)
+        # Backlash check: re-approach the current attenuator angle from both
+        # sides to see if rotation-mount hysteresis explains a calibrate-vs-
+        # measure deviation.
+        self._btn_backlash = QPushButton("Backlash check")
+        self._btn_backlash.setToolTip(
+            "Re-approach the current attenuator angle from below and from "
+            "above, reading the power each time. A large power spread means "
+            "rotation-mount backlash — a likely cause of calibrate-vs-measure "
+            "deviation. Moves the attenuator briefly, then restores it."
+        )
+        self._btn_backlash.clicked.connect(self._on_backlash_check)
+        measure_row.addWidget(self._btn_backlash)
         measure_row.addStretch()
         layout.addLayout(measure_row)
 
@@ -2012,6 +2480,7 @@ class SetPowerTab(QWidget):
         sep.setFrameShape(QFrame.Shape.HLine)
         sep.setFrameShadow(QFrame.Shadow.Sunken)
         layout.addWidget(sep)
+        self._hw_sep = sep
 
         # ── Hardware state section (formerly Adjust tab) ──────────────────
         hw_refresh_row = QHBoxLayout()
@@ -2026,6 +2495,7 @@ class SetPowerTab(QWidget):
 
         # Attenuator direct control
         hw_att_group = QGroupBox("Attenuator (direct)")
+        self._hw_att_group = hw_att_group
         hw_att_layout = QHBoxLayout()
         hw_att_layout.addWidget(QLabel("Position:"))
         self._hw_att_spin = QDoubleSpinBox()
@@ -2044,6 +2514,7 @@ class SetPowerTab(QWidget):
 
         # Laser power direct control
         hw_pwr_group = QGroupBox("Laser power (direct)")
+        self._hw_pwr_group = hw_pwr_group
         hw_pwr_layout = QHBoxLayout()
         hw_pwr_layout.addWidget(QLabel("Power (mW):"))
         self._hw_pwr_spin = QDoubleSpinBox()
@@ -2172,6 +2643,7 @@ class SetPowerTab(QWidget):
         # line (populate only — not applied to hardware).
         self._apply_saved_state_to_ui(laser)
         self._update_range_label()
+        self._update_measure_hint()
 
     # --- helpers ---
 
@@ -2190,6 +2662,9 @@ class SetPowerTab(QWidget):
 
     def _set_bp_label(self, positions):
         """Show the beam-path element positions next to the buttons."""
+        # Cache for the Measure readiness hint (filter-cube / turret checks).
+        self._last_bp_positions = dict(positions) if positions else None
+        self._update_measure_hint()
         if not positions:
             self._bp_state_label.setText("current beampath settings: unknown")
             return
@@ -2206,6 +2681,155 @@ class SetPowerTab(QWidget):
                 for obid, pos in positions.items()
             )
         )
+
+    @staticmethod
+    def _measure_readiness(
+        laser,
+        laser_on,
+        use_beampath,
+        has_bp_preset,
+        filter_state="unknown",
+        turret_state="unknown",
+    ):
+        """Whether light is expected to reach the sensor when measuring.
+
+        Pure helper (no hardware / Qt) so it is unit-testable. Returns
+        ``(ready, short, detail)`` where ``ready`` is True/False/None (None =
+        nothing to say yet), ``short`` is a one-line chip for next to the
+        button, and ``detail`` is the button tooltip.
+
+        Parameters
+        ----------
+        laser : int, str or None
+            Selected laser wavelength (None = nothing selected yet).
+        laser_on : bool
+            Whether the selected laser is currently on.
+        use_beampath, has_bp_preset : bool
+            Whether a beam path is configured, and whether a preset exists for
+            this laser.
+        filter_state : {"ok", "mismatch", "unknown"}
+            Whether the filter cube currently in the path matches ``laser``.
+        turret_state : {"ok", "objective_but_bfp", "unknown"}
+            ``"objective_but_bfp"`` when the objective is in the path while the
+            meter is set to the back focal plane, so light goes to the sample.
+
+        The shutter is not checked: with autoshutter it opens with the laser.
+        """
+        if laser is None:
+            return (None, "", "")
+        if not laser_on:
+            return (
+                False,
+                "⚠ laser OFF — will read ≈ 0",
+                "The selected laser is off, so the meter will read about "
+                "zero. Switch the laser ON before measuring.",
+            )
+        if filter_state == "mismatch":
+            return (
+                False,
+                "⚠ filter cube not set for {} nm".format(laser),
+                "The filter cube in the path does not match {} nm, so the "
+                "excitation may be blocked. Set the correct filter (Open "
+                "shutters & set filter) before measuring.".format(laser),
+            )
+        if turret_state == "objective_but_bfp":
+            return (
+                False,
+                "⚠ objective in path — need meter in sample position",
+                "The objective turret is at the imaging objective, not the "
+                "BFP powermeter port, so light goes to the sample plane. Put "
+                "the power meter in the sample position (and set the toggle to "
+                "Sample plane), or move the turret to the Powermeter port for "
+                "a BFP reading.",
+            )
+        if use_beampath and not has_bp_preset:
+            return (
+                False,
+                "⚠ no beam-path preset — check filter/shutter",
+                "No beam-path preset is configured for {} nm, so Measure "
+                "will not set the filter/light path. Verify the correct "
+                "filter is in and the path is open, or the meter may read "
+                "about zero.".format(laser),
+            )
+        if has_bp_preset:
+            detail = (
+                "Laser is ON and Measure sets the filter/beam path for {} nm "
+                "(the shutter opens automatically with the laser, "
+                "autoshutter). Light is expected to reach the sensor.".format(
+                    laser
+                )
+            )
+        else:
+            detail = "Laser is ON. Light is expected to reach the sensor."
+        return (True, "✓ light expected", detail)
+
+    def _filter_state(self, laser, bp_for_laser):
+        """Compare the current filter cube to the laser's expected filter.
+
+        Returns "ok"/"mismatch"/"unknown" using the last-read beam-path
+        positions and the laser's beam-path preset.
+        """
+        fid = self._filter_id()
+        positions = self._last_bp_positions
+        if (
+            fid is None
+            or not positions
+            or fid not in positions
+            or not isinstance(bp_for_laser, dict)
+            or fid not in bp_for_laser
+        ):
+            return "unknown"
+        return "ok" if positions[fid] == bp_for_laser[fid] else "mismatch"
+
+    def _turret_state(self):
+        """Whether the turret is consistent with the meter-position toggle.
+
+        Returns "objective_but_bfp" when the objective is in the path while
+        the BFP powermeter position is selected (light then goes to the sample
+        plane), else "ok"/"unknown".
+        """
+        nid = self._nosepiece_id()
+        positions = self._last_bp_positions
+        if nid is None or not positions or nid not in positions:
+            return "unknown"
+        if self._pm_pos_combo.currentData() != POWERMETER_BFP:
+            return "ok"  # sample-plane reading: turret at objective is correct
+        cur = positions[nid]
+        pm = self._turret_value("powermeter")
+        obj = self._turret_value("objective")
+        if pm is not None and cur == pm[1]:
+            return "ok"
+        if obj is not None and cur == obj[1]:
+            return "objective_but_bfp"
+        return "unknown"
+
+    def _update_measure_hint(self):
+        """Refresh the readiness chip/tooltip next to the Measure button."""
+        if self._pc is None:
+            self._measure_hint.setText("")
+            self._btn_measure.setToolTip("")
+            return
+        laser = self._laser_combo.currentData()
+        laser_on = self._btn_onoff.isChecked()
+        use_beampath = getattr(self._pc.instrument, "use_beampath", False)
+        protocol = getattr(self._pc, "protocol", None) or {}
+        bp = protocol.get("beampath") or {}
+        bp_for_laser = bp.get(laser)
+        has_bp_preset = bool(bp_for_laser)
+        ready, short, detail = self._measure_readiness(
+            laser,
+            laser_on,
+            use_beampath,
+            has_bp_preset,
+            filter_state=self._filter_state(laser, bp_for_laser),
+            turret_state=self._turret_state(),
+        )
+        self._measure_hint.setText(short)
+        color = {True: "green", False: "#b36b00"}.get(ready, "")
+        self._measure_hint.setStyleSheet(
+            "color: {};".format(color) if color else ""
+        )
+        self._btn_measure.setToolTip(detail)
 
     def _refresh_bp_label(self):
         """Re-read the beam-path state and update the label."""
@@ -2244,6 +2868,7 @@ class SetPowerTab(QWidget):
             self._btn_turret_obj,
             self._btn_turret_pm,
             self._btn_measure,
+            self._btn_backlash,
             self._btn_alloff,
             self._btn_hw_refresh,
             self._btn_hw_att_set,
@@ -2302,6 +2927,7 @@ class SetPowerTab(QWidget):
             self._status.setText(
                 f'Laser {laser} nm {"on" if checked else "off"}.'
             )
+            self._update_measure_hint()
             self._emit_status("Ready", 2000)
 
         self._run_hw(
@@ -2581,6 +3207,7 @@ class SetPowerTab(QWidget):
             self._status.setText(str(exc))
             return
         self._update_range_label()
+        self._update_measure_hint()
 
     def _nosepiece_id(self):
         """Return the beam-path object id of the objective turret, or None.
@@ -2594,6 +3221,21 @@ class SetPowerTab(QWidget):
             return None
         for obid, obj in objects.items():
             if isinstance(obj, NikonNosepiece):
+                return obid
+        return None
+
+    def _filter_id(self):
+        """Return the beam-path object id of the filter cube/turret, or None.
+
+        Detected by scanning the configured beam-path objects for a
+        ``NikonFilterWheel`` instance.
+        """
+        try:
+            objects = self._pc.instrument.beampath.objects
+        except Exception:
+            return None
+        for obid, obj in objects.items():
+            if isinstance(obj, NikonFilterWheel):
                 return obid
         return None
 
@@ -2945,6 +3587,47 @@ class SetPowerTab(QWidget):
 
         self._run_hw(_do, "Measuring power…", on_result=_on_val)
 
+    def _on_backlash_check(self):
+        """Re-approach the current attenuator angle from both sides and report
+        the power spread — a direct test for rotation-mount backlash."""
+        if self._pc is None:
+            return
+
+        def _do():
+            return self._pc.instrument.attenuator_hysteresis_probe(
+                read_power=self._pc.powermeter.read
+            )
+
+        def _on_val(res):
+            try:
+                unit = self._pc.powermeter.unit
+            except Exception:
+                unit = "a.u."
+            spread = res.get("power_spread_frac")
+            if isinstance(spread, float) and spread == spread:
+                spread_txt = "{:.1f}%".format(spread * 100.0)
+            else:
+                spread_txt = "n/a"
+            msg = (
+                "Backlash check @ {:.2f}: from below {:.3f} {}, from above "
+                "{:.3f} {} → power spread {}".format(
+                    res["target"],
+                    res["power_from_below"],
+                    unit,
+                    res["power_from_above"],
+                    unit,
+                    spread_txt,
+                )
+            )
+            self._status.setText(msg)
+            self._emit_status(msg, 8000)
+
+        self._run_hw(
+            _do,
+            "Backlash check (re-approaching from both sides)…",
+            on_result=_on_val,
+        )
+
     def _toggle_pi_params(self):
         visible = not self._pi_panel.isVisible()
         self._pi_panel.setVisible(visible)
@@ -2969,6 +3652,7 @@ class SetPowerTab(QWidget):
     def set_powermeter_available(self, available):
         """Enable or disable powermeter-dependent controls."""
         self._btn_measure.setEnabled(available)
+        self._btn_backlash.setEnabled(available)
         self._update_feedback_enabled()
 
     def _on_all_off(self):
@@ -2983,6 +3667,7 @@ class SetPowerTab(QWidget):
             self._status.setText("All lasers switched off.")
             self._btn_onoff.setChecked(False)
             self._btn_onoff.setText("switch ON")
+            self._update_measure_hint()
             self._emit_status("Ready", 2000)
 
         self._run_hw(_do, "Switching all lasers off…", on_done=_done)
@@ -4161,6 +4846,7 @@ class MonetWidget(QWidget):
         self._tab_widgets = {}
         self._scope_combo = None
         self._btn_connect = None
+        self._expert_cb = None
         self._build_ui(show_toolbar)
         if initial_microscope and self._scope_combo is not None:
             idx = self._scope_combo.findText(initial_microscope)
@@ -4184,6 +4870,13 @@ class MonetWidget(QWidget):
             self._btn_connect.clicked.connect(self._on_connect)
             tb_row.addWidget(self._btn_connect)
             tb_row.addStretch()
+            self._expert_cb = QCheckBox("Expert view")
+            self._expert_cb.setToolTip(
+                "Show advanced controls (backlash check, direct hardware "
+                "state / attenuator / laser power)."
+            )
+            self._expert_cb.toggled.connect(self.set_expert_view)
+            tb_row.addWidget(self._expert_cb)
             layout.addLayout(tb_row)
 
         self._tabs = QTabWidget()
@@ -4284,6 +4977,17 @@ class MonetWidget(QWidget):
         self._connect_worker.finished.connect(self._on_connect_finished)
         self._connect_worker.start()
 
+    def set_expert_view(self, expert):
+        """Toggle advanced controls across tabs (see SetPowerTab)."""
+        expert = bool(expert)
+        if self._expert_cb is not None and self._expert_cb.isChecked() != (
+            expert
+        ):
+            self._expert_cb.setChecked(expert)
+        for w in self._tab_widgets.values():
+            if hasattr(w, "set_expert_view"):
+                w.set_expert_view(expert)
+
     def set_pc(self, pc):
         """Bind an externally-built calibration-protocol object.
 
@@ -4294,6 +4998,14 @@ class MonetWidget(QWidget):
         ``ConnectWorker``.
         """
         self._pc = pc
+        # Tag the pc with its CONFIGS key (if known) so the Calibrate tab can
+        # persist model changes; ConnectWorker sets this on the toolbar path,
+        # but a host-built pc bound via set_pc would otherwise lack it.
+        if pc is not None and getattr(pc, "_microscope_name", None) is None:
+            try:
+                pc._microscope_name = self.current_microscope
+            except Exception:
+                pass
         for w in self._tab_widgets.values():
             w.set_pc(pc)
         powermeter_ok = getattr(pc, "powermeter_available", True)
