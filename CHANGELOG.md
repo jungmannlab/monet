@@ -10,6 +10,8 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-30
+
 ### Fixed
 - **Model-switch robustness (code-review follow-ups).** Selecting a laser with
   no calibration compatible with the current model no longer *sticks* the whole
