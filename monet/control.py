@@ -464,7 +464,20 @@ class IlluminationLaserControl(IlluminationControl):
                 self._analyzers, self._power_ranges = self._populate_analyzers(
                     self.cali_db, self.curr_laser
                 )
-                self.laserpower = self._power_ranges.index.min()
+                if len(self._power_ranges.index) == 0:
+                    # No calibration compatible with the current analysis
+                    # model (e.g. just after switching the model, before
+                    # recalibrating). Stay uncalibrated rather than setting
+                    # laserpower to NaN and later KeyError'ing on it.
+                    logger.warning(
+                        "No calibration compatible with the current analysis "
+                        "model for laser %s; recalibrate. Leaving the "
+                        "instrument uncalibrated.",
+                        self.curr_laser,
+                    )
+                    self.is_calibrated = False
+                else:
+                    self.laserpower = self._power_ranges.index.min()
             else:
                 logger.debug(
                     "Calibration not available, not setting analyzers."

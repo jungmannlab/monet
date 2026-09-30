@@ -1769,6 +1769,9 @@ class CalibrateTab(QWidget):
                 "Could not build model '{}': {}".format(best_name, exc)
             )
             return
+        # The old calibration was fit with a different model, so it no longer
+        # applies; invalidate it so the recalibration below starts clean.
+        self._pc.instrument.is_calibrated = False
         # Persist to the config file so the choice survives a restart.
         name = getattr(self._pc, "_microscope_name", None)
         try:

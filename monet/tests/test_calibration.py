@@ -527,3 +527,85 @@ class TestCalibration(unittest.TestCase):
         pc_p.instrument.load_calibration_database()
         self.assertTrue(pc_p.instrument.is_calibrated)
         pc_p.instrument.power = 5
+
+    def test_07_switch_model_on_calibrated_instrument_no_nan(self):
+        """Switching the analysis model on a *calibrated* instrument (as the
+        GUI 'Apply best model' does) must not KeyError 'nan'.
+
+        Regression: with the old calibration still loaded, selecting a laser
+        rebuilt analyzers from incompatible rows -> empty power ranges ->
+        laserpower = NaN -> KeyError 'nan'. It now falls back to uncalibrated.
+        """
+        import tempfile
+
+        from monet.util import load_class
+
+        tmp = tempfile.mkdtemp()
+        db = os.path.join(tmp, "switch.xlsx")
+        plotdir = os.path.join(tmp, "plots")
+        os.makedirs(plotdir, exist_ok=True)
+        config = {
+            "database": db,
+            "dest_calibration_plot": plotdir,
+            "index": {"name": "DefaultMicroscope"},
+            "powermeter": {
+                "classpath": "monet.powermeter.TestPowerMeter",
+                "init_kwargs": {
+                    "bkg": 1,
+                    "amp": 50,
+                    "phi": 30,
+                    "start": 10,
+                    "step": 5,
+                    "noise": 1,
+                },
+            },
+            "attenuation": {
+                "classpath": "monet.attenuation.TestAttenuator",
+                "init_kwargs": {
+                    "bkg": 0,
+                    "amp": 50,
+                    "phi": 30,
+                    "start": 10,
+                    "step": 5,
+                },
+            },
+            "analysis": {
+                "classpath": "monet.analysis.SinusAttenuationCurveAnalyzer",
+                "init_kwargs": {"min": 30, "max": 100, "step": 5},
+            },
+            "lasers": {
+                488: {
+                    "classpath": "monet.laser.TestLaser",
+                    "init_kwargs": {"port": "COM4"},
+                },
+            },
+            "beampath": {
+                "shutter01": {
+                    "classpath": "monet.beampath.TestShutter",
+                    "init_kwargs": {"SN": 234},
+                },
+            },
+        }
+        protocol = {
+            "laser_sequence": [488],
+            "laser_powers": {488: [100, 200]},
+            "beampath": {488: {"shutter01": True}},
+        }
+        pc = mca.CalibrationProtocol2D(config, protocol)
+        pc.run_protocol(wait_time=0)
+        pc.instrument.load_calibration_database()
+        self.assertTrue(pc.instrument.is_calibrated)
+
+        # mimic "apply best model": swap in the polynomial analyzer on the
+        # already-calibrated instrument, then select the laser.
+        poly = {
+            "classpath": "monet.analysis.PolynomAttenuationCurveAnalyzer",
+            "init_kwargs": {"min": 30, "max": 100, "step": 5, "polydegree": 5},
+        }
+        pc.instrument.config["analysis"] = poly
+        pc.instrument.analyzer = load_class(
+            poly["classpath"], poly["init_kwargs"]
+        )
+        pc.instrument.laser = 488  # must not raise KeyError 'nan'
+        # the stale (sinusoidal) calibration is no longer considered valid
+        self.assertFalse(pc.instrument.is_calibrated)

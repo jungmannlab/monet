@@ -11,6 +11,13 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 ## [Unreleased]
 
 ### Fixed
+- **Switching analysis model no longer crashes with `KeyError: 'nan'`.**
+  After switching the model on an already-calibrated instrument, selecting a
+  laser rebuilt analyzers from the still-loaded (now-incompatible) rows; with
+  those rows skipped the power ranges were empty, so `laserpower` became `NaN`
+  and later `KeyError'd`. Selecting a laser with no calibration compatible with
+  the current model now falls back to uncalibrated (with a warning), and
+  "Apply best model" invalidates the old calibration before recalibrating.
 - **Switching analysis model no longer crashes on old calibration rows
   (`KeyError: 'p0'`).** A database can hold rows from more than one analysis
   model (e.g. sinusoidal rows written before switching to polynomial). Loading
