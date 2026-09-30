@@ -158,6 +158,11 @@ class TestCalibrateTabVerify(unittest.TestCase):
         self.assertIsNotNone(tab._btn_verify)
         self.assertFalse(tab._btn_verify.isEnabled())
 
+    def test_compare_button_exists_and_starts_disabled(self):
+        tab = CalibrateTab()
+        self.assertIsNotNone(tab._btn_compare)
+        self.assertFalse(tab._btn_compare.isEnabled())
+
     def test_fit_quality_text_plain(self):
         q = {"rms_pct": 1.2, "max_pct": 3.4, "max_at": 104.5}
         txt = CalibrateTab._fit_quality_text(q)

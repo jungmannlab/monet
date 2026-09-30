@@ -33,12 +33,18 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
   doesn't describe the attenuator (use more points / a different model); a
   small residual with a large live deviation instead points at laser
   drift/warm-up between calibration and use.
-- **Calibration verification (Verify button, Calibrate tab).** Re-measures a
-  few attenuator angles at each calibrated laser power and compares them to the
-  fitted model in the meter's own units (`verify_calibration()`), reporting
-  per-point and RMS/max deviation. Unlike the fit residual this is a *fresh*
-  cross-check, so it catches drift and laser-power-setting effects — e.g. a
-  deviation that grows only at certain laser powers.
+- **Calibration verification (Verify button, Calibrate tab).** For each
+  calibrated laser *and* laser-power level, `verify_calibration()` enables the
+  laser and routes the beam to the meter (as a calibration does), re-measures a
+  few attenuator angles, and compares them to the fitted model in the meter's
+  own units — reporting per-point and RMS/max deviation, then switching the
+  lasers off again. Unlike the fit residual this is a *fresh* cross-check, so it
+  catches drift and laser-power-setting effects (e.g. a deviation that grows
+  only at certain laser powers). Each point records its laser and laser power.
+- **Model comparison (Compare models button, Calibrate tab).** `compare_models`
+  fits the sinusoidal model and polynomials of degree 3–6 to the worst
+  calibration curve and ranks them by relative residual, so the better analysis
+  model can be chosen from data instead of guessed.
 - **Attenuator backlash check (Set Power tab).** A "Backlash check" button
   re-approaches the current attenuator angle from below and from above, reading
   the power each time; a large power spread points at rotation-mount hysteresis

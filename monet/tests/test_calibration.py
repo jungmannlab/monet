@@ -420,12 +420,13 @@ class TestCalibration(unittest.TestCase):
         self.assertIn((488, 200), pc.fit_qualities)
 
         pc.instrument.load_calibration_database()
-        original = pc.instrument.curr_laserpower
-        res = pc.verify_calibration(n_angles=2, wait_time=0)
+        res = pc.verify_calibration(n_angles=2, wait_time=0, switch_time=0)
 
-        # 2 angles x 2 calibrated laser powers
+        # 2 angles x 2 calibrated laser powers (one laser)
         self.assertEqual(len(res["points"]), 4)
         levels = {p["laser_power"] for p in res["points"]}
         self.assertEqual(levels, {100, 200})
-        # the current laser power is restored afterwards
-        self.assertEqual(pc.instrument.curr_laserpower, original)
+        # every point records which laser it came from
+        self.assertEqual({p["laser"] for p in res["points"]}, {488})
+        # the laser is switched off again after verification
+        self.assertFalse(pc.instrument.lasers[488].enabled)

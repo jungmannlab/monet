@@ -908,6 +908,88 @@ class PolynomAttenuationCurveAnalyzer(AbstractAttenuationCurveAnalyzer):
         plt.close(fig)
 
 
+def _model_residual(name, y, pred):
+    """Relative residual (percent) of ``pred`` against ``y`` for a model."""
+    y = np.asarray(y, dtype=float)
+    pred = np.asarray(pred, dtype=float)
+    ok = np.isfinite(y) & np.isfinite(pred) & (y > 0)
+    if not ok.any():
+        return {
+            "model": name,
+            "rms_pct": float("inf"),
+            "max_pct": float("inf"),
+        }
+    rel = np.abs(y[ok] - pred[ok]) / y[ok]
+    return {
+        "model": name,
+        "rms_pct": float(np.sqrt(np.mean(rel**2)) * 100.0),
+        "max_pct": float(np.max(rel) * 100.0),
+    }
+
+
+def compare_models(x, y, analysis_parameters, degrees=(3, 4, 5, 6)):
+    """Fit candidate models to one calibration curve and rank them by residual.
+
+    Fits the sinusoidal model and a least-squares polynomial of each degree in
+    ``degrees`` to ``(x, y)`` (angle, measured power) and returns each one's
+    relative residual, best (lowest RMS) first — so a user can pick the model
+    that actually describes their attenuator instead of guessing. The
+    polynomial residual is the forward least-squares fit a
+    ``PolynomAttenuationCurveAnalyzer`` of that ``polydegree`` would achieve.
+
+    Parameters
+    ----------
+    x, y : 1d array-like
+        Control values (e.g. angles) and the measured powers.
+    analysis_parameters : dict
+        The analyzer config (``min``/``max``/...) for the sinusoidal fit.
+    degrees : iterable of int
+        Polynomial degrees to try.
+
+    Returns
+    -------
+    list of dict
+        ``[{'model', 'rms_pct', 'max_pct'}, ...]`` sorted by ``rms_pct``. A
+        model that fails to fit is reported with ``inf`` so it sorts last.
+    """
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    results = []
+
+    try:
+        ana = SinusAttenuationCurveAnalyzer(dict(analysis_parameters))
+        ana.fit(x, y)
+        results.append(_model_residual("sinus", y, ana.estimate_power(x)))
+    except Exception as exc:
+        logger.debug("compare_models: sinus fit failed: %s", exc)
+        results.append(
+            {
+                "model": "sinus",
+                "rms_pct": float("inf"),
+                "max_pct": float("inf"),
+            }
+        )
+
+    ok = np.isfinite(x) & np.isfinite(y)
+    for d in degrees:
+        name = "poly deg {:d}".format(d)
+        try:
+            coef = np.polyfit(x[ok], y[ok], d)
+            results.append(_model_residual(name, y, np.polyval(coef, x)))
+        except Exception as exc:
+            logger.debug("compare_models: %s failed: %s", name, exc)
+            results.append(
+                {
+                    "model": name,
+                    "rms_pct": float("inf"),
+                    "max_pct": float("inf"),
+                }
+            )
+
+    results.sort(key=lambda r: r["rms_pct"])
+    return results
+
+
 def test_PolynomAttenuationCurveAnalyzer():
     x = np.arange(21)
     y = np.array(

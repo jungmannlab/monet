@@ -44,6 +44,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+import monet.analysis as analysis
 import monet.io as io
 from monet import (
     CONFIGS,
@@ -1007,14 +1008,23 @@ class CalibrateTab(QWidget):
             "catches drift and laser-power-setting effects the fit residual "
             "cannot."
         )
+        self._btn_compare = QPushButton("Compare models")
+        self._btn_compare.setEnabled(False)
+        self._btn_compare.setToolTip(
+            "Fit the sinusoidal and polynomial (deg 3–6) models to the worst "
+            "calibration curve and report each one's residual, so you can pick "
+            "the model that best describes this attenuator."
+        )
         self._btn_start.clicked.connect(self._on_start)
         self._btn_cancel.clicked.connect(self._on_cancel)
         self._btn_discard.clicked.connect(self._on_discard)
         self._btn_verify.clicked.connect(self._on_verify)
+        self._btn_compare.clicked.connect(self._on_compare_models)
         btn_row2.addWidget(self._btn_start)
         btn_row2.addWidget(self._btn_cancel)
         btn_row2.addWidget(self._btn_discard)
         btn_row2.addWidget(self._btn_verify)
+        btn_row2.addWidget(self._btn_compare)
         btn_row2.addStretch()
         layout.addLayout(btn_row2)
 
@@ -1531,23 +1541,35 @@ class CalibrateTab(QWidget):
             and getattr(self._pc.instrument, "is_calibrated", False)
         )
         self._btn_verify.setEnabled(calibrated and self._pm_available)
+        has_curves = bool(
+            self._pc is not None
+            and (
+                getattr(self._pc, "last_curves", None)
+                or getattr(self._pc, "last_curve", None) is not None
+            )
+        )
+        self._btn_compare.setEnabled(has_curves)
 
     def _on_verify(self):
         """Re-measure a few angles per laser power and compare to the model."""
         if self._pc is None:
             return
 
+        pm_type = self._pm_pos_combo.currentData() or POWERMETER_SAMPLE
+
         def _do():
-            return self._pc.verify_calibration()
+            return self._pc.verify_calibration(powermeter_type=pm_type)
 
         def _on_result(res):
             for p in res["points"]:
                 lp = p["laser_power"]
-                lp_txt = "{} mW".format(lp) if lp is not None else "current"
+                laser = p.get("laser")
+                who = "{} nm ".format(laser) if laser is not None else ""
+                who += "{} mW".format(lp) if lp is not None else "current"
                 self._log.append(
                     "  verify {}: angle {:.2f} → measured {:.3f}, "
                     "predicted {:.3f}  ({:+.1f}%)".format(
-                        lp_txt,
+                        who,
                         p["angle"],
                         p["measured"],
                         p["predicted"],
@@ -1588,6 +1610,47 @@ class CalibrateTab(QWidget):
         worker.finished.connect(_on_finished)
         self._verify_worker = worker
         worker.start()
+
+    def _on_compare_models(self):
+        """Fit sinus + polynomial models to the worst curve and rank them."""
+        if self._pc is None:
+            return
+        curves = getattr(self._pc, "last_curves", None)
+        fqs = getattr(self._pc, "fit_qualities", None) or {}
+        label = ""
+        if curves:
+            if fqs:
+                key = max(fqs, key=lambda k: fqs[k]["rms_pct"])
+            else:
+                key = next(iter(curves))
+            x, y = curves[key]
+            label = " ({} nm @ {} mW)".format(key[0], key[1])
+        else:
+            cur = getattr(self._pc, "last_curve", None)
+            if cur is None:
+                self._log.append("No calibration curve available to compare.")
+                return
+            x, y = cur
+        ana_cfg = self._pc.instrument.config["analysis"]["init_kwargs"]
+        try:
+            ranking = analysis.compare_models(x, y, ana_cfg)
+        except Exception as exc:
+            self._log.append("Compare models failed: {}".format(exc))
+            return
+        self._log.append("Model comparison{}:".format(label))
+        for r in ranking:
+            self._log.append(
+                "  {:<12s} RMS {:.1f}%, max {:.1f}%".format(
+                    r["model"], r["rms_pct"], r["max_pct"]
+                )
+            )
+        best = ranking[0]
+        self._log.append(
+            "Best fit: {} (RMS {:.1f}%). Set this laser's analysis model "
+            "accordingly if it beats the current one.".format(
+                best["model"], best["rms_pct"]
+            )
+        )
 
     def cancel_worker_and_wait(self):
         if self._worker and self._worker.isRunning():

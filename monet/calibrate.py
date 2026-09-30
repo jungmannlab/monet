@@ -226,6 +226,11 @@ class CalibrationProtocol1D:
         # residual (with a large live deviation) instead points at drift
         # between calibration and use.
         self.last_fit_quality = self._fit_quality(control_par_vals, powers)
+        # Keep the raw curve so model comparison can be run on it later.
+        self.last_curve = (
+            np.asarray(control_par_vals, dtype=float),
+            np.asarray(powers, dtype=float),
+        )
         if self.last_fit_quality is not None:
             q = self.last_fit_quality
             logger.info(
@@ -290,93 +295,177 @@ class CalibrationProtocol1D:
             logger.debug("Could not compute fit quality: %s", exc)
             return None
 
+    def _verify_angles(
+        self, analyzer, n_angles, wait_time, laser, level, point_callback
+    ):
+        """Measure n_angles across the calibrated range for one model."""
+        import time
+
+        params = getattr(analyzer, "analysis_parameters", {}) or {}
+        lo = params.get("min", 0)
+        hi = params.get("max", 180)
+        if not np.isfinite(lo):
+            lo = 0
+        if not np.isfinite(hi):
+            hi = 180
+        out = []
+        for ang in np.linspace(lo, hi, n_angles):
+            ang = float(ang)
+            self.instrument.attenuator.set(ang)
+            time.sleep(wait_time)
+            measured = float(self.powermeter.read())
+            predicted = float(analyzer.estimate_power(ang))
+            if predicted and np.isfinite(measured):
+                dev = (measured - predicted) / predicted * 100.0
+            else:
+                dev = float("nan")
+            rec = {
+                "laser": laser,
+                "laser_power": level,
+                "angle": ang,
+                "measured": measured,
+                "predicted": predicted,
+                "dev_pct": dev,
+            }
+            out.append(rec)
+            if point_callback:
+                point_callback(rec)
+        return out
+
     def verify_calibration(
-        self, n_angles=5, wait_time=0.5, point_callback=None
+        self,
+        n_angles=5,
+        wait_time=0.5,
+        switch_time=5,
+        powermeter_type=POWERMETER_BFP,
+        manage_laser_state=True,
+        point_callback=None,
     ):
         """Re-measure a few attenuator angles and compare to the fitted model.
 
         A *fresh* cross-check of the stored calibration (unlike
         :meth:`_fit_quality`, which only scores how well the model fit its own
-        acquisition): for each calibrated laser-power level, set that laser
-        power, move the attenuator to ``n_angles`` positions spread across the
+        acquisition): for each calibrated laser and laser-power level, enable
+        the laser and route the beam to the meter (exactly as a calibration
+        does), then move the attenuator to ``n_angles`` positions across the
         calibrated range, read the meter, and compare to the model prediction
         in the meter's own units (so the objective transmission factor is not
-        involved). This catches drift and laser-power-setting effects that the
-        fit residual cannot — e.g. if the deviation grows only at certain laser
+        involved). This catches drift and laser-power-setting effects the fit
+        residual cannot — e.g. if the deviation grows only at certain laser
         powers, ``dev_pct`` grouped by ``laser_power`` shows it.
 
         Parameters
         ----------
         n_angles : int
-            Number of attenuator positions to test per laser-power level.
+            Attenuator positions to test per laser-power level.
         wait_time : float
             Seconds to wait after each move / laser-power change before reading.
+        switch_time : float
+            Seconds to wait after enabling a laser / routing the beam.
+        powermeter_type : str
+            'bfp' or 'sample' — selects the beam-path routing (turret to the
+            powermeter port for BFP).
+        manage_laser_state : bool
+            If True, switch the verified lasers off again at the end.
         point_callback : callable or None
             Called with each per-point dict as it is measured (for live UI).
 
         Returns
         -------
         dict
-            ``{'points': [{laser_power, angle, measured, predicted, dev_pct},
-            ...], 'rms_pct': float, 'max_pct': float}``.
+            ``{'points': [{laser, laser_power, angle, measured, predicted,
+            dev_pct}, ...], 'rms_pct': float, 'max_pct': float}``.
         """
         import time
 
         inst = self.instrument
         if not getattr(inst, "is_calibrated", False):
             raise ValueError("Not calibrated. Calibrate before verifying.")
+        powermeter_type = normalize_powermeter_type(powermeter_type)
 
-        # Laser-power levels: the calibrated levels (2D) or the single
-        # current calibration (1D, level = None).
-        power_ranges = getattr(inst, "_power_ranges", None)
-        has_levels = power_ranges is not None and hasattr(inst, "laserpower")
-        if has_levels:
-            levels = list(power_ranges.index)
-            original_level = getattr(inst, "curr_laserpower", None)
-        else:
-            levels = [None]
-            original_level = None
+        protocol = getattr(self, "protocol", None)
+        is_2d = bool(
+            protocol
+            and hasattr(inst, "laser")
+            and hasattr(inst, "laser_enabled")
+        )
 
         points = []
-        try:
-            for level in levels:
-                if level is not None:
-                    inst.laserpower = level  # sets laser + selects analyzer
-                    time.sleep(wait_time)
-                analyzer = inst.analyzer
-                params = getattr(analyzer, "analysis_parameters", {}) or {}
-                lo = params.get("min", 0)
-                hi = params.get("max", 180)
-                if not np.isfinite(lo):
-                    lo = 0
-                if not np.isfinite(hi):
-                    hi = 180
-                for ang in np.linspace(lo, hi, n_angles):
-                    ang = float(ang)
-                    inst.attenuator.set(ang)
-                    time.sleep(wait_time)
-                    measured = float(self.powermeter.read())
-                    predicted = float(analyzer.estimate_power(ang))
-                    if predicted and np.isfinite(measured):
-                        dev = (measured - predicted) / predicted * 100.0
-                    else:
-                        dev = float("nan")
-                    rec = {
-                        "laser_power": level,
-                        "angle": ang,
-                        "measured": measured,
-                        "predicted": predicted,
-                        "dev_pct": dev,
-                    }
-                    points.append(rec)
-                    if point_callback:
-                        point_callback(rec)
-        finally:
-            if has_levels and original_level is not None:
-                try:
-                    inst.laserpower = original_level
-                except Exception:
-                    pass
+        if not is_2d:
+            # 1D: single calibration; the laser is assumed already on.
+            points = self._verify_angles(
+                inst.analyzer, n_angles, wait_time, None, None, point_callback
+            )
+        else:
+            lasers = [
+                las
+                for las in protocol["laser_sequence"]
+                if las in getattr(inst, "lasers", {})
+            ]
+            bp_dict = protocol.get("beampath") or {}
+            orig_laser = getattr(inst, "curr_laser", None)
+            orig_power = getattr(inst, "curr_laserpower", None)
+            try:
+                for laser in lasers:
+                    # enable the laser and route the beam to the meter
+                    inst.laser = laser  # re-populates analyzers/power_ranges
+                    inst.laser_enabled = True
+                    if getattr(inst, "use_beampath", False):
+                        try:
+                            if laser in bp_dict:
+                                inst.beampath.positions = bp_dict[laser]
+                            if powermeter_type == POWERMETER_BFP:
+                                scp = bp_dict.get("start_calibrate")
+                                if scp:
+                                    inst.beampath.positions = scp
+                        except Exception as exc:
+                            logger.warning(
+                                "verify: could not set beam path for %s: %s",
+                                laser,
+                                exc,
+                            )
+                    try:
+                        inst.attenuator.set_wavelength(laser)
+                        self.powermeter.wavelength = int(laser)
+                    except Exception:
+                        pass
+                    time.sleep(switch_time)
+
+                    pr = getattr(inst, "_power_ranges", None)
+                    levels = list(pr.index) if pr is not None else []
+                    for level in levels:
+                        inst.laserpower = (
+                            level  # sets power + selects analyzer
+                        )
+                        if "amp" in getattr(self.powermeter, "config", {}):
+                            self.powermeter.config["amp"] = level
+                        time.sleep(wait_time)
+                        points.extend(
+                            self._verify_angles(
+                                inst.analyzer,
+                                n_angles,
+                                wait_time,
+                                laser,
+                                level,
+                                point_callback,
+                            )
+                        )
+            finally:
+                # Restore the selected laser/power first (selecting a laser may
+                # auto-enable it), then switch verified lasers off directly.
+                if orig_laser is not None:
+                    try:
+                        inst.laser = orig_laser
+                        if orig_power is not None:
+                            inst.laserpower = orig_power
+                    except Exception:
+                        pass
+                if manage_laser_state:
+                    for las in lasers:
+                        try:
+                            inst.lasers[las].enabled = False
+                        except Exception:
+                            pass
 
         devs = np.array(
             [p["dev_pct"] for p in points if np.isfinite(p["dev_pct"])],
@@ -673,8 +762,9 @@ class CalibrationProtocol2D(CalibrationProtocol1D):
         powermeter_type = normalize_powermeter_type(powermeter_type)
         plotfolder = self.instrument.config.get("dest_calibration_plot")
         self.reset_saved_calibrations()
-        # Per-curve fit quality, keyed (laser, laser_power); see _fit_quality.
+        # Per-curve fit quality and raw curves, keyed (laser, laser_power).
         self.fit_qualities = {}
+        self.last_curves = {}
 
         lasers = [
             las
@@ -785,6 +875,8 @@ class CalibrationProtocol2D(CalibrationProtocol1D):
                 )
                 if getattr(self, "last_fit_quality", None) is not None:
                     self.fit_qualities[(laser, lpwr)] = self.last_fit_quality
+                if getattr(self, "last_curve", None) is not None:
+                    self.last_curves[(laser, lpwr)] = self.last_curve
                 for an, pw in zip(angles, powers):
                     measpwrs.loc[an, lpwr] = pw
 

@@ -125,6 +125,34 @@ class TestAnalysis(unittest.TestCase):
             self.assertTrue(os.path.exists(fname))
 
 
+class TestCompareModels(unittest.TestCase):
+    """analysis.compare_models ranks candidate fits by residual."""
+
+    ANA = {"min": 30.0, "max": 130.0, "step": 5.0}
+
+    def test_ranks_and_reports_all_models(self):
+        x = np.arange(30.0, 131.0, 5.0)
+        # clean squared-sine data -> the sinus model should fit it well
+        y = 1.0 + 40.0 * (1 + np.sin(4 * np.pi / 180 * (x + 15))) / 2
+        ranking = man.compare_models(x, y, self.ANA, degrees=(3, 4, 5))
+        names = {r["model"] for r in ranking}
+        self.assertIn("sinus", names)
+        self.assertIn("poly deg 4", names)
+        # sorted ascending by RMS
+        rms = [r["rms_pct"] for r in ranking]
+        self.assertEqual(rms, sorted(rms))
+        # sinus fits the sinusoid to within a small residual
+        sinus = next(r for r in ranking if r["model"] == "sinus")
+        self.assertLess(sinus["rms_pct"], 2.0)
+
+    def test_polynomial_wins_on_polynomial_data(self):
+        x = np.arange(30.0, 131.0, 5.0)
+        y = 0.001 * (x - 20) ** 2 + 2.0  # a parabola, not a sinusoid
+        ranking = man.compare_models(x, y, self.ANA, degrees=(2, 3, 4))
+        self.assertTrue(ranking[0]["model"].startswith("poly"))
+        self.assertLess(ranking[0]["rms_pct"], 1.0)
+
+
 class TestLinearAnalyzer(unittest.TestCase):
 
     def setUp(self):
