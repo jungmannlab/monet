@@ -145,6 +145,34 @@ class TestCompareModels(unittest.TestCase):
         sinus = next(r for r in ranking if r["model"] == "sinus")
         self.assertLess(sinus["rms_pct"], 2.0)
 
+    def test_params2coef_rejects_foreign_model_params(self):
+        # A sinusoidal-model row must not silently load into the polynomial
+        # analyzer (would KeyError on 'p0'); it raises a clear error instead.
+        poly = man.PolynomAttenuationCurveAnalyzer(
+            {"min": 30, "max": 130, "step": 5, "polydegree": 4}
+        )
+        with self.assertRaises(ValueError) as ctx:
+            poly.load_model({"bkg": 1.0, "amp": 40.0, "phi": 15.0})
+        self.assertIn("different analysis model", str(ctx.exception))
+
+    def test_poly_model_roundtrips(self):
+        poly = man.PolynomAttenuationCurveAnalyzer(
+            {"min": 30, "max": 130, "step": 5, "polydegree": 4}
+        )
+        x = np.linspace(30, 130, 21)
+        y = 0.001 * (x - 20) ** 2 + 2.0
+        poly.fit(x, y)
+        pars = poly.get_model()
+        poly2 = man.PolynomAttenuationCurveAnalyzer(
+            {"min": 30, "max": 130, "step": 5, "polydegree": 4}
+        )
+        poly2.load_model(pars)
+        self.assertAlmostEqual(
+            float(poly2.estimate_power(80)),
+            float(poly.estimate_power(80)),
+            places=4,
+        )
+
     def test_model_spec_maps_names(self):
         cp, extra = man.model_spec("sinus")
         self.assertTrue(cp.endswith("SinusAttenuationCurveAnalyzer"))

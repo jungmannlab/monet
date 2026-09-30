@@ -393,20 +393,39 @@ class IlluminationLaserControl(IlluminationControl):
         analyzers = {}
         power_ranges = pd.DataFrame(columns=["min", "max"])
         for pwr, cali_pars in subdb.groupby(POWER_TAG):
+            # Use the most recent calibration for this power. The DB may hold
+            # older rows from a different analysis model (e.g. sinusoidal
+            # before switching to polynomial); the latest row matches the
+            # current model, and any still-incompatible row is skipped below.
+            try:
+                cali_pars = cali_pars.sort_index()
+            except Exception:
+                pass
+            row = cali_pars.iloc[-1]
             pars = {}
             for col in cali_pars.columns:
-                val = cali_pars[col].to_numpy()[0]
+                val = row[col]
                 try:
                     if not np.isnan(val):
                         pars[col] = val
                 except (TypeError, ValueError):
                     pass  # skip non-numeric columns (e.g. powermeter_type)
-            analyzers[pwr] = load_class(
+            analyzer = load_class(
                 anaconfig["classpath"], anaconfig["init_kwargs"]
             )
-            analyzers[pwr].load_model(pars)
-
-            power_ranges.loc[pwr, :] = sorted(analyzers[pwr].output_range())
+            try:
+                analyzer.load_model(pars)
+                power_ranges.loc[pwr, :] = sorted(analyzer.output_range())
+            except Exception as exc:
+                logger.warning(
+                    "Skipping laser power %s: stored calibration is "
+                    "incompatible with the current analysis model (%s). "
+                    "Recalibrate this power with the current model.",
+                    pwr,
+                    exc,
+                )
+                continue
+            analyzers[pwr] = analyzer
         ic(power_ranges)
         return analyzers, power_ranges
 

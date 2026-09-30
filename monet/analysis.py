@@ -11,6 +11,7 @@ Analysis of attenuation curves.
 
 import abc
 import logging
+import re
 from collections.abc import Iterable
 
 import lmfit
@@ -816,11 +817,27 @@ class PolynomAttenuationCurveAnalyzer(AbstractAttenuationCurveAnalyzer):
         coef_bw : np array
             The coefficients of the inverse polynomial.
         """
-        n_fw = len([1 for k in list(params.keys()) if "p" in k])
-        n_bw = len([1 for k in list(params.keys()) if "i" in k])
-        coef_fw = np.array([params["p{:d}".format(i)] for i in range(n_fw)])
+        # Select exactly the polynomial coefficient keys p0,p1,... / i0,i1,...
+        # (a substring test would wrongly match e.g. 'amp'/'phi' from a
+        # sinusoidal-model row, then KeyError on 'p0'). Ordered by index.
+        p_keys = sorted(
+            (k for k in params if re.fullmatch(r"p\d+", str(k))),
+            key=lambda k: int(str(k)[1:]),
+        )
+        i_keys = sorted(
+            (k for k in params if re.fullmatch(r"i\d+", str(k))),
+            key=lambda k: int(str(k)[1:]),
+        )
+        if not p_keys:
+            raise ValueError(
+                "polynomial model parameters (p0, p1, ...) not found in "
+                "{}. This calibration was likely made with a different "
+                "analysis model (e.g. sinusoidal); recalibrate with the "
+                "current model.".format(sorted(map(str, params.keys())))
+            )
+        coef_fw = np.array([params[k] for k in p_keys], dtype=float)
         coef_fw[np.isnan(coef_fw)] = 0
-        coef_bw = np.array([params["i{:d}".format(i)] for i in range(n_bw)])
+        coef_bw = np.array([params[k] for k in i_keys], dtype=float)
         coef_bw[np.isnan(coef_bw)] = 0
         return coef_fw, coef_bw
 

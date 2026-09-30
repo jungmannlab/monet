@@ -10,6 +10,18 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
+### Fixed
+- **Switching analysis model no longer crashes on old calibration rows
+  (`KeyError: 'p0'`).** A database can hold rows from more than one analysis
+  model (e.g. sinusoidal rows written before switching to polynomial). Loading
+  an old sinusoidal row into the polynomial analyzer failed on the missing
+  `p0` coefficient (worsened by fragile substring key-matching that treated
+  `amp`/`phi` as coefficients). `params2coef` now selects coefficient keys
+  strictly (`p0,p1,…`/`i0,i1,…`) and raises a clear error on a foreign model;
+  `_populate_analyzers` uses the *latest* calibration per laser power and skips
+  rows incompatible with the current model (with a warning); the device-history
+  plot skips such rows instead of aborting.
+
 ### Added
 - **Set Power tab: a readiness hint next to the Measure button.** A chip
   (and button tooltip) now says whether light is expected to reach the sensor

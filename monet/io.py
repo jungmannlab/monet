@@ -870,8 +870,8 @@ def plot_device_amplitude_history(db_fname, device, plot_dir, analyzer):
                 datetime.strptime(f"{date};{time}", "%Y-%m-%d;%H:%M")
                 for date, time in zip(dates, times)
             ]
-            minpower = np.zeros(len(dates))
-            maxpower = np.zeros(len(dates))
+            minpower = np.full(len(dates), np.nan)
+            maxpower = np.full(len(dates), np.nan)
             for i, (idx, row) in enumerate(power_df.iterrows()):
                 pars = {}
                 for col in row.index:
@@ -881,8 +881,14 @@ def plot_device_amplitude_history(db_fname, device, plot_dir, analyzer):
                             pars[col] = val
                     except (TypeError, ValueError):
                         pass  # skip non-numeric columns
-                analyzer.load_model(pars)
-                output_range = analyzer.output_range()
+                # A row from a different analysis model (e.g. sinusoidal
+                # before switching to polynomial) won't load into the current
+                # analyzer; skip it (leaves NaN, not a spurious zero).
+                try:
+                    analyzer.load_model(pars)
+                    output_range = analyzer.output_range()
+                except Exception:
+                    continue
                 minpower[i] = np.real(output_range[0])
                 maxpower[i] = np.real(output_range[1])
             ax[0].plot(

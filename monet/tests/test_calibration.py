@@ -437,3 +437,93 @@ class TestCalibration(unittest.TestCase):
         for s in ms.values():
             for key in ("fit_rms_pct", "verify_rms_pct", "verify_max_pct"):
                 self.assertIn(key, s)
+
+    def test_06_switch_model_reuses_mixed_db(self):
+        """Switching analysis model reuses a DB with old (foreign) rows.
+
+        Regression: after a sinusoidal calibration, switching to the
+        polynomial model and recalibrating on the *same* database must not
+        crash loading the older sinusoidal rows (KeyError 'p0'). The latest
+        (polynomial) row per power is used; incompatible rows are skipped.
+        """
+        import tempfile
+
+        tmp = tempfile.mkdtemp()
+        db = os.path.join(tmp, "mixed.xlsx")
+        plotdir = os.path.join(tmp, "plots")
+        os.makedirs(plotdir, exist_ok=True)
+
+        def make_config(classpath, extra_ana):
+            ana_kwargs = {"min": 30, "max": 100, "step": 5}
+            ana_kwargs.update(extra_ana)
+            return {
+                "database": db,
+                "dest_calibration_plot": plotdir,
+                "index": {"name": "DefaultMicroscope"},
+                "powermeter": {
+                    "classpath": "monet.powermeter.TestPowerMeter",
+                    "init_kwargs": {
+                        "bkg": 1,
+                        "amp": 50,
+                        "phi": 30,
+                        "start": 10,
+                        "step": 5,
+                        "noise": 1,
+                    },
+                },
+                "attenuation": {
+                    "classpath": "monet.attenuation.TestAttenuator",
+                    "init_kwargs": {
+                        "bkg": 0,
+                        "amp": 50,
+                        "phi": 30,
+                        "start": 10,
+                        "step": 5,
+                    },
+                },
+                "analysis": {
+                    "classpath": classpath,
+                    "init_kwargs": ana_kwargs,
+                },
+                "lasers": {
+                    488: {
+                        "classpath": "monet.laser.TestLaser",
+                        "init_kwargs": {"port": "COM4"},
+                    },
+                },
+                "beampath": {
+                    "shutter01": {
+                        "classpath": "monet.beampath.TestShutter",
+                        "init_kwargs": {"SN": 234},
+                    },
+                },
+            }
+
+        protocol = {
+            "laser_sequence": [488],
+            "laser_powers": {488: [100, 200]},
+            "beampath": {488: {"shutter01": True}},
+        }
+
+        # 1) sinusoidal calibration writes sinus rows (bkg/amp/phi)
+        pc_s = mca.CalibrationProtocol2D(
+            make_config("monet.analysis.SinusAttenuationCurveAnalyzer", {}),
+            protocol,
+        )
+        pc_s.run_protocol(wait_time=0)
+
+        # 2) switch to polynomial on the SAME db and recalibrate — must not
+        # crash loading/plotting the older sinusoidal rows.
+        pc_p = mca.CalibrationProtocol2D(
+            make_config(
+                "monet.analysis.PolynomAttenuationCurveAnalyzer",
+                {"polydegree": 3},
+            ),
+            protocol,
+        )
+        pc_p.run_protocol(wait_time=0)
+
+        # loading (latest = polynomial rows) and setting power must work
+        pc_p.instrument.load_calibration_database()
+        self.assertTrue(pc_p.instrument.is_calibrated)
+        pc_p.instrument.power = 5
