@@ -53,6 +53,7 @@ from monet import (
     POWERMETER_BFP,
     POWERMETER_SAMPLE,
     PROTOCOLS,
+    set_config_analysis,
 )
 from monet import __version__ as _monet_version
 from monet.beampath import NikonFilterWheel, NikonNosepiece
@@ -188,6 +189,9 @@ class ConnectWorker(QThread):
                 pc = mca.CalibrationProtocol2D(self._config, self._protocol)
             else:
                 pc = mca.CalibrationProtocol1D(self._config)
+            # Remember the CONFIGS key so tabs can persist config changes
+            # (e.g. Apply best model) back to the right microscope entry.
+            pc._microscope_name = self._name
             if not getattr(pc, "powermeter_available", True):
                 msg = (
                     "PowerMeter not available — calibration and power "
@@ -1765,6 +1769,21 @@ class CalibrateTab(QWidget):
                 "Could not build model '{}': {}".format(best_name, exc)
             )
             return
+        # Persist to the config file so the choice survives a restart.
+        name = getattr(self._pc, "_microscope_name", None)
+        try:
+            written = set_config_analysis(name, {**ana}) if name else None
+        except Exception as exc:
+            written = None
+            self._log.append(
+                "Could not persist model to config: {}".format(exc)
+            )
+        if written:
+            self._log.append("Saved model to config ({}).".format(written))
+        else:
+            self._log.append(
+                "Model applied for this session only (config not persisted)."
+            )
         self._log.append(
             "Applied model '{}' ({}). Recalibrating…".format(
                 best_name, classpath.rsplit(".", 1)[-1]

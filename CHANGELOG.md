@@ -66,7 +66,10 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 - **Apply best model + recalibrate (button, Calibrate tab).** Switches the
   microscope's analysis model to the best candidate (by fresh-verify residual
   if available, else fit residual — via `analysis.model_spec`) and immediately
-  recalibrates.
+  recalibrates. The choice is **persisted to the config file**
+  (`monet.set_config_analysis`, which backs up the previous file to
+  `<path>.bak`) so it survives a restart; the model is a per-microscope
+  setting, so it applies to all of that microscope's lasers.
 - **Attenuator backlash check (Set Power tab).** A "Backlash check" button
   re-approaches the current attenuator angle from below and from above, reading
   the power each time; a large power spread points at rotation-mount hysteresis
