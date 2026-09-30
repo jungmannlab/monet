@@ -124,6 +124,7 @@ class CalibrationProtocol1D:
         point_callback=None,
         comment=None,
         drop_nonfinite=True,
+        drift_check=True,
     ):
         """Calibrate power with parameters from the configuration file.
 
@@ -249,6 +250,26 @@ class CalibrationProtocol1D:
                     q["rms_pct"],
                 )
 
+        # Within-sweep drift: re-read the highest-SNR point after the sweep to
+        # detect source drift (laser warm-up/instability, thermal) over the
+        # sweep duration. A drift growing across a day of repeated runs points
+        # at the source rather than the model as the cause of rising residuals.
+        self.last_drift_pct = None
+        if drift_check:
+            self.last_drift_pct = self._measure_drift(
+                control_par_vals, powers, wait_time
+            )
+            if self.last_drift_pct is not None:
+                logger.info(
+                    "calibration within-sweep drift: %+.1f%% at the "
+                    "highest-SNR point",
+                    self.last_drift_pct,
+                )
+        if self.last_fit_quality is not None:
+            self.last_fit_quality["drift_pct"] = self.last_drift_pct
+
+        self._log_fit_quality_history(control_par_vals)
+
         self.save_calibration(
             save_plot=save_plot,
             dry_run=dry_run,
@@ -294,6 +315,59 @@ class CalibrationProtocol1D:
         except Exception as exc:
             logger.debug("Could not compute fit quality: %s", exc)
             return None
+
+    def _measure_drift(self, control_par_vals, powers, wait_time):
+        """Re-measure the highest-SNR point to gauge source drift over a sweep.
+
+        Returns the relative change (percent) at that control value between the
+        sweep reading and a fresh reading taken after the whole sweep, or None.
+        """
+        try:
+            powers = np.asarray(powers, dtype=float)
+            finite = np.isfinite(powers) & (powers > 0)
+            if not finite.any():
+                return None
+            idx = np.where(finite)[0]
+            i_ref = int(idx[int(np.argmax(powers[idx]))])
+            ref = float(np.asarray(control_par_vals, dtype=float)[i_ref])
+            p_start = float(powers[i_ref])
+            self.instrument.attenuator.set(ref)
+            time.sleep(wait_time)
+            p_end = float(self.powermeter.read())
+            if p_start and np.isfinite(p_end):
+                return (p_end - p_start) / p_start * 100.0
+        except Exception as exc:
+            logger.debug("drift check failed: %s", exc)
+        return None
+
+    def _log_fit_quality_history(self, control_par_vals):
+        """Append this calibration's fit quality + drift to a durable log.
+
+        Writes one row to ``fit_quality_log.csv`` (in the plot folder, or the
+        database's folder for a local DB) so RMS / max / drift can be tracked
+        and monitored across runs and days.
+        """
+        q = self.last_fit_quality or {}
+        idx = self.instrument.config.get("index", {}) or {}
+        folder = self.instrument.config.get("dest_calibration_plot")
+        if not folder:
+            db = self.instrument.config.get("database")
+            if db and not io._is_server_url(db):
+                folder = os.path.dirname(db) or "."
+        model = self.instrument.config.get("analysis", {}).get("classpath", "")
+        record = {
+            "datetime": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "device": idx.get("name"),
+            "laser": idx.get(LASER_TAG, idx.get("wavelength [nm]")),
+            "laser_power": idx.get(POWER_TAG, idx.get("laser_power [mW]")),
+            "model": model.rsplit(".", 1)[-1],
+            "rms_pct": q.get("rms_pct"),
+            "max_pct": q.get("max_pct"),
+            "max_at": q.get("max_at"),
+            "drift_pct": getattr(self, "last_drift_pct", None),
+            "n_points": int(np.size(control_par_vals)),
+        }
+        io.append_fit_quality_log(folder, record)
 
     def _verify_angles(
         self,

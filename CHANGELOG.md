@@ -30,6 +30,15 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
   plot skips such rows instead of aborting.
 
 ### Added
+- **Within-sweep drift check + durable fit-quality log.** After acquiring a
+  calibration sweep, `calibrate()` re-reads the highest-SNR point to measure
+  source drift over the sweep (`last_drift_pct`; shown in the Calibrate log and
+  added to `last_fit_quality`), and appends one row per calibration to
+  `fit_quality_log.csv` (in the plot folder, or the local DB's folder) with the
+  timestamp, laser, power, model, RMS/max residual, drift and point count. This
+  turns a "runs got worse over the day" impression into a monitorable trend and
+  separates source drift from model mismatch. Disable the extra read with
+  `calibrate(drift_check=False)`.
 - **Set Power tab: a readiness hint next to the Measure button.** A chip
   (and button tooltip) now says whether light is expected to reach the sensor
   — warning `⚠ laser OFF — will read ≈ 0` when the selected laser is off, or

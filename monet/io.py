@@ -57,6 +57,46 @@ def _is_server_url(fname):
     return fname.startswith("http://") or fname.startswith("https://")
 
 
+FIT_QUALITY_LOG_FIELDS = [
+    "datetime",
+    "device",
+    "laser",
+    "laser_power",
+    "model",
+    "rms_pct",
+    "max_pct",
+    "max_at",
+    "drift_pct",
+    "n_points",
+]
+
+
+def append_fit_quality_log(folder, record):
+    """Append one calibration's fit-quality record to ``fit_quality_log.csv``.
+
+    An append-only CSV in ``folder`` for tracking RMS / max residual and
+    within-sweep drift across runs and days (so a degradation trend is
+    visible). Best-effort: never raises, returns the path written or None.
+    """
+    if not folder:
+        return None
+    try:
+        import csv
+
+        os.makedirs(folder, exist_ok=True)
+        path = os.path.join(folder, "fit_quality_log.csv")
+        new_file = not os.path.exists(path)
+        with open(path, "a", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=FIT_QUALITY_LOG_FIELDS)
+            if new_file:
+                writer.writeheader()
+            writer.writerow({k: record.get(k) for k in FIT_QUALITY_LOG_FIELDS})
+        return path
+    except Exception:
+        logger.debug("could not append fit-quality log", exc_info=True)
+        return None
+
+
 # Bearer token for a monet calibration server that enforces auth (i.e. one
 # started with PAINT_MONET_TOKENS set). io.py both reads and writes the DB, so
 # this should be a WRITE-scoped token (write is a superset of read). When the

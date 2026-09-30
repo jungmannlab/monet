@@ -204,6 +204,35 @@ class TestCalibration(unittest.TestCase):
         self.assertGreaterEqual(q["rms_pct"], 0.0)
         self.assertGreaterEqual(q["max_pct"], q["rms_pct"])
 
+    def test_03c_calibrate_records_drift_and_logs_history(self):
+        """calibrate() records within-sweep drift and appends a history row."""
+        import tempfile
+
+        cfg = self._config_1d()
+        folder = tempfile.mkdtemp()
+        cfg["dest_calibration_plot"] = folder
+        pc = mca.CalibrationProtocol1D(cfg)
+        pc.calibrate(wait_time=0)
+
+        self.assertIn("drift_pct", pc.last_fit_quality)
+        # a durable fit-quality history CSV was written with a data row
+        log = os.path.join(folder, "fit_quality_log.csv")
+        self.assertTrue(os.path.isfile(log))
+        with open(log) as f:
+            lines = f.read().strip().splitlines()
+        self.assertIn("rms_pct", lines[0])  # header
+        self.assertIn("drift_pct", lines[0])
+        self.assertEqual(len(lines), 2)  # header + one run
+        # a second run appends, not overwrites
+        pc.calibrate(wait_time=0)
+        with open(log) as f:
+            self.assertEqual(len(f.read().strip().splitlines()), 3)
+
+    def test_03d_drift_check_can_be_disabled(self):
+        pc = mca.CalibrationProtocol1D(self._config_1d())
+        pc.calibrate(wait_time=0, drift_check=False)
+        self.assertIsNone(pc.last_drift_pct)
+
     def test_03b_fit_quality_flags_model_mismatch(self):
         """A model that mispredicts the data yields a large relative residual.
 

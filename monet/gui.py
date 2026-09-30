@@ -1051,6 +1051,9 @@ class CalibrateTab(QWidget):
         txt = "{}: RMS {:.1f}%, max {:.1f}% at {:.2f}".format(
             prefix, q["rms_pct"], q["max_pct"], q["max_at"]
         )
+        drift = q.get("drift_pct")
+        if isinstance(drift, (int, float)) and drift == drift:
+            txt += ", drift {:+.1f}%".format(drift)
         if q["rms_pct"] > 5.0:
             txt += "  ⚠ model may not fit well — a set power can deviate by a"
             txt += " similar amount"
