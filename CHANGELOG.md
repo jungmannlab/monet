@@ -10,6 +10,15 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
+### Fixed
+- **`deploy/setup-server.sh` re-run failed with git "dubious ownership".** The
+  script's `git`/`pip` steps ran as root against the `monet`-owned
+  `/opt/monet/src` checkout, so on any re-run (e.g. to upgrade `GIT_REF`) git
+  refused with `fatal: detected dubious ownership` and the source never
+  updated. Those steps now run as the `monet` user (repo/venv owner), with an
+  ownership fix-up first — so upgrading a deployed server is just
+  `sudo GIT_REF=vX.Y.Z bash deploy/setup-server.sh` again.
+
 ## [0.4.3] - 2026-09-29
 
 ### Security

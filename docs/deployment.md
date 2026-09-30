@@ -14,13 +14,21 @@ A committed unit template lives at [`deploy/monet.service`](../deploy/monet.serv
 [`deploy/setup-server.sh`](../deploy/setup-server.sh) does the whole
 dedicated-user install below in one shot — creates the `monet` user, installs a
 venv under `/opt/monet`, preserves any existing token file and calibration DB,
-writes the unit, and starts it. Safe to re-run.
+writes the unit, and starts it. Safe to re-run — **re-running is also how you
+upgrade**: it updates the `/opt/monet/src` checkout to `GIT_REF`, reinstalls,
+and restarts the service.
 
 ```bash
 sudo bash deploy/setup-server.sh
-# override defaults via env, e.g.:
-sudo GIT_REF=v0.4.0 MONET_HOST=127.0.0.1 bash deploy/setup-server.sh
+# upgrade a running server to a tag (or override other defaults):
+sudo GIT_REF=v0.4.3 MONET_HOST=127.0.0.1 bash deploy/setup-server.sh
 ```
+
+The `git`/`pip` steps run as the `monet` user (the owner of `/opt/monet`), so
+they don't trip git's "dubious ownership" guard on a re-run. To upgrade by hand
+instead: `sudo -u monet git -C /opt/monet/src fetch --tags && sudo -u monet git
+-C /opt/monet/src checkout <tag> && sudo -u monet /opt/monet/.venv/bin/pip
+install -e /opt/monet/src && sudo systemctl restart monet`.
 
 Prerequisites: `git` and **Python ≥3.10** with `venv`. On Ubuntu 20.04 the
 system `python3` is 3.8 (too old) — install a newer one via deadsnakes:
