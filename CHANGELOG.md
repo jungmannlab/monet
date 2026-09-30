@@ -10,6 +10,17 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
+### Changed
+- **Power meters are now put into power auto-range at open (default on).**
+  monet never configured the meter range — and on the TLPM path `open()`
+  resets the device, wiping any range set in Thorlabs' Optical Power Monitor
+  software — so a fixed, too-low range could silently saturate during a
+  calibration and produce the over-range readings behind the fit failure
+  below. `ThorlabsPowerMeter` and `ThorlabsTLPMPowerMeter` now enable
+  auto-range on connect; set `power_autorange: false` in the powermeter config
+  to pin the device's own range instead. Enabling is fail-soft (a driver/API
+  mismatch logs a warning and still connects).
+
 ### Fixed
 - **Calibration aborted with a cryptic "model function generated NaN values"
   error (or silently produced a garbage fit).** A saturated/over-range power

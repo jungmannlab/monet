@@ -161,6 +161,29 @@ class ThorlabsPowerMeter(AbstractPowerMeter):
                 )
             )
         self.config = config
+        self._enable_autorange()
+
+    def _enable_autorange(self):
+        """Enable power auto-range unless disabled via ``power_autorange``.
+
+        A fixed range that is too low for the calibration's peak power
+        saturates the meter, which then reports the 9.9e37 over-range
+        sentinel and breaks the fit (see ``_sanitize_samples``). Auto-range
+        avoids that. Fail-soft: a driver/API mismatch must not stop us from
+        using an otherwise-connected meter.
+        """
+        if not self.config.get("power_autorange", True):
+            return
+        try:
+            # ThorlabsPM100's attribute maps to SCPI SENS:POW:RANG:AUTO ON.
+            self.pm.sense.power.dc.range.auto = "ON"
+            logger.info("Thorlabs power meter: auto-range enabled.")
+        except Exception as exc:
+            logger.warning(
+                "Could not enable power auto-range on the Thorlabs meter "
+                "(%s); leaving the device's current range setting.",
+                exc,
+            )
 
     def _open_powermeter(self, address=""):
         """Open the communication with the power meter.
@@ -269,6 +292,32 @@ class ThorlabsTLPMPowerMeter(AbstractPowerMeter):
             config.get("address", "find connection"),
             dll_path=config.get("dll_path"),
         )
+        self._enable_autorange()
+
+    def _enable_autorange(self):
+        """Enable power auto-range unless disabled via ``power_autorange``.
+
+        ``open()`` resets the meter to its ``*RST`` state, so any range set
+        in Thorlabs' Optical Power Monitor software is wiped on connect. A
+        fixed range that is too low saturates the meter, which then reports
+        the 9.9e37 over-range sentinel and breaks the fit (see
+        ``_sanitize_samples``). Fail-soft: a driver/API mismatch must not
+        stop us from using an otherwise-connected meter.
+        """
+        if self.pm is None or not self.config.get("power_autorange", True):
+            return
+        import ctypes
+
+        try:
+            # TLPM_AUTORANGE_POWER_ON = 1
+            self.pm.setPowerAutoRange(ctypes.c_int16(1))
+            logger.info("Thorlabs TLPM power meter: auto-range enabled.")
+        except Exception as exc:
+            logger.warning(
+                "Could not enable power auto-range on the TLPM meter "
+                "(%s); leaving the device's current range setting.",
+                exc,
+            )
 
     def _import_tlpm_wrapper(self):
         """Import Thorlabs' TLPM wrapper class, preferring the copy vendored

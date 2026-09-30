@@ -30,6 +30,10 @@ class _FakeTLPM:
 
     def __init__(self):
         self._wavelength = 488.0
+        self.power_autorange = None  # records setPowerAutoRange() calls
+
+    def setPowerAutoRange(self, mode):
+        self.power_autorange = mode.value
 
     def findRsrc(self, count_ref):
         count_ref._obj.value = self._device_count
@@ -114,6 +118,21 @@ class TestPowerMeter(unittest.TestCase):
         with _patch_wrapper(_FakeTLPMOverRange):
             pm = mpm.ThorlabsTLPMPowerMeter({"address": "find connection"})
             self.assertTrue(np.isnan(pm.read(averaging=5)))
+
+    def test_basics_02c_ThorlabsTLPM_autorange_default_on(self):
+        # By default the meter is put into power auto-range at open, so a
+        # too-low fixed range can't silently saturate during calibration.
+        with _patch_wrapper(_FakeTLPM):
+            pm = mpm.ThorlabsTLPMPowerMeter({"address": "find connection"})
+            self.assertEqual(pm.pm.power_autorange, 1)
+
+    def test_basics_02d_ThorlabsTLPM_autorange_opt_out(self):
+        # power_autorange=False leaves the device range untouched.
+        with _patch_wrapper(_FakeTLPM):
+            pm = mpm.ThorlabsTLPMPowerMeter(
+                {"address": "find connection", "power_autorange": False}
+            )
+            self.assertIsNone(pm.pm.power_autorange)
 
     def test_basics_03_ThorlabsTLPM_no_device_raises(self):
         with _patch_wrapper(_FakeTLPMNoDevice):
