@@ -33,6 +33,12 @@ UNIT="/etc/systemd/system/monet.service"
 log() { printf '\033[1;32m==>\033[0m %s\n' "$*"; }
 [ "$(id -u)" -eq 0 ] || { echo "run as root (sudo bash deploy/setup-server.sh)"; exit 1; }
 
+# Run a command as the service user, with HOME on a writable, service-owned dir
+# (git/pip write config/cache there). Used for git and pip so they act as the
+# repo/venv owner — otherwise git's "dubious ownership" guard blocks root from
+# operating on the monet-owned /opt/monet checkout.
+as_monet() { sudo -u "$MONET_USER" env "HOME=$APP_DIR" "$@"; }
+
 # ---- 1. stop any existing service -------------------------------------------
 if systemctl list-unit-files 2>/dev/null | grep -q '^monet\.service'; then
   log "stopping existing monet.service"
@@ -52,15 +58,19 @@ log "ensuring $APP_DIR $DATA_DIR $ETC_DIR"
 install -d -o "$MONET_USER" -g "$MONET_USER" -m 750 "$APP_DIR" "$DATA_DIR" "$ETC_DIR"
 
 # ---- 4. source + venv (idempotent) ------------------------------------------
+# git and pip run AS THE monet USER so a monet-owned checkout doesn't trip git's
+# "dubious ownership" guard (root operating on another user's repo is refused).
+# Normalise ownership first, in case an earlier run left root-owned files.
+[ -e "$SRC_DIR" ] && chown -R "$MONET_USER:$MONET_USER" "$SRC_DIR"
 if [ -d "$SRC_DIR/.git" ]; then
   log "updating source in $SRC_DIR -> $GIT_REF"
-  git -C "$SRC_DIR" fetch --all --tags --quiet
-  git -C "$SRC_DIR" checkout --quiet "$GIT_REF"
-  git -C "$SRC_DIR" pull --ff-only --quiet 2>/dev/null || true
+  as_monet git -C "$SRC_DIR" fetch --all --tags --quiet
+  as_monet git -C "$SRC_DIR" checkout --quiet "$GIT_REF"
+  as_monet git -C "$SRC_DIR" pull --ff-only --quiet 2>/dev/null || true
 else
   log "cloning $REPO_URL -> $SRC_DIR ($GIT_REF)"
-  git clone --quiet "$REPO_URL" "$SRC_DIR"
-  git -C "$SRC_DIR" checkout --quiet "$GIT_REF"
+  as_monet git clone --quiet "$REPO_URL" "$SRC_DIR"
+  as_monet git -C "$SRC_DIR" checkout --quiet "$GIT_REF"
 fi
 
 # monet needs Python >=3.10. Auto-detect one (or honour $PYTHON); the system
@@ -96,12 +106,16 @@ esac
 if [ ! -x "$VENV_DIR/bin/pip" ]; then
   log "creating venv $VENV_DIR from $PYBIN ($("$PYBIN" -V 2>&1))"
   rm -rf "$VENV_DIR"
-  "$PYBIN" -m venv "$VENV_DIR"
+  as_monet "$PYBIN" -m venv "$VENV_DIR"
 fi
 log "installing monet[server] into the venv"
-"$VENV_DIR/bin/pip" install --quiet --upgrade pip
-"$VENV_DIR/bin/pip" install --quiet -e "$SRC_DIR[server]"
+as_monet "$VENV_DIR/bin/pip" install --quiet --upgrade pip
+as_monet "$VENV_DIR/bin/pip" install --quiet -e "$SRC_DIR[server]"
 chown -R "$MONET_USER:$MONET_USER" "$APP_DIR"
+
+# Put `monet` on PATH so admins don't have to spell out the venv path or
+# activate anything: `sudo -u monet monet token ... --env-file $ENV_FILE`.
+ln -sf "$VENV_DIR/bin/monet" /usr/local/bin/monet
 
 # ---- 5. token env file (preserve if it already has content) -----------------
 if [ -s "$ENV_FILE" ]; then
