@@ -193,6 +193,39 @@ class TestCalibration(unittest.TestCase):
             pc.calibrate(wait_time=0)
         self.assertIn("too few", str(context.exception))
 
+    def test_03_Calibrator1D_reports_fit_quality(self):
+        """calibrate() records an RMS/max relative fit residual."""
+        pc = mca.CalibrationProtocol1D(self._config_1d())
+        pc.calibrate(wait_time=0)
+        q = pc.last_fit_quality
+        self.assertIsNotNone(q)
+        for key in ("rms_pct", "max_pct", "max_at"):
+            self.assertIn(key, q)
+        self.assertGreaterEqual(q["rms_pct"], 0.0)
+        self.assertGreaterEqual(q["max_pct"], q["rms_pct"])
+
+    def test_03b_fit_quality_flags_model_mismatch(self):
+        """A model that mispredicts the data yields a large relative residual.
+
+        The fitted model is replaced with one whose amplitude is 10% low, so
+        _fit_quality reports a residual near 10% (the calibrate-vs-measure
+        signature of a poor fit rather than backlash/drift).
+        """
+        import numpy as np
+
+        pc = mca.CalibrationProtocol1D(self._config_1d())
+        pc.calibrate(wait_time=0)
+        ana = pc.instrument.analyzer
+        pars = dict(ana.get_model())
+        x = np.arange(30.0, 101.0, 5.0)
+        y_true = np.asarray(ana.estimate_power(x), dtype=float)
+        pars["amp"] = pars["amp"] * 0.9  # model now under-predicts by ~10%
+        ana.load_model(pars)
+        q = pc._fit_quality(x, y_true)
+        self.assertIsNotNone(q)
+        # under-predicting the amplitude by 10% shows up as a sizeable residual
+        self.assertGreater(q["max_pct"], 5.0)
+
     def test_01_Calibrator2D(self):
         try:
             shutil.rmtree("monet/tests/TestData/calibrate")

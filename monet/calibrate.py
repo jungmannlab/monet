@@ -220,6 +220,30 @@ class CalibrationProtocol1D:
         # print(self.instrument.analyzer.fit_result.fit_report())
         self.instrument.is_calibrated = True
 
+        # Fit-quality diagnostic: how well the fitted model reproduces the
+        # calibration data. A large residual points at a poor model / noisy
+        # data as the cause of a calibrate-vs-measure deviation; a small
+        # residual (with a large live deviation) instead points at drift
+        # between calibration and use.
+        self.last_fit_quality = self._fit_quality(control_par_vals, powers)
+        if self.last_fit_quality is not None:
+            q = self.last_fit_quality
+            logger.info(
+                "calibration fit quality: RMS %.1f%%, max %.1f%% at "
+                "control value %.3f",
+                q["rms_pct"],
+                q["max_pct"],
+                q["max_at"],
+            )
+            if q["rms_pct"] > 5.0:
+                logger.warning(
+                    "calibration fit RMS residual is %.1f%% — the model may "
+                    "not describe this attenuator well, so a set power can "
+                    "deviate from the reading by a similar amount. Consider "
+                    "more calibration points or a different analysis model.",
+                    q["rms_pct"],
+                )
+
         self.save_calibration(
             save_plot=save_plot,
             dry_run=dry_run,
@@ -230,6 +254,41 @@ class CalibrationProtocol1D:
         )
 
         return control_par_vals, powers
+
+    def _fit_quality(self, x, y):
+        """Relative residual of the fitted model against the calibration data.
+
+        Parameters
+        ----------
+        x, y : 1d arrays
+            The control values and the measured powers that were fit.
+
+        Returns
+        -------
+        dict or None
+            ``{'rms_pct', 'max_pct', 'max_at'}`` — the RMS and maximum relative
+            residual (percent) and the control value of the worst point — or
+            ``None`` if it cannot be evaluated.
+        """
+        try:
+            pred = np.asarray(
+                self.instrument.analyzer.estimate_power(x), dtype=float
+            )
+            y = np.asarray(y, dtype=float)
+            pred = np.broadcast_to(pred, y.shape).astype(float)
+            ok = np.isfinite(pred) & np.isfinite(y) & (y > 0)
+            if not ok.any():
+                return None
+            rel = np.abs(y[ok] - pred[ok]) / y[ok]
+            imax = int(np.argmax(rel))
+            return {
+                "rms_pct": float(np.sqrt(np.mean(rel**2)) * 100.0),
+                "max_pct": float(np.max(rel) * 100.0),
+                "max_at": float(np.asarray(x)[ok][imax]),
+            }
+        except Exception as exc:
+            logger.debug("Could not compute fit quality: %s", exc)
+            return None
 
     def save_calibration(
         self,
