@@ -30,9 +30,11 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
   (`sin(inf) → NaN`, lmfit aborts) or converged to a nonsensical model. The
   real-meter read paths (`ThorlabsPowerMeter`, `ThorlabsTLPMPowerMeter`) now
   normalize over-range/non-finite samples to `NaN`, and `calibrate()` guards the
-  acquired data before fitting: a non-finite reading now raises a clear error
-  naming the offending control value(s) and logs the full arrays to `monet.log`
-  for diagnosis, instead of aborting inside lmfit or saving a bad calibration.
+  acquired data before fitting: by default it drops the non-finite point(s) and
+  fits the remaining curve, logging the dropped control value(s) and the full
+  arrays to `monet.log`. Pass `drop_nonfinite=False` to raise instead; either
+  way, if too few finite points remain to fit, it raises a clear error — so a
+  bad reading never reaches lmfit or silently produces a garbage calibration.
 
 ## [0.4.1] - 2026-09-29
 

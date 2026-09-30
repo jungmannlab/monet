@@ -92,19 +92,13 @@ class TestCalibration(unittest.TestCase):
 
         # assert False
 
-    def test_02_Calibrator1D_nonfinite_reading(self):
-        """A non-finite power reading aborts with a clear, named error.
-
-        Regression for the numpy-2 upgrade surfacing lmfit's cryptic
-        "model function generated NaN values" abort: guard before the fit
-        so a NaN/inf reading names the offending control value instead.
-        """
+    def _config_1d(self):
+        """A minimal 1D config; control values run 30, 35, ... 100."""
         try:
             os.makedirs("monet/tests/TestData/calibrate", exist_ok=True)
         except Exception:
             pass
-
-        config = {
+        return {
             "database": "monet/tests/TestData/calibrate/power_database.xlsx",
             "index": {
                 "name": "DefaultMicroscope",
@@ -141,27 +135,63 @@ class TestCalibration(unittest.TestCase):
                 },
             },
         }
-        pc = mca.CalibrationProtocol1D(config)
 
-        # Make the second reading non-finite, as a saturated/over-range
-        # meter would, and confirm the guard fires before the fit.
+    @staticmethod
+    def _nan_on_calls(pc, nan_calls):
+        """Make ``pc.powermeter.read`` return NaN on the given 1-based calls.
+
+        Simulates a saturated/over-range meter for specific attenuator steps.
+        """
         real_read = pc.powermeter.read
         calls = {"n": 0}
 
         def flaky_read(*args, **kwargs):
             calls["n"] += 1
-            if calls["n"] == 2:
+            if calls["n"] in nan_calls:
                 return np.nan
             return real_read(*args, **kwargs)
 
         pc.powermeter.read = flaky_read
 
+    def test_02_Calibrator1D_drops_nonfinite(self):
+        """By default a non-finite reading is dropped and the fit proceeds.
+
+        Regression for the over-range meter surfacing lmfit's cryptic
+        "model function generated NaN values" abort: the bad point (2nd
+        step, control value 35) is dropped and the remaining finite points
+        are fit, so the calibration still succeeds.
+        """
+        pc = mca.CalibrationProtocol1D(self._config_1d())
+        self._nan_on_calls(pc, {2})
+
+        ctrl_vals, powers = pc.calibrate(wait_time=0)
+
+        self.assertTrue(np.all(np.isfinite(powers)))
+        self.assertNotIn(35.0, ctrl_vals.tolist())
+        # one of the 15 control values (30..100 step 5) was dropped
+        self.assertEqual(len(ctrl_vals), 14)
+        self.assertTrue(pc.instrument.is_calibrated)
+
+    def test_02b_Calibrator1D_nonfinite_raises_when_opted_out(self):
+        """drop_nonfinite=False raises a clear, control-value-named error."""
+        pc = mca.CalibrationProtocol1D(self._config_1d())
+        self._nan_on_calls(pc, {2})
+
         with self.assertRaises(ValueError) as context:
-            pc.calibrate(wait_time=0)
+            pc.calibrate(wait_time=0, drop_nonfinite=False)
         msg = str(context.exception)
         self.assertIn("non-finite", msg)
-        # the offending control value is the second one measured
-        self.assertIn("35", msg)
+        self.assertIn("35", msg)  # the offending control value
+
+    def test_02c_Calibrator1D_raises_when_too_few_finite(self):
+        """Dropping so many points that too few remain still raises."""
+        pc = mca.CalibrationProtocol1D(self._config_1d())
+        # 15 steps; leave only the first two finite -> below the fit floor.
+        self._nan_on_calls(pc, set(range(3, 16)))
+
+        with self.assertRaises(ValueError) as context:
+            pc.calibrate(wait_time=0)
+        self.assertIn("too few", str(context.exception))
 
     def test_01_Calibrator2D(self):
         try:
