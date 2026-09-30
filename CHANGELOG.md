@@ -10,6 +10,19 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
+### Fixed
+- **Calibration aborted with a cryptic "model function generated NaN values"
+  error (or silently produced a garbage fit).** A saturated/over-range power
+  meter reports the SCPI/IEEE-488.2 sentinel `9.9e37` W, which monet converted
+  to ~`1e41` mW and fed straight into the curve fit; because that value is
+  *finite* it slipped past ordinary checks and either overflowed the optimizer
+  (`sin(inf) → NaN`, lmfit aborts) or converged to a nonsensical model. The
+  real-meter read paths (`ThorlabsPowerMeter`, `ThorlabsTLPMPowerMeter`) now
+  normalize over-range/non-finite samples to `NaN`, and `calibrate()` guards the
+  acquired data before fitting: a non-finite reading now raises a clear error
+  naming the offending control value(s) and logs the full arrays to `monet.log`
+  for diagnosis, instead of aborting inside lmfit or saving a bad calibration.
+
 ## [0.4.1] - 2026-09-29
 
 ### Fixed

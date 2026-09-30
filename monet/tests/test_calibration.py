@@ -12,6 +12,8 @@ import os
 import shutil
 import unittest
 
+import numpy as np
+
 import monet.calibrate as mca
 
 
@@ -89,6 +91,77 @@ class TestCalibration(unittest.TestCase):
         pc.instrument.load_calibration()
 
         # assert False
+
+    def test_02_Calibrator1D_nonfinite_reading(self):
+        """A non-finite power reading aborts with a clear, named error.
+
+        Regression for the numpy-2 upgrade surfacing lmfit's cryptic
+        "model function generated NaN values" abort: guard before the fit
+        so a NaN/inf reading names the offending control value instead.
+        """
+        try:
+            os.makedirs("monet/tests/TestData/calibrate", exist_ok=True)
+        except Exception:
+            pass
+
+        config = {
+            "database": "monet/tests/TestData/calibrate/power_database.xlsx",
+            "index": {
+                "name": "DefaultMicroscope",
+                "wavelength [nm]": 488,
+                "laser_power [mW]": 100,
+            },
+            "powermeter": {
+                "classpath": "monet.powermeter.TestPowerMeter",
+                "init_kwargs": {
+                    "bkg": 0,
+                    "amp": 50,
+                    "phi": 30,
+                    "start": 10,
+                    "step": 5,
+                    "noise": 3,
+                },
+            },
+            "attenuation": {
+                "classpath": "monet.attenuation.TestAttenuator",
+                "init_kwargs": {
+                    "bkg": 0,
+                    "amp": 50,
+                    "phi": 30,
+                    "start": 10,
+                    "step": 5,
+                },
+            },
+            "analysis": {
+                "classpath": "monet.analysis.SinusAttenuationCurveAnalyzer",
+                "init_kwargs": {
+                    "min": 30,
+                    "max": 100,
+                    "step": 5,
+                },
+            },
+        }
+        pc = mca.CalibrationProtocol1D(config)
+
+        # Make the second reading non-finite, as a saturated/over-range
+        # meter would, and confirm the guard fires before the fit.
+        real_read = pc.powermeter.read
+        calls = {"n": 0}
+
+        def flaky_read(*args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                return np.nan
+            return real_read(*args, **kwargs)
+
+        pc.powermeter.read = flaky_read
+
+        with self.assertRaises(ValueError) as context:
+            pc.calibrate(wait_time=0)
+        msg = str(context.exception)
+        self.assertIn("non-finite", msg)
+        # the offending control value is the second one measured
+        self.assertIn("35", msg)
 
     def test_01_Calibrator2D(self):
         try:

@@ -167,6 +167,30 @@ class CalibrationProtocol1D:
             if point_callback:
                 point_callback(i, len(control_par_vals), ctrlval, powers[i])
 
+        # A single non-finite reading (NaN/inf, e.g. a power-meter
+        # over-range/saturation) makes lmfit abort the fit with a cryptic
+        # "model function generated NaN values" error. Catch it here so the
+        # failure names the offending control values and the full arrays land
+        # in monet.log for diagnosis, instead of surfacing as an opaque fit
+        # error after the (now discarded) acquisition.
+        bad = ~np.isfinite(powers)
+        if bad.any():
+            logger.warning(
+                "Non-finite power reading(s) before fit: "
+                "control_par_vals=%s, powers=%s",
+                control_par_vals,
+                powers,
+            )
+            raise ValueError(
+                "Power meter returned {:d} non-finite reading(s) "
+                "(NaN/inf) at control value(s) {!s}; cannot fit the "
+                "attenuation curve. Check the meter for "
+                "saturation/over-range or a bad measurement, then "
+                "recalibrate.".format(
+                    int(bad.sum()), control_par_vals[bad].tolist()
+                )
+            )
+
         # analyze
         self.instrument.analyzer.fit(control_par_vals, powers)
         # print(self.instrument.analyzer.fit_result.fit_report())

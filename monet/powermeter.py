@@ -23,6 +23,41 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
+# SCPI / IEEE-488.2 instruments report 9.9e37 as an over-range / "not-a-number"
+# sentinel instead of a real value when a channel is saturated or the reading is
+# invalid. A genuine optical-power sample is never remotely this large (it would
+# be ~1e37 W of light), so treat any sample at/above this magnitude (in the
+# meter's native watts) as over-range and normalize the reading to NaN. The
+# calibration then rejects that point (naming the control value) instead of
+# feeding a ~1e41 mW outlier into the curve fit, where it silently corrupts the
+# result or aborts the fit with a cryptic "model function generated NaN" error.
+OVERRANGE_W = 1e37
+
+
+def _sanitize_samples(vals):
+    """Average power samples (watts), or NaN if any is invalid/over-range.
+
+    Parameters
+    ----------
+    vals : 1d array-like
+        Raw per-sample readings in watts.
+
+    Returns
+    -------
+    float
+        The mean in watts, or ``nan`` if any sample is non-finite or an
+        over-range sentinel (see ``OVERRANGE_W``).
+    """
+    vals = np.asarray(vals, dtype=np.float64)
+    if not np.all(np.isfinite(vals)) or np.any(np.abs(vals) >= OVERRANGE_W):
+        logger.warning(
+            "Power meter returned an over-range/invalid reading "
+            "(samples=%s); reporting NaN.",
+            vals,
+        )
+        return float("nan")
+    return float(np.mean(vals))
+
 
 class AbstractPowerMeter(abc.ABC):
 
@@ -175,8 +210,9 @@ class ThorlabsPowerMeter(AbstractPowerMeter):
         return power_meter
 
     def read(self, averaging=10):
-        power = np.mean(np.array([self.pm.read for i in range(averaging)]))
-        return power * 1000
+        vals = [self.pm.read for i in range(averaging)]
+        # native watts -> mW (NaN stays NaN); over-range is rejected here.
+        return _sanitize_samples(vals) * 1000
 
     @property
     def wavelength(self):
@@ -334,7 +370,8 @@ class ThorlabsTLPMPowerMeter(AbstractPowerMeter):
             self.pm.measPower(ctypes.byref(power))
             vals.append(power.value)
         # TLPM measPower returns watts; convert to mW to match the others.
-        return float(np.mean(np.array(vals))) * 1000
+        # over-range/invalid samples are rejected (NaN) before conversion.
+        return _sanitize_samples(vals) * 1000
 
     @property
     def wavelength(self):
