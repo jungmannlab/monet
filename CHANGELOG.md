@@ -16,8 +16,13 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
   — warning `⚠ laser OFF — will read ≈ 0` when the selected laser is off, or
   `⚠ no beam-path preset` when the path won't be routed to the meter, and
   `✓ light expected` otherwise. This explains the common "why did Measure
-  return 0?" confusion. The shutter is not called out separately since
-  autoshutter opens it with the laser.
+  return 0?" confusion. The hint now also checks the actual hardware state
+  (last-read beam-path positions): it warns `⚠ filter cube not set for <λ> nm`
+  when the filter cube in the path doesn't match the selected laser, and
+  `⚠ objective in path — need meter in sample position` when the objective
+  turret is in the path while the BFP powermeter position is selected (light
+  then goes to the sample plane). The shutter is not called out separately
+  since autoshutter opens it with the laser.
 
 - **Attenuator backlash check (Set Power tab).** A "Backlash check" button
   re-approaches the current attenuator angle from below and from above, reading

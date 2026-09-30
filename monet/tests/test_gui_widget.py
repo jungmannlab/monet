@@ -113,6 +113,42 @@ class TestMeasureReadiness(unittest.TestCase):
         self.assertTrue(ready)
         self.assertIn("light expected", short)
 
+    def test_filter_mismatch_warns(self):
+        ready, short, detail = SetPowerTab._measure_readiness(
+            561, True, True, True, filter_state="mismatch"
+        )
+        self.assertFalse(ready)
+        self.assertIn("filter cube", short)
+        self.assertIn("561", detail)
+
+    def test_objective_in_path_for_bfp_warns_sample_needed(self):
+        ready, short, detail = SetPowerTab._measure_readiness(
+            561, True, True, True, turret_state="objective_but_bfp"
+        )
+        self.assertFalse(ready)
+        self.assertIn("sample position", short)
+        self.assertIn("sample", detail.lower())
+
+    def test_filter_warning_takes_priority_over_turret(self):
+        # Both wrong -> the filter (excitation blocked) is reported first.
+        ready, short, _ = SetPowerTab._measure_readiness(
+            561,
+            True,
+            True,
+            True,
+            filter_state="mismatch",
+            turret_state="objective_but_bfp",
+        )
+        self.assertFalse(ready)
+        self.assertIn("filter cube", short)
+
+    def test_ready_when_filter_and_turret_ok(self):
+        ready, short, _ = SetPowerTab._measure_readiness(
+            561, True, True, True, filter_state="ok", turret_state="ok"
+        )
+        self.assertTrue(ready)
+        self.assertIn("light expected", short)
+
 
 class TestCalibrationPlots(unittest.TestCase):
     """Regression tests for the live calibration plots / wavelength toggles."""

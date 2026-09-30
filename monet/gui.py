@@ -54,7 +54,7 @@ from monet import (
     PROTOCOLS,
 )
 from monet import __version__ as _monet_version
-from monet.beampath import NikonNosepiece
+from monet.beampath import NikonFilterWheel, NikonNosepiece
 from monet.control import run_power_feedback
 from monet.util import update_mm_acquisition_comment, wavelength_to_rgb
 
@@ -1783,6 +1783,7 @@ class SetPowerTab(QWidget):
         self._active_worker = None  # keep alive to prevent GC
         self._cancel_feedback = False
         self._laser_state: dict = {}  # {laser: (pwr_value, mode_data)}
+        self._last_bp_positions = None  # last-read beam-path positions
         self._build_ui()
 
     def _emit_status(self, msg, timeout_ms=0):
@@ -2207,6 +2208,9 @@ class SetPowerTab(QWidget):
 
     def _set_bp_label(self, positions):
         """Show the beam-path element positions next to the buttons."""
+        # Cache for the Measure readiness hint (filter-cube / turret checks).
+        self._last_bp_positions = dict(positions) if positions else None
+        self._update_measure_hint()
         if not positions:
             self._bp_state_label.setText("current beampath settings: unknown")
             return
@@ -2225,7 +2229,14 @@ class SetPowerTab(QWidget):
         )
 
     @staticmethod
-    def _measure_readiness(laser, laser_on, use_beampath, has_bp_preset):
+    def _measure_readiness(
+        laser,
+        laser_on,
+        use_beampath,
+        has_bp_preset,
+        filter_state="unknown",
+        turret_state="unknown",
+    ):
         """Whether light is expected to reach the sensor when measuring.
 
         Pure helper (no hardware / Qt) so it is unit-testable. Returns
@@ -2233,9 +2244,22 @@ class SetPowerTab(QWidget):
         nothing to say yet), ``short`` is a one-line chip for next to the
         button, and ``detail`` is the button tooltip.
 
-        The common "why did it read 0?" causes are the laser being off or the
-        beam path not routing light to the meter. The shutter is not checked
-        separately: with autoshutter it opens automatically with the laser.
+        Parameters
+        ----------
+        laser : int, str or None
+            Selected laser wavelength (None = nothing selected yet).
+        laser_on : bool
+            Whether the selected laser is currently on.
+        use_beampath, has_bp_preset : bool
+            Whether a beam path is configured, and whether a preset exists for
+            this laser.
+        filter_state : {"ok", "mismatch", "unknown"}
+            Whether the filter cube currently in the path matches ``laser``.
+        turret_state : {"ok", "objective_but_bfp", "unknown"}
+            ``"objective_but_bfp"`` when the objective is in the path while the
+            meter is set to the back focal plane, so light goes to the sample.
+
+        The shutter is not checked: with autoshutter it opens with the laser.
         """
         if laser is None:
             return (None, "", "")
@@ -2245,6 +2269,24 @@ class SetPowerTab(QWidget):
                 "⚠ laser OFF — will read ≈ 0",
                 "The selected laser is off, so the meter will read about "
                 "zero. Switch the laser ON before measuring.",
+            )
+        if filter_state == "mismatch":
+            return (
+                False,
+                "⚠ filter cube not set for {} nm".format(laser),
+                "The filter cube in the path does not match {} nm, so the "
+                "excitation may be blocked. Set the correct filter (Open "
+                "shutters & set filter) before measuring.".format(laser),
+            )
+        if turret_state == "objective_but_bfp":
+            return (
+                False,
+                "⚠ objective in path — need meter in sample position",
+                "The objective turret is at the imaging objective, not the "
+                "BFP powermeter port, so light goes to the sample plane. Put "
+                "the power meter in the sample position (and set the toggle to "
+                "Sample plane), or move the turret to the Powermeter port for "
+                "a BFP reading.",
             )
         if use_beampath and not has_bp_preset:
             return (
@@ -2267,6 +2309,46 @@ class SetPowerTab(QWidget):
             detail = "Laser is ON. Light is expected to reach the sensor."
         return (True, "✓ light expected", detail)
 
+    def _filter_state(self, laser, bp_for_laser):
+        """Compare the current filter cube to the laser's expected filter.
+
+        Returns "ok"/"mismatch"/"unknown" using the last-read beam-path
+        positions and the laser's beam-path preset.
+        """
+        fid = self._filter_id()
+        positions = self._last_bp_positions
+        if (
+            fid is None
+            or not positions
+            or fid not in positions
+            or not isinstance(bp_for_laser, dict)
+            or fid not in bp_for_laser
+        ):
+            return "unknown"
+        return "ok" if positions[fid] == bp_for_laser[fid] else "mismatch"
+
+    def _turret_state(self):
+        """Whether the turret is consistent with the meter-position toggle.
+
+        Returns "objective_but_bfp" when the objective is in the path while
+        the BFP powermeter position is selected (light then goes to the sample
+        plane), else "ok"/"unknown".
+        """
+        nid = self._nosepiece_id()
+        positions = self._last_bp_positions
+        if nid is None or not positions or nid not in positions:
+            return "unknown"
+        if self._pm_pos_combo.currentData() != POWERMETER_BFP:
+            return "ok"  # sample-plane reading: turret at objective is correct
+        cur = positions[nid]
+        pm = self._turret_value("powermeter")
+        obj = self._turret_value("objective")
+        if pm is not None and cur == pm[1]:
+            return "ok"
+        if obj is not None and cur == obj[1]:
+            return "objective_but_bfp"
+        return "unknown"
+
     def _update_measure_hint(self):
         """Refresh the readiness chip/tooltip next to the Measure button."""
         if self._pc is None:
@@ -2278,9 +2360,15 @@ class SetPowerTab(QWidget):
         use_beampath = getattr(self._pc.instrument, "use_beampath", False)
         protocol = getattr(self._pc, "protocol", None) or {}
         bp = protocol.get("beampath") or {}
-        has_bp_preset = bool(bp.get(laser))
+        bp_for_laser = bp.get(laser)
+        has_bp_preset = bool(bp_for_laser)
         ready, short, detail = self._measure_readiness(
-            laser, laser_on, use_beampath, has_bp_preset
+            laser,
+            laser_on,
+            use_beampath,
+            has_bp_preset,
+            filter_state=self._filter_state(laser, bp_for_laser),
+            turret_state=self._turret_state(),
         )
         self._measure_hint.setText(short)
         color = {True: "green", False: "#b36b00"}.get(ready, "")
@@ -2665,6 +2753,7 @@ class SetPowerTab(QWidget):
             self._status.setText(str(exc))
             return
         self._update_range_label()
+        self._update_measure_hint()
 
     def _nosepiece_id(self):
         """Return the beam-path object id of the objective turret, or None.
@@ -2678,6 +2767,21 @@ class SetPowerTab(QWidget):
             return None
         for obid, obj in objects.items():
             if isinstance(obj, NikonNosepiece):
+                return obid
+        return None
+
+    def _filter_id(self):
+        """Return the beam-path object id of the filter cube/turret, or None.
+
+        Detected by scanning the configured beam-path objects for a
+        ``NikonFilterWheel`` instance.
+        """
+        try:
+            objects = self._pc.instrument.beampath.objects
+        except Exception:
+            return None
+        for obid, obj in objects.items():
+            if isinstance(obj, NikonFilterWheel):
                 return obid
         return None
 
