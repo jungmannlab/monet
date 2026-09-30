@@ -168,6 +168,47 @@ class TestCalibrateTabVerify(unittest.TestCase):
         self.assertIsNotNone(tab._btn_apply_model)
         self.assertFalse(tab._btn_apply_model.isEnabled())
 
+    def test_calibrate_tab_has_model_selector(self):
+        tab = CalibrateTab()
+        datas = [
+            tab._model_combo.itemData(i)
+            for i in range(tab._model_combo.count())
+        ]
+        self.assertIn("sinus", datas)
+        self.assertIn("poly deg 5", datas)
+        self.assertIn("linear", datas)
+
+
+class TestExpertView(unittest.TestCase):
+    """The expert-view toggle hides advanced Set Power controls."""
+
+    def _hidden(self, tab):
+        return (
+            tab._btn_backlash.isHidden(),
+            tab._btn_hw_refresh.isHidden(),
+            tab._hw_att_group.isHidden(),
+            tab._hw_pwr_group.isHidden(),
+        )
+
+    def test_default_is_normal_view(self):
+        tab = SetPowerTab()
+        self.assertTrue(all(self._hidden(tab)))
+
+    def test_toggle_shows_and_hides(self):
+        tab = SetPowerTab()
+        tab.set_expert_view(True)
+        self.assertFalse(any(self._hidden(tab)))
+        tab.set_expert_view(False)
+        self.assertTrue(all(self._hidden(tab)))
+
+    def test_widget_toggle_propagates_to_tabs(self):
+        w = MonetWidget(show_toolbar=True, tabs=("set_power",))
+        sp = w.tab("set_power")
+        self.assertTrue(sp._btn_backlash.isHidden())  # default normal
+        w.set_expert_view(True)
+        self.assertFalse(sp._btn_backlash.isHidden())
+        self.assertTrue(w._expert_cb.isChecked())
+
     def test_fit_quality_text_plain(self):
         q = {"rms_pct": 1.2, "max_pct": 3.4, "max_at": 104.5}
         txt = CalibrateTab._fit_quality_text(q)

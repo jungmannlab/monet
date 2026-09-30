@@ -30,6 +30,14 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
   plot skips such rows instead of aborting.
 
 ### Added
+- **Calibrate tab: analysis-model selector.** A dropdown shows the model in use
+  (Sinusoidal / Linear / Polynomial deg 3–6) and lets it be changed; the change
+  is persisted to the microscope's config and invalidates the current
+  calibration (recalibrate to apply). "Apply best model" reuses the same path.
+- **Expert-view toggle.** A toolbar checkbox (default off) hides controls a
+  regular user shouldn't need — the Set Power tab's Backlash check, Refresh
+  hardware state, and the direct Attenuator / Laser-power controls — and reveals
+  them in expert view. `MonetWidget.set_expert_view()` exposes it for embedders.
 - **Within-sweep drift check + durable fit-quality log.** After acquiring a
   calibration sweep, `calibrate()` re-reads the highest-SNR point to measure
   source drift over the sweep (`last_drift_pct`; shown in the Calibrate log and

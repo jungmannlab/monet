@@ -871,8 +871,35 @@ class CalibrateTab(QWidget):
         """Emit a status message; ``timeout_ms=0`` means persistent."""
         self.status.emit(msg, timeout_ms)
 
+    _MODEL_CHOICES = [
+        ("Sinusoidal", "sinus"),
+        ("Linear", "linear"),
+        ("Polynomial (deg 3)", "poly deg 3"),
+        ("Polynomial (deg 4)", "poly deg 4"),
+        ("Polynomial (deg 5)", "poly deg 5"),
+        ("Polynomial (deg 6)", "poly deg 6"),
+    ]
+
     def _build_ui(self):
         layout = QVBoxLayout(self)
+
+        # Analysis model — shows the model in use and lets it be changed.
+        model_row = QHBoxLayout()
+        model_row.addWidget(QLabel("Analysis model:"))
+        self._model_combo = QComboBox()
+        for label, key in self._MODEL_CHOICES:
+            self._model_combo.addItem(label, key)
+        self._model_combo.setToolTip(
+            "The attenuation-curve model fit during calibration. Changing it "
+            "invalidates the current calibration (all lasers); recalibrate to "
+            "apply. Persisted to the microscope's config."
+        )
+        self._model_combo.currentIndexChanged.connect(
+            self._on_model_combo_changed
+        )
+        model_row.addWidget(self._model_combo)
+        model_row.addStretch()
+        layout.addLayout(model_row)
 
         # Wavelength selection group
         self._wl_group = QGroupBox("Wavelengths to calibrate")
@@ -1066,6 +1093,8 @@ class CalibrateTab(QWidget):
         # Drop history overlaid from any previous connection.
         self._plots.set_history({})
         self._update_discard_enabled()
+        if pc is not None:
+            self._sync_model_combo()
         has_beampath = (
             pc is not None
             and hasattr(pc, "instrument")
@@ -1747,7 +1776,6 @@ class CalibrateTab(QWidget):
             self._log.append("Could not determine a best model.")
             return
 
-        classpath, extra = analysis.model_spec(best_name)
         reply = QMessageBox.question(
             self,
             "Apply model & recalibrate",
@@ -1758,7 +1786,14 @@ class CalibrateTab(QWidget):
         )
         if reply != QMessageBox.StandardButton.Yes:
             return
+        self._apply_analysis_model(best_name, recalibrate=True)
 
+    def _apply_analysis_model(self, name, recalibrate=False):
+        """Switch the microscope's analysis model, persist it, invalidate the
+        old (different-model) calibration, and optionally recalibrate."""
+        if self._pc is None:
+            return False
+        classpath, extra = analysis.model_spec(name)
         ana = self._pc.instrument.config["analysis"]
         new_kwargs = dict(ana.get("init_kwargs", {}))
         new_kwargs.pop("polydegree", None)
@@ -1769,16 +1804,14 @@ class CalibrateTab(QWidget):
             self._pc.instrument.analyzer = load_class(classpath, new_kwargs)
         except Exception as exc:
             self._log.append(
-                "Could not build model '{}': {}".format(best_name, exc)
+                "Could not build model '{}': {}".format(name, exc)
             )
-            return
-        # The old calibration was fit with a different model, so it no longer
-        # applies; invalidate it so the recalibration below starts clean.
+            return False
+        # The old calibration was fit with a different model; invalidate it.
         self._pc.instrument.is_calibrated = False
-        # Persist to the config file so the choice survives a restart.
-        name = getattr(self._pc, "_microscope_name", None)
+        scope = getattr(self._pc, "_microscope_name", None)
         try:
-            written = set_config_analysis(name, {**ana}) if name else None
+            written = set_config_analysis(scope, {**ana}) if scope else None
         except Exception as exc:
             written = None
             self._log.append(
@@ -1790,12 +1823,56 @@ class CalibrateTab(QWidget):
             self._log.append(
                 "Model applied for this session only (config not persisted)."
             )
-        self._log.append(
-            "Applied model '{}' ({}). Recalibrating…".format(
-                best_name, classpath.rsplit(".", 1)[-1]
+        self._sync_model_combo()
+        if recalibrate:
+            self._log.append("Applied model '{}'. Recalibrating…".format(name))
+            self._on_start()
+        else:
+            self._log.append(
+                "Model set to '{}'. Recalibrate to apply it.".format(name)
             )
+        return True
+
+    def _sync_model_combo(self):
+        """Reflect the instrument's current analysis model in the combo."""
+        if self._pc is None:
+            return
+        ana = self._pc.instrument.config.get("analysis", {})
+        cur = analysis.model_name_from_config(
+            ana.get("classpath"), ana.get("init_kwargs")
         )
-        self._on_start()
+        idx = self._model_combo.findData(cur)
+        self._model_combo.blockSignals(True)
+        if idx >= 0:
+            self._model_combo.setCurrentIndex(idx)
+        else:
+            # Unrecognized model: show it as a read-only entry.
+            self._model_combo.insertItem(0, cur, cur)
+            self._model_combo.setCurrentIndex(0)
+        self._model_combo.blockSignals(False)
+
+    def _on_model_combo_changed(self, _idx):
+        if self._pc is None:
+            return
+        name = self._model_combo.currentData()
+        cur = analysis.model_name_from_config(
+            self._pc.instrument.config.get("analysis", {}).get("classpath"),
+            self._pc.instrument.config.get("analysis", {}).get("init_kwargs"),
+        )
+        if name == cur:
+            return
+        reply = QMessageBox.question(
+            self,
+            "Change analysis model",
+            "Switch this microscope's analysis model to '{}'?\nThis "
+            "invalidates the current calibration (all lasers); recalibrate "
+            "to apply.".format(name),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            self._sync_model_combo()  # revert selection
+            return
+        self._apply_analysis_model(name, recalibrate=False)
 
     def cancel_worker_and_wait(self):
         if self._worker and self._worker.isRunning():
@@ -2102,10 +2179,28 @@ class SetPowerTab(QWidget):
         self._cancel_feedback = False
         self._laser_state: dict = {}  # {laser: (pwr_value, mode_data)}
         self._last_bp_positions = None  # last-read beam-path positions
+        self._expert = False
         self._build_ui()
+        self.set_expert_view(self._expert)
 
     def _emit_status(self, msg, timeout_ms=0):
         self.status.emit(msg, timeout_ms)
+
+    def set_expert_view(self, expert):
+        """Show/hide advanced controls not meant for a regular user.
+
+        Hidden in the normal view: the Backlash check, Refresh hardware state,
+        and the direct Attenuator / Laser-power controls.
+        """
+        self._expert = bool(expert)
+        for w in (
+            self._btn_backlash,
+            self._btn_hw_refresh,
+            self._hw_att_group,
+            self._hw_pwr_group,
+            self._hw_sep,
+        ):
+            w.setVisible(self._expert)
 
     def _build_ui(self):
         layout = QVBoxLayout(self)
@@ -2347,6 +2442,7 @@ class SetPowerTab(QWidget):
         sep.setFrameShape(QFrame.Shape.HLine)
         sep.setFrameShadow(QFrame.Shadow.Sunken)
         layout.addWidget(sep)
+        self._hw_sep = sep
 
         # ── Hardware state section (formerly Adjust tab) ──────────────────
         hw_refresh_row = QHBoxLayout()
@@ -2361,6 +2457,7 @@ class SetPowerTab(QWidget):
 
         # Attenuator direct control
         hw_att_group = QGroupBox("Attenuator (direct)")
+        self._hw_att_group = hw_att_group
         hw_att_layout = QHBoxLayout()
         hw_att_layout.addWidget(QLabel("Position:"))
         self._hw_att_spin = QDoubleSpinBox()
@@ -2379,6 +2476,7 @@ class SetPowerTab(QWidget):
 
         # Laser power direct control
         hw_pwr_group = QGroupBox("Laser power (direct)")
+        self._hw_pwr_group = hw_pwr_group
         hw_pwr_layout = QHBoxLayout()
         hw_pwr_layout.addWidget(QLabel("Power (mW):"))
         self._hw_pwr_spin = QDoubleSpinBox()
@@ -4710,6 +4808,7 @@ class MonetWidget(QWidget):
         self._tab_widgets = {}
         self._scope_combo = None
         self._btn_connect = None
+        self._expert_cb = None
         self._build_ui(show_toolbar)
         if initial_microscope and self._scope_combo is not None:
             idx = self._scope_combo.findText(initial_microscope)
@@ -4733,6 +4832,13 @@ class MonetWidget(QWidget):
             self._btn_connect.clicked.connect(self._on_connect)
             tb_row.addWidget(self._btn_connect)
             tb_row.addStretch()
+            self._expert_cb = QCheckBox("Expert view")
+            self._expert_cb.setToolTip(
+                "Show advanced controls (backlash check, direct hardware "
+                "state / attenuator / laser power)."
+            )
+            self._expert_cb.toggled.connect(self.set_expert_view)
+            tb_row.addWidget(self._expert_cb)
             layout.addLayout(tb_row)
 
         self._tabs = QTabWidget()
@@ -4832,6 +4938,17 @@ class MonetWidget(QWidget):
         self._connect_worker.error.connect(self._on_connect_error)
         self._connect_worker.finished.connect(self._on_connect_finished)
         self._connect_worker.start()
+
+    def set_expert_view(self, expert):
+        """Toggle advanced controls across tabs (see SetPowerTab)."""
+        expert = bool(expert)
+        if self._expert_cb is not None and self._expert_cb.isChecked() != (
+            expert
+        ):
+            self._expert_cb.setChecked(expert)
+        for w in self._tab_widgets.values():
+            if hasattr(w, "set_expert_view"):
+                w.set_expert_view(expert)
 
     def set_pc(self, pc):
         """Bind an externally-built calibration-protocol object.

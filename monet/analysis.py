@@ -948,9 +948,10 @@ def model_spec(name):
     """Map a compare/fit model name to its ``(classpath, extra_init_kwargs)``.
 
     E.g. ``"sinus"`` ->
-    ``("monet.analysis.SinusAttenuationCurveAnalyzer", {})`` and
+    ``("monet.analysis.SinusAttenuationCurveAnalyzer", {})``,
     ``"poly deg 5"`` ->
-    ``("monet.analysis.PolynomAttenuationCurveAnalyzer", {"polydegree": 5})``.
+    ``("monet.analysis.PolynomAttenuationCurveAnalyzer", {"polydegree": 5})``,
+    ``"linear"`` -> ``("monet.analysis.LinearCurveAnalyzer", {})``.
     """
     if name.startswith("poly"):
         deg = int(name.split()[-1])
@@ -958,7 +959,27 @@ def model_spec(name):
             "monet.analysis.PolynomAttenuationCurveAnalyzer",
             {"polydegree": deg},
         )
+    if name == "linear":
+        return ("monet.analysis.LinearCurveAnalyzer", {})
     return ("monet.analysis.SinusAttenuationCurveAnalyzer", {})
+
+
+def model_name_from_config(classpath, init_kwargs=None):
+    """Reverse of :func:`model_spec`: a config's analysis section -> name.
+
+    Returns ``"sinus"``, ``"linear"`` or ``"poly deg N"`` (``N`` from
+    ``init_kwargs['polydegree']``), or the bare class name for an unrecognized
+    analyzer.
+    """
+    cls = (classpath or "").rsplit(".", 1)[-1]
+    if cls == "SinusAttenuationCurveAnalyzer":
+        return "sinus"
+    if cls == "LinearCurveAnalyzer":
+        return "linear"
+    if cls == "PolynomAttenuationCurveAnalyzer":
+        deg = (init_kwargs or {}).get("polydegree")
+        return "poly deg {}".format(deg) if deg is not None else "poly"
+    return cls
 
 
 def fit_candidate_models(x, y, analysis_parameters, degrees=(3, 4, 5, 6)):

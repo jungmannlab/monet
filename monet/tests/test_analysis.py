@@ -180,6 +180,28 @@ class TestCompareModels(unittest.TestCase):
         cp, extra = man.model_spec("poly deg 5")
         self.assertTrue(cp.endswith("PolynomAttenuationCurveAnalyzer"))
         self.assertEqual(extra, {"polydegree": 5})
+        cp, extra = man.model_spec("linear")
+        self.assertTrue(cp.endswith("LinearCurveAnalyzer"))
+        self.assertEqual(extra, {})
+
+    def test_model_name_from_config_roundtrips(self):
+        self.assertEqual(
+            man.model_name_from_config(
+                "monet.analysis.SinusAttenuationCurveAnalyzer"
+            ),
+            "sinus",
+        )
+        self.assertEqual(
+            man.model_name_from_config("monet.analysis.LinearCurveAnalyzer"),
+            "linear",
+        )
+        self.assertEqual(
+            man.model_name_from_config(
+                "monet.analysis.PolynomAttenuationCurveAnalyzer",
+                {"polydegree": 5},
+            ),
+            "poly deg 5",
+        )
 
     def test_polynomial_wins_on_polynomial_data(self):
         x = np.arange(30.0, 131.0, 5.0)
