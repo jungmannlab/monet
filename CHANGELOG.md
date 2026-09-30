@@ -10,6 +10,31 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
+## [0.4.4] - 2026-09-30
+
+### Fixed
+- **`deploy/setup-server.sh` re-run failed with git "dubious ownership".** The
+  script's `git`/`pip` steps ran as root against the `monet`-owned
+  `/opt/monet/src` checkout, so on any re-run (e.g. to upgrade `GIT_REF`) git
+  refused with `fatal: detected dubious ownership` and the source never
+  updated. Those steps now run as the `monet` user (repo/venv owner), with an
+  ownership fix-up first — so upgrading a deployed server is just
+  `sudo GIT_REF=vX.Y.Z bash deploy/setup-server.sh` again.
+
+### Added
+- **Deployment: `monet` on PATH + a layout/token guide.** The setup script now
+  symlinks `/usr/local/bin/monet → /opt/monet/.venv/bin/monet`, so
+  `sudo -u monet monet token …` works without activating anything (the CLI was
+  only inside the venv). `docs/deployment.md` gains a **"Where everything lives"**
+  map (venv / source / `/etc/monet/monet.env` tokens / DB / log / unit), a
+  **"Managing tokens on the deployed server"** section, and a note that the
+  service does **not** use any conda env — clearing up the "`monet: command not
+  found`, which install is which?" confusion.
+- **Dashboard shows the running monet version.** `GET /dashboard/` injects
+  `monet.__version__` under the title, so an operator can confirm which build is
+  deployed (e.g. whether the dashboard-auth from 0.4.3 is actually running) —
+  useful when "is the server up to date?" is the question.
+
 ## [0.4.3] - 2026-09-29
 
 ### Security

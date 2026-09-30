@@ -235,7 +235,8 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
 
   <!-- ── Sidebar ──────────────────────────────────────────────────────────── -->
   <div id="sidebar">
-    <h6 class="fw-bold mb-1 text-primary">Monet Dashboard</h6>
+    <h6 class="fw-bold mb-0 text-primary">Monet Dashboard</h6>
+    <div class="text-muted mb-2" style="font-size:0.7rem;">v__MONET_VERSION__</div>
     <div id="auth-bar" class="text-muted mb-2" style="display:none;"></div>
 
     <label class="form-label small fw-semibold mb-1">Microscopes</label>
@@ -1180,5 +1181,14 @@ window.addEventListener('DOMContentLoaded', boot);
 
 @router.get("/", response_class=HTMLResponse)
 def get_dashboard():
-    """Serve the interactive dashboard HTML page."""
-    return HTMLResponse(content=_DASHBOARD_HTML)
+    """Serve the interactive dashboard HTML page.
+
+    The running monet version is injected into the page so an operator can
+    confirm which build is deployed (e.g. whether dashboard auth is present).
+    """
+    import monet
+
+    version = getattr(monet, "__version__", "unknown")
+    return HTMLResponse(
+        content=_DASHBOARD_HTML.replace("__MONET_VERSION__", version)
+    )
