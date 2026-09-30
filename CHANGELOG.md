@@ -10,6 +10,8 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
+## [0.4.4] - 2026-09-30
+
 ### Fixed
 - **`deploy/setup-server.sh` re-run failed with git "dubious ownership".** The
   script's `git`/`pip` steps ran as root against the `monet`-owned
