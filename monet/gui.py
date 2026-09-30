@@ -4998,6 +4998,14 @@ class MonetWidget(QWidget):
         ``ConnectWorker``.
         """
         self._pc = pc
+        # Tag the pc with its CONFIGS key (if known) so the Calibrate tab can
+        # persist model changes; ConnectWorker sets this on the toolbar path,
+        # but a host-built pc bound via set_pc would otherwise lack it.
+        if pc is not None and getattr(pc, "_microscope_name", None) is None:
+            try:
+                pc._microscope_name = self.current_microscope
+            except Exception:
+                pass
         for w in self._tab_widgets.values():
             w.set_pc(pc)
         powermeter_ok = getattr(pc, "powermeter_available", True)

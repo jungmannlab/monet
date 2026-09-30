@@ -11,6 +11,18 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 ## [Unreleased]
 
 ### Fixed
+- **Model-switch robustness (code-review follow-ups).** Selecting a laser with
+  no calibration compatible with the current model no longer *sticks* the whole
+  instrument uncalibrated — the laser setter now re-establishes calibration from
+  the database whenever a valid laser is selected. The fixed-laser/attenuator
+  power paths raise a clear "recalibrate this laser" error instead of crashing
+  on `min()` of an empty analyzer set, and the base `load_calibration` stays
+  uncalibrated (with a warning) instead of crashing on a foreign-model row. A
+  read-only Verify now restores each laser's prior on/off state instead of
+  switching lit lasers off; the transmission offset-bias check compares the
+  slope over the same outlier-filtered points (no spurious warning); and a
+  host-built `pc` bound via `MonetWidget.set_pc` picks up the microscope name so
+  "Set as default" persists.
 - **Switching analysis model no longer crashes with `KeyError: 'nan'`.**
   After switching the model on an already-calibrated instrument, selecting a
   laser rebuilt analyzers from the still-loaded (now-incompatible) rows; with

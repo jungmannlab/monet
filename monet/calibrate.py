@@ -542,6 +542,14 @@ class CalibrationProtocol1D:
             bp_dict = protocol.get("beampath") or {}
             orig_laser = getattr(inst, "curr_laser", None)
             orig_power = getattr(inst, "curr_laserpower", None)
+            # Snapshot each laser's on/off state so a read-only verify restores
+            # it (rather than leaving the user's lit laser switched off).
+            orig_enabled = {}
+            for las in lasers:
+                try:
+                    orig_enabled[las] = inst.lasers[las].enabled
+                except Exception:
+                    orig_enabled[las] = False
             try:
                 for laser in lasers:
                     # enable the laser and route the beam to the meter
@@ -591,7 +599,7 @@ class CalibrationProtocol1D:
                         )
             finally:
                 # Restore the selected laser/power first (selecting a laser may
-                # auto-enable it), then switch verified lasers off directly.
+                # auto-enable it), then restore each laser's prior on/off state.
                 if orig_laser is not None:
                     try:
                         inst.laser = orig_laser
@@ -602,7 +610,9 @@ class CalibrationProtocol1D:
                 if manage_laser_state:
                     for las in lasers:
                         try:
-                            inst.lasers[las].enabled = False
+                            inst.lasers[las].enabled = orig_enabled.get(
+                                las, False
+                            )
                         except Exception:
                             pass
 

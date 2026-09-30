@@ -233,6 +233,31 @@ class TestCalibration(unittest.TestCase):
         pc.calibrate(wait_time=0, drift_check=False)
         self.assertIsNone(pc.last_drift_pct)
 
+    def test_03e_load_calibration_incompatible_model_no_crash(self):
+        """load_calibration on a foreign-model row stays uncalibrated,
+        rather than crashing (control.load_calibration guard)."""
+        import tempfile
+
+        from monet.util import load_class
+
+        cfg = self._config_1d()
+        cfg["database"] = os.path.join(tempfile.mkdtemp(), "db.xlsx")
+        pc = mca.CalibrationProtocol1D(cfg)
+        pc.calibrate(wait_time=0)  # writes a sinusoidal row
+        self.assertTrue(pc.instrument.is_calibrated)
+
+        # switch to the polynomial model and reload the (sinusoidal) row
+        poly = {
+            "classpath": "monet.analysis.PolynomAttenuationCurveAnalyzer",
+            "init_kwargs": {"min": 30, "max": 100, "step": 5, "polydegree": 5},
+        }
+        pc.instrument.config["analysis"] = poly
+        pc.instrument.analyzer = load_class(
+            poly["classpath"], poly["init_kwargs"]
+        )
+        pc.instrument.load_calibration()  # must not raise
+        self.assertFalse(pc.instrument.is_calibrated)
+
     def test_03b_fit_quality_flags_model_mismatch(self):
         """A model that mispredicts the data yields a large relative residual.
 
@@ -467,6 +492,12 @@ class TestCalibration(unittest.TestCase):
             for key in ("fit_rms_pct", "verify_rms_pct", "verify_max_pct"):
                 self.assertIn(key, s)
 
+        # a laser that was ON before verify is left ON afterwards (its prior
+        # on/off state is restored, not force-disabled).
+        pc.instrument.lasers[488].enabled = True
+        pc.verify_calibration(n_angles=2, wait_time=0, switch_time=0)
+        self.assertTrue(pc.instrument.lasers[488].enabled)
+
     def test_06_switch_model_reuses_mixed_db(self):
         """Switching analysis model reuses a DB with old (foreign) rows.
 
@@ -635,6 +666,28 @@ class TestCalibration(unittest.TestCase):
         pc.instrument.analyzer = load_class(
             poly["classpath"], poly["init_kwargs"]
         )
+
+        # while still is_calibrated (no reselect yet), an explicit query for a
+        # laser with no compatible calibration raises a clear error instead of
+        # crashing on min() of an empty analyzers dict.
+        self.assertTrue(pc.instrument.is_calibrated)
+        with self.assertRaises(ValueError) as ctx:
+            pc.instrument._analyzers_for(488)
+        self.assertIn("No calibration compatible", str(ctx.exception))
+
         pc.instrument.laser = 488  # must not raise KeyError 'nan'
         # the stale (sinusoidal) calibration is no longer considered valid
         self.assertFalse(pc.instrument.is_calibrated)
+
+        # recovery: switching back to a compatible model and reselecting the
+        # laser re-establishes calibration (no sticky lockout).
+        sinus = {
+            "classpath": "monet.analysis.SinusAttenuationCurveAnalyzer",
+            "init_kwargs": {"min": 30, "max": 100, "step": 5},
+        }
+        pc.instrument.config["analysis"] = sinus
+        pc.instrument.analyzer = load_class(
+            sinus["classpath"], sinus["init_kwargs"]
+        )
+        pc.instrument.laser = 488
+        self.assertTrue(pc.instrument.is_calibrated)

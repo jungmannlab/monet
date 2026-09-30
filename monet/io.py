@@ -1410,18 +1410,24 @@ def compute_and_save_factor(db_fname, device, laser, ana_config):
     # set if the mask would empty it.
     ratios = np.asarray(all_ratios, dtype=float)
     outliers = mad_outlier_mask(ratios, thresh=3.5)
-    kept = ratios[~outliers]
+    keep = ~outliers
     n_dropped = int(outliers.sum())
-    if kept.size == 0:
-        kept = ratios
+    if not keep.any():
+        keep = np.ones(ratios.shape, dtype=bool)
         n_dropped = 0
+    kept = ratios[keep]
 
     factor_mean = float(np.mean(kept))
     factor_std = float(np.std(kept))
     n_points = int(kept.size)
+    # Compare against the slope over the SAME outlier-filtered points, so a
+    # failed-run outlier cluster doesn't trigger a spurious offset warning.
     _warn_if_offset_biased(
         factor_mean,
-        _offset_immune_factor(all_ps, all_pb),
+        _offset_immune_factor(
+            np.asarray(all_ps, dtype=float)[keep],
+            np.asarray(all_pb, dtype=float)[keep],
+        ),
         "{}/{} nm".format(device, laser),
     )
     logger.debug(
@@ -1536,12 +1542,21 @@ def compute_pair_factor(sample_pars, bfp_pars, ana_config):
     if not ratios:
         return None, 0
     arr = np.asarray(ratios, dtype=float)
-    keep = arr[~mad_outlier_mask(arr, thresh=3.5)]
-    if keep.size == 0:
-        keep = arr
-    factor = float(np.mean(keep))
-    _warn_if_offset_biased(factor, _offset_immune_factor(ps, pb), "pair")
-    return factor, int(keep.size)
+    mask = ~mad_outlier_mask(arr, thresh=3.5)
+    if not mask.any():
+        mask = np.ones(arr.shape, dtype=bool)
+    kept = arr[mask]
+    factor = float(np.mean(kept))
+    # Slope over the same outlier-filtered points (see compute_and_save_factor).
+    _warn_if_offset_biased(
+        factor,
+        _offset_immune_factor(
+            np.asarray(ps, dtype=float)[mask],
+            np.asarray(pb, dtype=float)[mask],
+        ),
+        "pair",
+    )
+    return factor, int(kept.size)
 
 
 def _pair_factor(df_sample, df_bfp, lpwr, ana_config):

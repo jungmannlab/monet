@@ -230,7 +230,21 @@ class IlluminationControl:
             fname, self.config["index"], time_idx=time_idx
         )
 
-        self.analyzer.load_model(cali_pars)
+        # The stored calibration may have been fit with a different analysis
+        # model than the current config (e.g. sinusoidal before switching to
+        # polynomial); loading it into the current analyzer then raises. Stay
+        # uncalibrated with a clear warning rather than crashing.
+        try:
+            self.analyzer.load_model(cali_pars)
+        except Exception as exc:
+            logger.warning(
+                "Stored calibration is incompatible with the current "
+                "analysis model (%s); recalibrate. Leaving the instrument "
+                "uncalibrated.",
+                exc,
+            )
+            self.is_calibrated = False
+            return
         self.is_calibrated = True
 
     def disconnect(self):
@@ -363,6 +377,23 @@ class IlluminationLaserControl(IlluminationControl):
                     e,
                 )
 
+    def _analyzers_for(self, laser):
+        """Analyzers/power-ranges for ``laser`` under the current model.
+
+        Like :meth:`_populate_analyzers`, but raises a clear error when no
+        stored calibration is compatible with the current analysis model
+        (e.g. after switching the model before recalibrating) instead of
+        letting callers crash on an empty mapping.
+        """
+        analyzers, power_ranges = self._populate_analyzers(self.cali_db, laser)
+        if not analyzers:
+            raise ValueError(
+                "No calibration compatible with the current analysis model "
+                "for laser {}; recalibrate this laser with the current "
+                "model.".format(laser)
+            )
+        return analyzers, power_ranges
+
     def _populate_analyzers(self, db, laser):
         """Create analyzers for various power settings from the database.
 
@@ -381,9 +412,9 @@ class IlluminationLaserControl(IlluminationControl):
         power_ranges : pandas DataFrame
             Indexed by laser power settings, with columns 'min', 'max'.
         """
-        if not self.is_calibrated:
+        if db is None:
             raise KeyError(
-                "Cannot populate analyzers: no calibration present."
+                "Cannot populate analyzers: no calibration database loaded."
             )
         laser = int(laser)
         ic(db)
@@ -459,7 +490,11 @@ class IlluminationLaserControl(IlluminationControl):
             self.config["index"][LASER_TAG] = laser
             if self.auto_enable_lasers:
                 self.lasers[self.curr_laser].enabled = True
-            if self.is_calibrated:
+            # Gate on having a database, not on is_calibrated: switching to a
+            # laser with a valid calibration must re-establish it even if a
+            # previously-selected laser (incompatible with the current model)
+            # cleared the flag — otherwise the instrument stays locked out.
+            if getattr(self, "cali_db", None) is not None:
                 ic(self.cali_db)
                 self._analyzers, self._power_ranges = self._populate_analyzers(
                     self.cali_db, self.curr_laser
@@ -471,12 +506,12 @@ class IlluminationLaserControl(IlluminationControl):
                     # laserpower to NaN and later KeyError'ing on it.
                     logger.warning(
                         "No calibration compatible with the current analysis "
-                        "model for laser %s; recalibrate. Leaving the "
-                        "instrument uncalibrated.",
+                        "model for laser %s; recalibrate.",
                         self.curr_laser,
                     )
                     self.is_calibrated = False
                 else:
+                    self.is_calibrated = True
                     self.laserpower = self._power_ranges.index.min()
             else:
                 logger.debug(
@@ -821,7 +856,7 @@ class IlluminationLaserControl(IlluminationControl):
         # C34 safety ceiling — enforced below the actuation layer.
         pwr, _ = self.clamp_to_max_power(pwr, laser)
 
-        analyzers, _ = self._populate_analyzers(self.cali_db, laser)
+        analyzers, _ = self._analyzers_for(laser)
         if len(analyzers) < 2:
             raise ValueError(
                 "At least 2 calibrated laser power levels are required for "
@@ -900,7 +935,7 @@ class IlluminationLaserControl(IlluminationControl):
         # C34 safety ceiling — enforced below the actuation layer.
         pwr, _ = self.clamp_to_max_power(pwr, laser)
 
-        analyzers, _ = self._populate_analyzers(self.cali_db, laser)
+        analyzers, _ = self._analyzers_for(laser)
 
         # Find the calibrated level nearest to the current hardware laser power
         curr_lp = float(self.lasers[laser].power)
@@ -959,7 +994,7 @@ class IlluminationLaserControl(IlluminationControl):
         if laser is None:
             laser = self.curr_laser
 
-        analyzers, _ = self._populate_analyzers(self.cali_db, laser)
+        analyzers, _ = self._analyzers_for(laser)
         att_pos = self.attenuator.curr_pos()
 
         laser_pwrs = []
@@ -1015,7 +1050,7 @@ class IlluminationLaserControl(IlluminationControl):
         if same_laser:
             pr = getattr(self, "_power_ranges", None)
         else:
-            _, pr = self._populate_analyzers(self.cali_db, laser)
+            _, pr = self._analyzers_for(laser)
         if pr is None or pr.empty:
             raise ValueError("No calibration power ranges available.")
         # power-meter units → sample plane (no-op unless BFP-calibrated)
