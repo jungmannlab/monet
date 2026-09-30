@@ -10,6 +10,32 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
+### Changed
+- **Power meters are now put into power auto-range at open (default on).**
+  monet never configured the meter range — and on the TLPM path `open()`
+  resets the device, wiping any range set in Thorlabs' Optical Power Monitor
+  software — so a fixed, too-low range could silently saturate during a
+  calibration and produce the over-range readings behind the fit failure
+  below. `ThorlabsPowerMeter` and `ThorlabsTLPMPowerMeter` now enable
+  auto-range on connect; set `power_autorange: false` in the powermeter config
+  to pin the device's own range instead. Enabling is fail-soft (a driver/API
+  mismatch logs a warning and still connects).
+
+### Fixed
+- **Calibration aborted with a cryptic "model function generated NaN values"
+  error (or silently produced a garbage fit).** A saturated/over-range power
+  meter reports the SCPI/IEEE-488.2 sentinel `9.9e37` W, which monet converted
+  to ~`1e41` mW and fed straight into the curve fit; because that value is
+  *finite* it slipped past ordinary checks and either overflowed the optimizer
+  (`sin(inf) → NaN`, lmfit aborts) or converged to a nonsensical model. The
+  real-meter read paths (`ThorlabsPowerMeter`, `ThorlabsTLPMPowerMeter`) now
+  normalize over-range/non-finite samples to `NaN`, and `calibrate()` guards the
+  acquired data before fitting: by default it drops the non-finite point(s) and
+  fits the remaining curve, logging the dropped control value(s) and the full
+  arrays to `monet.log`. Pass `drop_nonfinite=False` to raise instead; either
+  way, if too few finite points remain to fit, it raises a clear error — so a
+  bad reading never reaches lmfit or silently produces a garbage calibration.
+
 ## [0.4.4] - 2026-09-30
 
 ### Fixed

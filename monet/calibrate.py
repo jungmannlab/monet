@@ -123,6 +123,7 @@ class CalibrationProtocol1D:
         save_plot=True,
         point_callback=None,
         comment=None,
+        drop_nonfinite=True,
     ):
         """Calibrate power with parameters from the configuration file.
 
@@ -142,6 +143,12 @@ class CalibrationProtocol1D:
         point_callback : callable or None
             Called after every attenuator step with (index, total, control
             value, measured power), so a caller can follow the curve live.
+        drop_nonfinite : bool
+            If True (default), non-finite readings (NaN/inf, e.g. from a
+            saturated/over-range meter) are dropped and the curve is fit on
+            the remaining finite points, with a warning naming the dropped
+            control values. If False, any non-finite reading raises instead.
+            Either way, if too few finite points remain to fit, it raises.
 
         Returns
         -------
@@ -166,6 +173,47 @@ class CalibrationProtocol1D:
             # print('Position: {:.1f}, Power: {:f}'.format(ctrlval, powers[i]))
             if point_callback:
                 point_callback(i, len(control_par_vals), ctrlval, powers[i])
+
+        # Non-finite readings (NaN/inf) come from a saturated/over-range or
+        # otherwise-bad meter measurement. Feeding them to lmfit aborts the
+        # fit with a cryptic "model function generated NaN values" error (or
+        # yields a garbage fit), so handle them here — always logging the full
+        # arrays to monet.log for diagnosis.
+        bad = ~np.isfinite(powers)
+        if bad.any():
+            dropped = control_par_vals[bad].tolist()
+            logger.warning(
+                "%d non-finite power reading(s) at control value(s) %s; "
+                "control_par_vals=%s, powers=%s",
+                int(bad.sum()),
+                dropped,
+                control_par_vals,
+                powers,
+            )
+            if not drop_nonfinite:
+                raise ValueError(
+                    "Power meter returned {:d} non-finite reading(s) "
+                    "(NaN/inf) at control value(s) {!s}; cannot fit the "
+                    "attenuation curve. Check the meter for "
+                    "saturation/over-range or a bad measurement, then "
+                    "recalibrate.".format(int(bad.sum()), dropped)
+                )
+            control_par_vals = control_par_vals[~bad]
+            powers = powers[~bad]
+            logger.warning(
+                "Dropped %d non-finite point(s); fitting on the "
+                "remaining %d.",
+                int(bad.sum()),
+                powers.size,
+            )
+
+        if powers.size < 3:
+            raise ValueError(
+                "Only {:d} finite power reading(s) remain after dropping "
+                "non-finite ones; too few to fit the attenuation curve. "
+                "Check the power meter (saturation/over-range) and "
+                "recalibrate.".format(powers.size)
+            )
 
         # analyze
         self.instrument.analyzer.fit(control_par_vals, powers)
@@ -415,6 +463,7 @@ class CalibrationProtocol2D(CalibrationProtocol1D):
         powermeter_type="manual",
         power_filter=None,
         comment=None,
+        drop_nonfinite=True,
     ):
         """Run a protocol over lasers and power settings.
 
@@ -455,6 +504,9 @@ class CalibrationProtocol2D(CalibrationProtocol1D):
         powermeter_type : str
             'sample' (sample plane) or 'bfp' (back focal plane) — annotated
             in every saved calibration.
+        drop_nonfinite : bool
+            Passed through to :meth:`calibrate`; if True (default), non-finite
+            readings are dropped and the curve is fit on the remaining points.
         """
         powermeter_type = normalize_powermeter_type(powermeter_type)
         plotfolder = self.instrument.config.get("dest_calibration_plot")
@@ -565,6 +617,7 @@ class CalibrationProtocol2D(CalibrationProtocol1D):
                     save_plot=False,
                     point_callback=_on_point,
                     comment=comment,
+                    drop_nonfinite=drop_nonfinite,
                 )
                 for an, pw in zip(angles, powers):
                     measpwrs.loc[an, lpwr] = pw

@@ -23,6 +23,41 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
+# SCPI / IEEE-488.2 instruments report 9.9e37 as an over-range / "not-a-number"
+# sentinel instead of a real value when a channel is saturated or the reading is
+# invalid. A genuine optical-power sample is never remotely this large (it would
+# be ~1e37 W of light), so treat any sample at/above this magnitude (in the
+# meter's native watts) as over-range and normalize the reading to NaN. The
+# calibration then rejects that point (naming the control value) instead of
+# feeding a ~1e41 mW outlier into the curve fit, where it silently corrupts the
+# result or aborts the fit with a cryptic "model function generated NaN" error.
+OVERRANGE_W = 1e37
+
+
+def _sanitize_samples(vals):
+    """Average power samples (watts), or NaN if any is invalid/over-range.
+
+    Parameters
+    ----------
+    vals : 1d array-like
+        Raw per-sample readings in watts.
+
+    Returns
+    -------
+    float
+        The mean in watts, or ``nan`` if any sample is non-finite or an
+        over-range sentinel (see ``OVERRANGE_W``).
+    """
+    vals = np.asarray(vals, dtype=np.float64)
+    if not np.all(np.isfinite(vals)) or np.any(np.abs(vals) >= OVERRANGE_W):
+        logger.warning(
+            "Power meter returned an over-range/invalid reading "
+            "(samples=%s); reporting NaN.",
+            vals,
+        )
+        return float("nan")
+    return float(np.mean(vals))
+
 
 class AbstractPowerMeter(abc.ABC):
 
@@ -126,6 +161,29 @@ class ThorlabsPowerMeter(AbstractPowerMeter):
                 )
             )
         self.config = config
+        self._enable_autorange()
+
+    def _enable_autorange(self):
+        """Enable power auto-range unless disabled via ``power_autorange``.
+
+        A fixed range that is too low for the calibration's peak power
+        saturates the meter, which then reports the 9.9e37 over-range
+        sentinel and breaks the fit (see ``_sanitize_samples``). Auto-range
+        avoids that. Fail-soft: a driver/API mismatch must not stop us from
+        using an otherwise-connected meter.
+        """
+        if not self.config.get("power_autorange", True):
+            return
+        try:
+            # ThorlabsPM100's attribute maps to SCPI SENS:POW:RANG:AUTO ON.
+            self.pm.sense.power.dc.range.auto = "ON"
+            logger.info("Thorlabs power meter: auto-range enabled.")
+        except Exception as exc:
+            logger.warning(
+                "Could not enable power auto-range on the Thorlabs meter "
+                "(%s); leaving the device's current range setting.",
+                exc,
+            )
 
     def _open_powermeter(self, address=""):
         """Open the communication with the power meter.
@@ -175,8 +233,9 @@ class ThorlabsPowerMeter(AbstractPowerMeter):
         return power_meter
 
     def read(self, averaging=10):
-        power = np.mean(np.array([self.pm.read for i in range(averaging)]))
-        return power * 1000
+        vals = [self.pm.read for i in range(averaging)]
+        # native watts -> mW (NaN stays NaN); over-range is rejected here.
+        return _sanitize_samples(vals) * 1000
 
     @property
     def wavelength(self):
@@ -233,6 +292,32 @@ class ThorlabsTLPMPowerMeter(AbstractPowerMeter):
             config.get("address", "find connection"),
             dll_path=config.get("dll_path"),
         )
+        self._enable_autorange()
+
+    def _enable_autorange(self):
+        """Enable power auto-range unless disabled via ``power_autorange``.
+
+        ``open()`` resets the meter to its ``*RST`` state, so any range set
+        in Thorlabs' Optical Power Monitor software is wiped on connect. A
+        fixed range that is too low saturates the meter, which then reports
+        the 9.9e37 over-range sentinel and breaks the fit (see
+        ``_sanitize_samples``). Fail-soft: a driver/API mismatch must not
+        stop us from using an otherwise-connected meter.
+        """
+        if self.pm is None or not self.config.get("power_autorange", True):
+            return
+        import ctypes
+
+        try:
+            # TLPM_AUTORANGE_POWER_ON = 1
+            self.pm.setPowerAutoRange(ctypes.c_int16(1))
+            logger.info("Thorlabs TLPM power meter: auto-range enabled.")
+        except Exception as exc:
+            logger.warning(
+                "Could not enable power auto-range on the TLPM meter "
+                "(%s); leaving the device's current range setting.",
+                exc,
+            )
 
     def _import_tlpm_wrapper(self):
         """Import Thorlabs' TLPM wrapper class, preferring the copy vendored
@@ -334,7 +419,8 @@ class ThorlabsTLPMPowerMeter(AbstractPowerMeter):
             self.pm.measPower(ctypes.byref(power))
             vals.append(power.value)
         # TLPM measPower returns watts; convert to mW to match the others.
-        return float(np.mean(np.array(vals))) * 1000
+        # over-range/invalid samples are rejected (NaN) before conversion.
+        return _sanitize_samples(vals) * 1000
 
     @property
     def wavelength(self):
