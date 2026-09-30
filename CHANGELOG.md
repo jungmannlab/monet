@@ -19,6 +19,14 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
   return 0?" confusion. The shutter is not called out separately since
   autoshutter opens it with the laser.
 
+- **Transmission-factor offset-bias diagnostic.** The objective transmission
+  factor is stored as a mean of pointwise `P_sample/P_bfp` ratios, which biases
+  by tens of percent when one plane has a large additive offset (stray light /
+  un-zeroed meter). When computing the factor, monet now also derives the
+  offset-immune slope of `P_sample` vs `P_bfp` and logs a warning to
+  `monet.log` if the two disagree by >5%, flagging a possibly-biased factor.
+  Diagnostic only — the stored factor is unchanged.
+
 ### Changed
 - **Power meters are now put into power auto-range at open (default on).**
   monet never configured the meter range — and on the TLPM path `open()`

@@ -164,6 +164,47 @@ class TestPlotDeviceHistory(unittest.TestCase):
         mio.plot_device_amplitude_history(self.db, "TestScope", "", analyzer)
 
 
+class TestOffsetImmuneFactor(unittest.TestCase):
+    """The offset-immune (slope) transmission-factor diagnostic."""
+
+    ANA = {
+        "classpath": "monet.analysis.LinearCurveAnalyzer",
+        "init_kwargs": {"min": 0.0, "max": 180.0},
+    }
+
+    def test_slope_recovers_transmission_ignoring_offset(self):
+        # P_sample = 0.3 * P_bfp + additive offset -> slope 0.3.
+        x = np.linspace(0, 180, 50)
+        p_bfp = 1.0 * x + 0.5
+        p_sample = 0.3 * p_bfp + 4.0
+        slope = mio._offset_immune_factor(p_sample, p_bfp)
+        self.assertAlmostEqual(slope, 0.3, places=6)
+
+    def test_slope_none_when_bfp_constant(self):
+        self.assertIsNone(mio._offset_immune_factor([1.0, 2.0], [3.0, 3.0]))
+
+    def test_pair_factor_warns_when_offset_biased(self):
+        # Large additive offset in the sample plane biases the mean-of-ratios
+        # factor away from the true slope (0.3) -> diagnostic warning.
+        bfp = {"bkg": 0.5, "amp": 1.0}
+        sample = {"bkg": 5.0, "amp": 0.3}
+        with self.assertLogs("monet.io", level="WARNING") as cm:
+            factor, n = mio.compute_pair_factor(sample, bfp, self.ANA)
+        self.assertIsNotNone(factor)
+        self.assertTrue(
+            any("offset-immune slope" in m for m in cm.output),
+            cm.output,
+        )
+
+    def test_pair_factor_no_warning_when_proportional(self):
+        # Both planes scaled by the same 0.3 (offset scales too) -> no bias.
+        bfp = {"bkg": 1.0, "amp": 1.0}
+        sample = {"bkg": 0.3, "amp": 0.3}
+        with self.assertNoLogs("monet.io", level="WARNING"):
+            factor, n = mio.compute_pair_factor(sample, bfp, self.ANA)
+        self.assertAlmostEqual(factor, 0.3, places=3)
+
+
 class TestComputeAndSaveFactor(unittest.TestCase):
 
     def setUp(self):

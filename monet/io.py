@@ -1297,6 +1297,7 @@ def compute_and_save_factor(db_fname, device, laser, ana_config):
     positions = np.linspace(att_min, att_max, 50)
 
     all_ratios = []
+    all_ps, all_pb = [], []
     for lpwr in common_lpwrs:
         manual_rows = db_manual.loc[
             db_manual.index.get_level_values(POWER_TAG) == lpwr
@@ -1345,6 +1346,8 @@ def compute_and_save_factor(db_fname, device, laser, ana_config):
                 p_b = ana_b.estimate_power(pos)
                 if p_m > 0 and p_b > 0:
                     all_ratios.append(p_m / p_b)
+                    all_ps.append(p_m)
+                    all_pb.append(p_b)
             except Exception:
                 pass
 
@@ -1370,6 +1373,11 @@ def compute_and_save_factor(db_fname, device, laser, ana_config):
     factor_mean = float(np.mean(kept))
     factor_std = float(np.std(kept))
     n_points = int(kept.size)
+    _warn_if_offset_biased(
+        factor_mean,
+        _offset_immune_factor(all_ps, all_pb),
+        "{}/{} nm".format(device, laser),
+    )
     logger.debug(
         "transmission_objective %s/%s: mean=%.4f std=%.4f n=%d "
         "(dropped %d outlier ratio(s))",
@@ -1403,6 +1411,51 @@ def _row_model_pars(row):
     return pars
 
 
+def _offset_immune_factor(p_sample, p_bfp):
+    """Slope of P_sample vs P_bfp — an offset-immune transmission estimate.
+
+    A pure multiplicative objective transmission is the *slope* of the
+    sample-vs-BFP power relation. Unlike the mean of pointwise P_sample/P_bfp
+    ratios (:func:`compute_pair_factor`), the slope is immune to an additive
+    offset (stray light or an un-zeroed meter) in either plane, which
+    otherwise biases the ratio by tens of percent when the offset is a large
+    fraction of the signal. Returns ``None`` if it cannot be estimated.
+    """
+    p_sample = np.asarray(p_sample, dtype=float)
+    p_bfp = np.asarray(p_bfp, dtype=float)
+    if p_sample.size < 2 or float(np.ptp(p_bfp)) == 0.0:
+        return None
+    try:
+        slope = float(np.polyfit(p_bfp, p_sample, 1)[0])
+    except Exception:
+        return None
+    return slope
+
+
+def _warn_if_offset_biased(mean_ratio, slope, context):
+    """Warn when the mean-of-ratios factor diverges from the slope estimate.
+
+    A gap between the stored mean-of-ratios transmission factor and the
+    offset-immune slope (see :func:`_offset_immune_factor`) flags an additive
+    offset in one plane, so the stored factor may be biased. Diagnostic only —
+    the stored factor is unchanged.
+    """
+    if slope is None or not np.isfinite(slope) or slope <= 0:
+        return
+    dev = abs(mean_ratio - slope) / slope
+    if dev > 0.05:
+        logger.warning(
+            "transmission_objective %s: mean-of-ratios factor %.4f differs "
+            "from the offset-immune slope %.4f by %.1f%% — likely an additive "
+            "offset (stray light / un-zeroed meter) in one plane; the stored "
+            "mean-of-ratios factor may be biased.",
+            context,
+            mean_ratio,
+            slope,
+            dev * 100.0,
+        )
+
+
 def compute_pair_factor(sample_pars, bfp_pars, ana_config):
     """Robust P_sample / P_bfp factor from two calibrations' model params.
 
@@ -1423,12 +1476,15 @@ def compute_pair_factor(sample_pars, bfp_pars, ana_config):
     except Exception:
         return None, 0
     ratios = []
+    ps, pb = [], []
     for pos in positions:
         try:
             p_s = ana_s.estimate_power(pos)
             p_b = ana_b.estimate_power(pos)
             if p_s > 0 and p_b > 0:
                 ratios.append(p_s / p_b)
+                ps.append(p_s)
+                pb.append(p_b)
         except Exception:
             pass
     if not ratios:
@@ -1437,7 +1493,9 @@ def compute_pair_factor(sample_pars, bfp_pars, ana_config):
     keep = arr[~mad_outlier_mask(arr, thresh=3.5)]
     if keep.size == 0:
         keep = arr
-    return float(np.mean(keep)), int(keep.size)
+    factor = float(np.mean(keep))
+    _warn_if_offset_biased(factor, _offset_immune_factor(ps, pb), "pair")
+    return factor, int(keep.size)
 
 
 def _pair_factor(df_sample, df_bfp, lpwr, ana_config):
