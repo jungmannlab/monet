@@ -44,6 +44,54 @@ not an interpreter under `/root` — the service user can't read it).
 The manual steps below are what the script automates, for when you want to
 understand or customise them.
 
+## Where everything lives
+
+After the scripted install, a DB server is laid out like this (the `monet` user
+owns `/opt/monet` and `/var/lib/monet`):
+
+| Path | What it is |
+|------|-----------|
+| `/opt/monet/.venv/` | the Python venv the **service runs from**; the `monet` CLI is `/opt/monet/.venv/bin/monet` (also symlinked to `/usr/local/bin/monet`) |
+| `/opt/monet/src/` | the monet source checkout the venv installs (editable); the **upgrade target** (`git checkout <tag>` + reinstall) |
+| `/etc/monet/monet.env` | **tokens** (`PAINT_MONET_TOKENS`) and `PAINT_MONET_AUTH` — the systemd `EnvironmentFile` the service reads |
+| `/var/lib/monet/calibrations.db` | the SQLite calibration database (`--db-path`) |
+| `/var/lib/monet/monet.log` | the log file (also `journalctl -u monet`) |
+| `/etc/systemd/system/monet.service` | the systemd unit |
+
+> **The service does NOT use any conda env.** A `conda activate monet` on the
+> box is a *separate, unrelated* install — running `monet` from it edits the same
+> token file but is not what the service executes. Always manage the deployed
+> server via `/opt/monet/.venv` (or the `/usr/local/bin/monet` symlink). Check
+> what the service actually runs with:
+> `sudo -u monet /opt/monet/.venv/bin/python -c "import monet; print(monet.__version__)"`.
+
+## Managing tokens on the deployed server
+
+The `monet` command lives in the venv, so it isn't on `root`'s `PATH` by default
+(the scripted install adds a `/usr/local/bin/monet` symlink; if you installed
+manually, use the full path `/opt/monet/.venv/bin/monet`). Run token commands as
+the `monet` user, and **always pass `--env-file /etc/monet/monet.env`** — that is
+the file the service reads; the default (a package-root `.env`) is *not* read by
+the systemd service.
+
+```bash
+# add a token (write = can view + edit; read = view only). Prints the value ONCE
+# plus the PAINT_MONET_TOKEN=… line to paste on the client rig.
+sudo -u monet monet token add --scope write --label team-admin \
+     --env-file /etc/monet/monet.env
+
+sudo -u monet monet token list   --env-file /etc/monet/monet.env   # scopes + labels only
+sudo -u monet monet token rotate --label team-admin --env-file /etc/monet/monet.env
+sudo -u monet monet token revoke --label team-admin --env-file /etc/monet/monet.env
+
+# apply the change (systemd EnvironmentFile — SIGHUP does NOT reload it):
+sudo systemctl restart monet
+```
+
+The dashboard and clients use these tokens: a browser is prompted for one to view
+`/dashboard/`, and a rig sends its `PAINT_MONET_TOKEN` automatically. Give each
+rig/person its own `--label` so you can rotate/revoke them independently.
+
 ## 1. Dedicated service user
 
 Run the service as a locked-down system account, not root:
@@ -72,30 +120,32 @@ a writable, service-owned directory.
 
 ## 3. Tokens (authentication)
 
-Tokens live in the file the unit reads as its `EnvironmentFile`. Use a writable
-path the service owns — **not** `/etc/monet` (avoids read-only/immutable-`/etc`
-surprises); `/var/lib/monet/monet.env` works well:
+Tokens live in the file the unit reads as its `EnvironmentFile`. The scripted
+install uses `/etc/monet/monet.env` (created service-owned, `chmod 600`); do the
+same manually:
 
 ```bash
-sudo -u monet touch /var/lib/monet/monet.env
-sudo chmod 600 /var/lib/monet/monet.env
+sudo install -d -o monet -g monet -m 750 /etc/monet
+sudo -u monet touch /etc/monet/monet.env
+sudo chmod 600 /etc/monet/monet.env
 
 # require auth, then mint a write token per rig and a read token per dashboard
-printf 'PAINT_MONET_AUTH=on\n' | sudo -u monet tee -a /var/lib/monet/monet.env
+printf 'PAINT_MONET_AUTH=on\n' | sudo -u monet tee -a /etc/monet/monet.env
 sudo -u monet /opt/monet/.venv/bin/monet token add \
     --scope write --label microscope-mercury \
-    --env-file /var/lib/monet/monet.env
+    --env-file /etc/monet/monet.env
 sudo -u monet /opt/monet/.venv/bin/monet token list \
-    --env-file /var/lib/monet/monet.env
+    --env-file /etc/monet/monet.env
 ```
 
 Each `add` prints the token value **once** and the `PAINT_MONET_TOKEN=…` line to
-paste on the client rig. See the top-level README "Authentication" section for
-the client side.
+paste on the client rig. See "Managing tokens on the deployed server" above for
+the day-to-day commands, and the top-level README "Authentication" for the
+client side.
 
 > **Applying token changes:** `SIGHUP` reloads monet's package-root `.env`, **not**
 > a systemd `EnvironmentFile`. After `monet token add/revoke/rotate --env-file
-> /var/lib/monet/monet.env`, run `sudo systemctl restart monet`.
+> /etc/monet/monet.env`, run `sudo systemctl restart monet`.
 
 ## 4. Install and start the unit
 

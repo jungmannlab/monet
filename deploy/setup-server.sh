@@ -113,6 +113,10 @@ as_monet "$VENV_DIR/bin/pip" install --quiet --upgrade pip
 as_monet "$VENV_DIR/bin/pip" install --quiet -e "$SRC_DIR[server]"
 chown -R "$MONET_USER:$MONET_USER" "$APP_DIR"
 
+# Put `monet` on PATH so admins don't have to spell out the venv path or
+# activate anything: `sudo -u monet monet token ... --env-file $ENV_FILE`.
+ln -sf "$VENV_DIR/bin/monet" /usr/local/bin/monet
+
 # ---- 5. token env file (preserve if it already has content) -----------------
 if [ -s "$ENV_FILE" ]; then
   log "keeping existing token file $ENV_FILE"

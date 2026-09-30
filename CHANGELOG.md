@@ -19,6 +19,16 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
   ownership fix-up first — so upgrading a deployed server is just
   `sudo GIT_REF=vX.Y.Z bash deploy/setup-server.sh` again.
 
+### Added
+- **Deployment: `monet` on PATH + a layout/token guide.** The setup script now
+  symlinks `/usr/local/bin/monet → /opt/monet/.venv/bin/monet`, so
+  `sudo -u monet monet token …` works without activating anything (the CLI was
+  only inside the venv). `docs/deployment.md` gains a **"Where everything lives"**
+  map (venv / source / `/etc/monet/monet.env` tokens / DB / log / unit), a
+  **"Managing tokens on the deployed server"** section, and a note that the
+  service does **not** use any conda env — clearing up the "`monet: command not
+  found`, which install is which?" confusion.
+
 ## [0.4.3] - 2026-09-29
 
 ### Security
