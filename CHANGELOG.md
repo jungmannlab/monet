@@ -45,6 +45,16 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
   fits the sinusoidal model and polynomials of degree 3–6 to the worst
   calibration curve and ranks them by relative residual, so the better analysis
   model can be chosen from data instead of guessed.
+- **Verify against every candidate model.** `verify_calibration` now also
+  evaluates each fresh measurement against the sinusoidal and polynomial models
+  (`model_summary`: per-model *fit* RMS vs *verify* RMS). This separates model
+  accuracy from repeatability: if a better-fitting model verifies better it's
+  the model; if all models verify similarly it's drift/repeatability — the
+  Verify log states which.
+- **Apply best model + recalibrate (button, Calibrate tab).** Switches the
+  microscope's analysis model to the best candidate (by fresh-verify residual
+  if available, else fit residual — via `analysis.model_spec`) and immediately
+  recalibrates.
 - **Attenuator backlash check (Set Power tab).** A "Backlash check" button
   re-approaches the current attenuator angle from below and from above, reading
   the power each time; a large power spread points at rotation-mount hysteresis

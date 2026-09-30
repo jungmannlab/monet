@@ -927,65 +927,105 @@ def _model_residual(name, y, pred):
     }
 
 
-def compare_models(x, y, analysis_parameters, degrees=(3, 4, 5, 6)):
-    """Fit candidate models to one calibration curve and rank them by residual.
+def model_spec(name):
+    """Map a compare/fit model name to its ``(classpath, extra_init_kwargs)``.
+
+    E.g. ``"sinus"`` ->
+    ``("monet.analysis.SinusAttenuationCurveAnalyzer", {})`` and
+    ``"poly deg 5"`` ->
+    ``("monet.analysis.PolynomAttenuationCurveAnalyzer", {"polydegree": 5})``.
+    """
+    if name.startswith("poly"):
+        deg = int(name.split()[-1])
+        return (
+            "monet.analysis.PolynomAttenuationCurveAnalyzer",
+            {"polydegree": deg},
+        )
+    return ("monet.analysis.SinusAttenuationCurveAnalyzer", {})
+
+
+def fit_candidate_models(x, y, analysis_parameters, degrees=(3, 4, 5, 6)):
+    """Fit candidate models to a calibration curve; return fitted predictors.
 
     Fits the sinusoidal model and a least-squares polynomial of each degree in
-    ``degrees`` to ``(x, y)`` (angle, measured power) and returns each one's
-    relative residual, best (lowest RMS) first — so a user can pick the model
-    that actually describes their attenuator instead of guessing. The
-    polynomial residual is the forward least-squares fit a
-    ``PolynomAttenuationCurveAnalyzer`` of that ``polydegree`` would achieve.
-
-    Parameters
-    ----------
-    x, y : 1d array-like
-        Control values (e.g. angles) and the measured powers.
-    analysis_parameters : dict
-        The analyzer config (``min``/``max``/...) for the sinusoidal fit.
-    degrees : iterable of int
-        Polynomial degrees to try.
+    ``degrees`` to ``(x, y)`` (angle, measured power).
 
     Returns
     -------
     list of dict
-        ``[{'model', 'rms_pct', 'max_pct'}, ...]`` sorted by ``rms_pct``. A
-        model that fails to fit is reported with ``inf`` so it sorts last.
+        ``[{'model', 'predict', 'fit_rms_pct', 'fit_max_pct'}, ...]`` where
+        ``predict`` is a callable ``angle -> power`` (vectorized). Models that
+        fail to fit are omitted.
     """
     x = np.asarray(x, dtype=float)
     y = np.asarray(y, dtype=float)
-    results = []
+    out = []
 
     try:
         ana = SinusAttenuationCurveAnalyzer(dict(analysis_parameters))
         ana.fit(x, y)
-        results.append(_model_residual("sinus", y, ana.estimate_power(x)))
-    except Exception as exc:
-        logger.debug("compare_models: sinus fit failed: %s", exc)
-        results.append(
+        res = _model_residual("sinus", y, ana.estimate_power(x))
+        out.append(
             {
                 "model": "sinus",
-                "rms_pct": float("inf"),
-                "max_pct": float("inf"),
+                "predict": (
+                    lambda a, m=ana: np.asarray(
+                        m.estimate_power(a), dtype=float
+                    )
+                ),
+                "fit_rms_pct": res["rms_pct"],
+                "fit_max_pct": res["max_pct"],
             }
         )
+    except Exception as exc:
+        logger.debug("fit_candidate_models: sinus fit failed: %s", exc)
 
     ok = np.isfinite(x) & np.isfinite(y)
     for d in degrees:
         name = "poly deg {:d}".format(d)
         try:
             coef = np.polyfit(x[ok], y[ok], d)
-            results.append(_model_residual(name, y, np.polyval(coef, x)))
-        except Exception as exc:
-            logger.debug("compare_models: %s failed: %s", name, exc)
-            results.append(
+            res = _model_residual(name, y, np.polyval(coef, x))
+            out.append(
                 {
                     "model": name,
-                    "rms_pct": float("inf"),
-                    "max_pct": float("inf"),
+                    "predict": (
+                        lambda a, c=coef: np.polyval(
+                            c, np.asarray(a, dtype=float)
+                        )
+                    ),
+                    "fit_rms_pct": res["rms_pct"],
+                    "fit_max_pct": res["max_pct"],
                 }
             )
+        except Exception as exc:
+            logger.debug("fit_candidate_models: %s failed: %s", name, exc)
 
+    return out
+
+
+def compare_models(x, y, analysis_parameters, degrees=(3, 4, 5, 6)):
+    """Fit candidate models to one calibration curve and rank them by residual.
+
+    Fits the sinusoidal model and a least-squares polynomial of each degree in
+    ``degrees`` to ``(x, y)`` (angle, measured power) and returns each one's
+    relative residual, best (lowest RMS) first — so a user can pick the model
+    that actually describes their attenuator instead of guessing.
+
+    Returns
+    -------
+    list of dict
+        ``[{'model', 'rms_pct', 'max_pct'}, ...]`` sorted by ``rms_pct``.
+    """
+    fits = fit_candidate_models(x, y, analysis_parameters, degrees)
+    results = [
+        {
+            "model": f["model"],
+            "rms_pct": f["fit_rms_pct"],
+            "max_pct": f["fit_max_pct"],
+        }
+        for f in fits
+    ]
     results.sort(key=lambda r: r["rms_pct"])
     return results
 

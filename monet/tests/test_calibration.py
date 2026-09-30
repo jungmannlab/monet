@@ -430,3 +430,10 @@ class TestCalibration(unittest.TestCase):
         self.assertEqual({p["laser"] for p in res["points"]}, {488})
         # the laser is switched off again after verification
         self.assertFalse(pc.instrument.lasers[488].enabled)
+        # candidate models were evaluated against the fresh measurements
+        ms = res["model_summary"]
+        self.assertIn("sinus", ms)
+        self.assertTrue(any(k.startswith("poly") for k in ms))
+        for s in ms.values():
+            for key in ("fit_rms_pct", "verify_rms_pct", "verify_max_pct"):
+                self.assertIn(key, s)

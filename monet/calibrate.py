@@ -296,9 +296,23 @@ class CalibrationProtocol1D:
             return None
 
     def _verify_angles(
-        self, analyzer, n_angles, wait_time, laser, level, point_callback
+        self,
+        analyzer,
+        n_angles,
+        wait_time,
+        laser,
+        level,
+        point_callback,
+        predictors=None,
+        model_devs=None,
     ):
-        """Measure n_angles across the calibrated range for one model."""
+        """Measure n_angles across the calibrated range for one model.
+
+        If ``predictors`` (from :func:`analysis.fit_candidate_models`) and
+        ``model_devs`` (a name -> list accumulator) are given, each measured
+        point's deviation from every candidate model is also recorded, so all
+        models can be compared against the same fresh measurements.
+        """
         import time
 
         params = getattr(analyzer, "analysis_parameters", {}) or {}
@@ -328,6 +342,17 @@ class CalibrationProtocol1D:
                 "dev_pct": dev,
             }
             out.append(rec)
+            if predictors and model_devs is not None:
+                for p in predictors:
+                    try:
+                        pv = float(p["predict"](ang))
+                    except Exception:
+                        pv = float("nan")
+                    if pv and np.isfinite(measured) and np.isfinite(pv):
+                        md = (measured - pv) / pv * 100.0
+                    else:
+                        md = float("nan")
+                    model_devs.setdefault(p["model"], []).append(md)
             if point_callback:
                 point_callback(rec)
         return out
@@ -340,6 +365,7 @@ class CalibrationProtocol1D:
         powermeter_type=POWERMETER_BFP,
         manage_laser_state=True,
         point_callback=None,
+        compare_degrees=(3, 4, 5, 6),
     ):
         """Re-measure a few attenuator angles and compare to the fitted model.
 
@@ -369,14 +395,25 @@ class CalibrationProtocol1D:
             If True, switch the verified lasers off again at the end.
         point_callback : callable or None
             Called with each per-point dict as it is measured (for live UI).
+        compare_degrees : iterable of int or None
+            If set (and the raw calibration curves are available from this
+            session), also evaluate the fresh measurements against the
+            sinusoidal model and polynomials of these degrees. Comparing the
+            per-model *verify* residual to each model's *fit* residual
+            separates model accuracy (a better-fitting model verifies better)
+            from repeatability/drift (all models verify similarly).
 
         Returns
         -------
         dict
-            ``{'points': [{laser, laser_power, angle, measured, predicted,
-            dev_pct}, ...], 'rms_pct': float, 'max_pct': float}``.
+            ``{'points': [...], 'rms_pct', 'max_pct', 'model_summary'}`` where
+            ``model_summary`` maps each model to
+            ``{fit_rms_pct, verify_rms_pct, verify_max_pct}`` (empty if the raw
+            curves are unavailable).
         """
         import time
+
+        from monet.analysis import fit_candidate_models
 
         inst = self.instrument
         if not getattr(inst, "is_calibrated", False):
@@ -389,12 +426,38 @@ class CalibrationProtocol1D:
             and hasattr(inst, "laser")
             and hasattr(inst, "laser_enabled")
         )
+        ana_params = inst.config["analysis"]["init_kwargs"]
+        model_devs = {}
+        model_fit = {}
+
+        def _predictors_for(laser, level):
+            if not compare_degrees:
+                return None
+            if is_2d:
+                curve = getattr(self, "last_curves", {}).get((laser, level))
+            else:
+                curve = getattr(self, "last_curve", None)
+            if curve is None:
+                return None
+            preds = fit_candidate_models(
+                curve[0], curve[1], ana_params, compare_degrees
+            )
+            for p in preds:
+                model_fit.setdefault(p["model"], []).append(p["fit_rms_pct"])
+            return preds
 
         points = []
         if not is_2d:
             # 1D: single calibration; the laser is assumed already on.
             points = self._verify_angles(
-                inst.analyzer, n_angles, wait_time, None, None, point_callback
+                inst.analyzer,
+                n_angles,
+                wait_time,
+                None,
+                None,
+                point_callback,
+                predictors=_predictors_for(None, None),
+                model_devs=model_devs,
             )
         else:
             lasers = [
@@ -448,6 +511,8 @@ class CalibrationProtocol1D:
                                 laser,
                                 level,
                                 point_callback,
+                                predictors=_predictors_for(laser, level),
+                                model_devs=model_devs,
                             )
                         )
             finally:
@@ -473,6 +538,22 @@ class CalibrationProtocol1D:
         )
         rms = float(np.sqrt(np.mean(devs**2))) if devs.size else float("nan")
         mx = float(np.max(np.abs(devs))) if devs.size else float("nan")
+
+        model_summary = {}
+        for name, mdevs in model_devs.items():
+            arr = np.array([d for d in mdevs if np.isfinite(d)], dtype=float)
+            vrms = (
+                float(np.sqrt(np.mean(arr**2))) if arr.size else float("nan")
+            )
+            vmax = float(np.max(np.abs(arr))) if arr.size else float("nan")
+            fits = model_fit.get(name, [])
+            frms = float(np.mean(fits)) if fits else float("nan")
+            model_summary[name] = {
+                "fit_rms_pct": frms,
+                "verify_rms_pct": vrms,
+                "verify_max_pct": vmax,
+            }
+
         logger.info(
             "calibration verification: %d point(s), RMS %.1f%%, "
             "max |dev| %.1f%%",
@@ -480,7 +561,21 @@ class CalibrationProtocol1D:
             rms,
             mx,
         )
-        return {"points": points, "rms_pct": rms, "max_pct": mx}
+        for name, s in sorted(
+            model_summary.items(), key=lambda kv: kv[1]["verify_rms_pct"]
+        ):
+            logger.info(
+                "  verify model %s: fit RMS %.1f%%, verify RMS %.1f%%",
+                name,
+                s["fit_rms_pct"],
+                s["verify_rms_pct"],
+            )
+        return {
+            "points": points,
+            "rms_pct": rms,
+            "max_pct": mx,
+            "model_summary": model_summary,
+        }
 
     def save_calibration(
         self,

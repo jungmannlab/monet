@@ -57,7 +57,11 @@ from monet import (
 from monet import __version__ as _monet_version
 from monet.beampath import NikonFilterWheel, NikonNosepiece
 from monet.control import run_power_feedback
-from monet.util import update_mm_acquisition_comment, wavelength_to_rgb
+from monet.util import (
+    load_class,
+    update_mm_acquisition_comment,
+    wavelength_to_rgb,
+)
 
 # Window-title prefix, e.g. 'Monet v0.3.3'. Falls back to plain 'Monet' when
 # the package metadata is unavailable (running from an uninstalled source
@@ -853,6 +857,7 @@ class CalibrateTab(QWidget):
         self._history_worker = None  # keep alive to prevent GC
         self._verify_worker = None  # keep alive to prevent GC
         self._pm_available = True
+        self._last_model_summary = None  # per-model verify residuals
         self._checkboxes = {}
         # Latest outlier report from CalibrationPlots (list of dicts).
         self._flagged_report = []
@@ -1015,16 +1020,24 @@ class CalibrateTab(QWidget):
             "calibration curve and report each one's residual, so you can pick "
             "the model that best describes this attenuator."
         )
+        self._btn_apply_model = QPushButton("Apply best model + recal")
+        self._btn_apply_model.setEnabled(False)
+        self._btn_apply_model.setToolTip(
+            "Switch this microscope's analysis model to the best one (by fresh "
+            "verify residual if available, else fit residual) and recalibrate."
+        )
         self._btn_start.clicked.connect(self._on_start)
         self._btn_cancel.clicked.connect(self._on_cancel)
         self._btn_discard.clicked.connect(self._on_discard)
         self._btn_verify.clicked.connect(self._on_verify)
         self._btn_compare.clicked.connect(self._on_compare_models)
+        self._btn_apply_model.clicked.connect(self._on_apply_best_model)
         btn_row2.addWidget(self._btn_start)
         btn_row2.addWidget(self._btn_cancel)
         btn_row2.addWidget(self._btn_discard)
         btn_row2.addWidget(self._btn_verify)
         btn_row2.addWidget(self._btn_compare)
+        btn_row2.addWidget(self._btn_apply_model)
         btn_row2.addStretch()
         layout.addLayout(btn_row2)
 
@@ -1549,6 +1562,7 @@ class CalibrateTab(QWidget):
             )
         )
         self._btn_compare.setEnabled(has_curves)
+        self._btn_apply_model.setEnabled(has_curves)
 
     def _on_verify(self):
         """Re-measure a few angles per laser power and compare to the model."""
@@ -1582,6 +1596,43 @@ class CalibrateTab(QWidget):
                     res["rms_pct"], res["max_pct"], len(res["points"])
                 )
             )
+            ms = res.get("model_summary") or {}
+            self._last_model_summary = ms or None
+            if ms:
+                self._log.append("Per-model (fit RMS vs fresh-verify RMS):")
+                for name, s in sorted(
+                    ms.items(), key=lambda kv: kv[1]["verify_rms_pct"]
+                ):
+                    self._log.append(
+                        "  {:<12s} fit {:.1f}%  →  verify {:.1f}%".format(
+                            name, s["fit_rms_pct"], s["verify_rms_pct"]
+                        )
+                    )
+                vr = [
+                    s["verify_rms_pct"]
+                    for s in ms.values()
+                    if s["verify_rms_pct"] == s["verify_rms_pct"]
+                ]
+                if len(vr) >= 2:
+                    spread = max(vr) - min(vr)
+                    best = min(
+                        ms.items(), key=lambda kv: kv[1]["verify_rms_pct"]
+                    )
+                    if spread < 2.0:
+                        self._log.append(
+                            "→ All models verify within {:.1f}% — points at "
+                            "repeatability/drift, not the model.".format(
+                                spread
+                            )
+                        )
+                    else:
+                        self._log.append(
+                            "→ '{}' verifies best ({:.1f}%) — a better model "
+                            "would help (model accuracy).".format(
+                                best[0], best[1]["verify_rms_pct"]
+                            )
+                        )
+            self._update_verify_enabled()
             self._emit_status(
                 "Verification: RMS {:.1f}%, max {:.1f}%".format(
                     res["rms_pct"], res["max_pct"]
@@ -1611,26 +1662,36 @@ class CalibrateTab(QWidget):
         self._verify_worker = worker
         worker.start()
 
-    def _on_compare_models(self):
-        """Fit sinus + polynomial models to the worst curve and rank them."""
-        if self._pc is None:
-            return
+    def _worst_curve(self):
+        """Return ``(x, y, label)`` of the worst-fitting calibration curve.
+
+        Uses the per-curve fit quality to pick the worst curve of a protocol
+        run; falls back to the single 1D curve. Returns ``None`` if no raw
+        curve from this session is available.
+        """
         curves = getattr(self._pc, "last_curves", None)
-        fqs = getattr(self._pc, "fit_qualities", None) or {}
-        label = ""
         if curves:
+            fqs = getattr(self._pc, "fit_qualities", None) or {}
             if fqs:
                 key = max(fqs, key=lambda k: fqs[k]["rms_pct"])
             else:
                 key = next(iter(curves))
             x, y = curves[key]
-            label = " ({} nm @ {} mW)".format(key[0], key[1])
-        else:
-            cur = getattr(self._pc, "last_curve", None)
-            if cur is None:
-                self._log.append("No calibration curve available to compare.")
-                return
-            x, y = cur
+            return x, y, " ({} nm @ {} mW)".format(key[0], key[1])
+        cur = getattr(self._pc, "last_curve", None)
+        if cur is None:
+            return None
+        return cur[0], cur[1], ""
+
+    def _on_compare_models(self):
+        """Fit sinus + polynomial models to the worst curve and rank them."""
+        if self._pc is None:
+            return
+        picked = self._worst_curve()
+        if picked is None:
+            self._log.append("No calibration curve available to compare.")
+            return
+        x, y, label = picked
         ana_cfg = self._pc.instrument.config["analysis"]["init_kwargs"]
         try:
             ranking = analysis.compare_models(x, y, ana_cfg)
@@ -1646,11 +1707,70 @@ class CalibrateTab(QWidget):
             )
         best = ranking[0]
         self._log.append(
-            "Best fit: {} (RMS {:.1f}%). Set this laser's analysis model "
-            "accordingly if it beats the current one.".format(
-                best["model"], best["rms_pct"]
+            "Best fit: {} (RMS {:.1f}%). Use 'Apply best model + recal' to "
+            "switch to it.".format(best["model"], best["rms_pct"])
+        )
+
+    def _on_apply_best_model(self):
+        """Switch the analysis model to the best one and recalibrate."""
+        if self._pc is None:
+            return
+        # Prefer the fresh-verify winner; else the best fit on the worst curve.
+        best_name = None
+        ms = self._last_model_summary
+        if ms:
+            best_name = min(ms, key=lambda k: ms[k]["verify_rms_pct"])
+            basis = "verify"
+        else:
+            picked = self._worst_curve()
+            if picked is None:
+                self._log.append("No calibration curve available.")
+                return
+            x, y, _ = picked
+            ana_cfg = self._pc.instrument.config["analysis"]["init_kwargs"]
+            try:
+                ranking = analysis.compare_models(x, y, ana_cfg)
+            except Exception as exc:
+                self._log.append("Compare models failed: {}".format(exc))
+                return
+            if ranking:
+                best_name = ranking[0]["model"]
+            basis = "fit"
+        if best_name is None:
+            self._log.append("Could not determine a best model.")
+            return
+
+        classpath, extra = analysis.model_spec(best_name)
+        reply = QMessageBox.question(
+            self,
+            "Apply model & recalibrate",
+            "Switch this microscope's analysis model to '{}' (best by {} "
+            "residual) and recalibrate?\nThis changes the model for all "
+            "lasers.".format(best_name, basis),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        ana = self._pc.instrument.config["analysis"]
+        new_kwargs = dict(ana.get("init_kwargs", {}))
+        new_kwargs.pop("polydegree", None)
+        new_kwargs.update(extra)
+        ana["classpath"] = classpath
+        ana["init_kwargs"] = new_kwargs
+        try:
+            self._pc.instrument.analyzer = load_class(classpath, new_kwargs)
+        except Exception as exc:
+            self._log.append(
+                "Could not build model '{}': {}".format(best_name, exc)
+            )
+            return
+        self._log.append(
+            "Applied model '{}' ({}). Recalibrating…".format(
+                best_name, classpath.rsplit(".", 1)[-1]
             )
         )
+        self._on_start()
 
     def cancel_worker_and_wait(self):
         if self._worker and self._worker.isRunning():

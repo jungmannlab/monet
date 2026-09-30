@@ -145,6 +145,14 @@ class TestCompareModels(unittest.TestCase):
         sinus = next(r for r in ranking if r["model"] == "sinus")
         self.assertLess(sinus["rms_pct"], 2.0)
 
+    def test_model_spec_maps_names(self):
+        cp, extra = man.model_spec("sinus")
+        self.assertTrue(cp.endswith("SinusAttenuationCurveAnalyzer"))
+        self.assertEqual(extra, {})
+        cp, extra = man.model_spec("poly deg 5")
+        self.assertTrue(cp.endswith("PolynomAttenuationCurveAnalyzer"))
+        self.assertEqual(extra, {"polydegree": 5})
+
     def test_polynomial_wins_on_polynomial_data(self):
         x = np.arange(30.0, 131.0, 5.0)
         y = 0.001 * (x - 20) ** 2 + 2.0  # a parabola, not a sinusoid
