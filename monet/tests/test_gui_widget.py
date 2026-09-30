@@ -71,6 +71,200 @@ class TestMonetWidget(unittest.TestCase):
             self.assertEqual(received, [("ping", 500)])
 
 
+class TestMeasureReadiness(unittest.TestCase):
+    """The Measure-button readiness hint (why a reading may be ~0)."""
+
+    def test_no_laser_selected_is_silent(self):
+        ready, short, _ = SetPowerTab._measure_readiness(
+            None, False, True, False
+        )
+        self.assertIsNone(ready)
+        self.assertEqual(short, "")
+
+    def test_laser_off_warns(self):
+        ready, short, detail = SetPowerTab._measure_readiness(
+            561, False, True, True
+        )
+        self.assertFalse(ready)
+        self.assertIn("OFF", short)
+        self.assertIn("zero", detail.lower())
+
+    def test_no_beampath_preset_warns(self):
+        ready, short, detail = SetPowerTab._measure_readiness(
+            561, True, True, False
+        )
+        self.assertFalse(ready)
+        self.assertIn("beam-path", short)
+        self.assertIn("561", detail)
+
+    def test_ready_with_preset(self):
+        ready, short, detail = SetPowerTab._measure_readiness(
+            561, True, True, True
+        )
+        self.assertTrue(ready)
+        self.assertIn("light expected", short)
+        self.assertIn("561", detail)
+
+    def test_ready_without_beampath_hardware(self):
+        # No beam path configured at all -> laser-on is enough to expect light.
+        ready, short, _ = SetPowerTab._measure_readiness(
+            488, True, False, False
+        )
+        self.assertTrue(ready)
+        self.assertIn("light expected", short)
+
+    def test_filter_mismatch_warns(self):
+        ready, short, detail = SetPowerTab._measure_readiness(
+            561, True, True, True, filter_state="mismatch"
+        )
+        self.assertFalse(ready)
+        self.assertIn("filter cube", short)
+        self.assertIn("561", detail)
+
+    def test_objective_in_path_for_bfp_warns_sample_needed(self):
+        ready, short, detail = SetPowerTab._measure_readiness(
+            561, True, True, True, turret_state="objective_but_bfp"
+        )
+        self.assertFalse(ready)
+        self.assertIn("sample position", short)
+        self.assertIn("sample", detail.lower())
+
+    def test_filter_warning_takes_priority_over_turret(self):
+        # Both wrong -> the filter (excitation blocked) is reported first.
+        ready, short, _ = SetPowerTab._measure_readiness(
+            561,
+            True,
+            True,
+            True,
+            filter_state="mismatch",
+            turret_state="objective_but_bfp",
+        )
+        self.assertFalse(ready)
+        self.assertIn("filter cube", short)
+
+    def test_ready_when_filter_and_turret_ok(self):
+        ready, short, _ = SetPowerTab._measure_readiness(
+            561, True, True, True, filter_state="ok", turret_state="ok"
+        )
+        self.assertTrue(ready)
+        self.assertIn("light expected", short)
+
+
+class TestCalibrateTabVerify(unittest.TestCase):
+    """Fit-quality surfacing and the Verify button on the Calibrate tab."""
+
+    def test_verify_button_exists_and_starts_disabled(self):
+        tab = CalibrateTab()
+        self.assertIsNotNone(tab._btn_verify)
+        self.assertFalse(tab._btn_verify.isEnabled())
+
+    def test_compare_button_exists_and_starts_disabled(self):
+        tab = CalibrateTab()
+        self.assertIsNotNone(tab._btn_compare)
+        self.assertFalse(tab._btn_compare.isEnabled())
+
+    def test_apply_model_button_exists_and_starts_disabled(self):
+        tab = CalibrateTab()
+        self.assertIsNotNone(tab._btn_apply_model)
+        self.assertFalse(tab._btn_apply_model.isEnabled())
+
+    def test_calibrate_tab_has_model_selector(self):
+        tab = CalibrateTab()
+        datas = [
+            tab._model_combo.itemData(i)
+            for i in range(tab._model_combo.count())
+        ]
+        self.assertIn("sinus", datas)
+        self.assertIn("poly deg 5", datas)
+        self.assertIn("linear", datas)
+        self.assertIsNotNone(tab._btn_set_default)
+        self.assertFalse(tab._btn_set_default.isEnabled())
+
+    def test_model_combo_shows_current_and_annotates_default(self):
+        import monet.gui as g
+
+        tab = CalibrateTab()
+
+        class _Inst:
+            config = {
+                "analysis": {
+                    "classpath": "monet.analysis."
+                    "PolynomAttenuationCurveAnalyzer",
+                    "init_kwargs": {"polydegree": 5},
+                }
+            }
+
+        class _PC:
+            instrument = _Inst()
+            _microscope_name = "__unittest_scope__"
+
+        g.CONFIGS["__unittest_scope__"] = {
+            "analysis": {
+                "classpath": "monet.analysis." "SinusAttenuationCurveAnalyzer",
+                "init_kwargs": {},
+            }
+        }
+        try:
+            tab._pc = _PC()
+            tab._sync_model_combo()
+            # the dropdown reflects the session model (poly deg 5)
+            self.assertEqual(tab._model_combo.currentData(), "poly deg 5")
+            # the persisted default (sinus) is annotated "(default)"
+            texts = [
+                tab._model_combo.itemText(i)
+                for i in range(tab._model_combo.count())
+            ]
+            self.assertTrue(
+                any("Sinusoidal (default)" == t for t in texts), texts
+            )
+        finally:
+            g.CONFIGS.pop("__unittest_scope__", None)
+
+
+class TestExpertView(unittest.TestCase):
+    """The expert-view toggle hides advanced Set Power controls."""
+
+    def _hidden(self, tab):
+        return (
+            tab._btn_backlash.isHidden(),
+            tab._btn_hw_refresh.isHidden(),
+            tab._hw_att_group.isHidden(),
+            tab._hw_pwr_group.isHidden(),
+        )
+
+    def test_default_is_normal_view(self):
+        tab = SetPowerTab()
+        self.assertTrue(all(self._hidden(tab)))
+
+    def test_toggle_shows_and_hides(self):
+        tab = SetPowerTab()
+        tab.set_expert_view(True)
+        self.assertFalse(any(self._hidden(tab)))
+        tab.set_expert_view(False)
+        self.assertTrue(all(self._hidden(tab)))
+
+    def test_widget_toggle_propagates_to_tabs(self):
+        w = MonetWidget(show_toolbar=True, tabs=("set_power",))
+        sp = w.tab("set_power")
+        self.assertTrue(sp._btn_backlash.isHidden())  # default normal
+        w.set_expert_view(True)
+        self.assertFalse(sp._btn_backlash.isHidden())
+        self.assertTrue(w._expert_cb.isChecked())
+
+    def test_fit_quality_text_plain(self):
+        q = {"rms_pct": 1.2, "max_pct": 3.4, "max_at": 104.5}
+        txt = CalibrateTab._fit_quality_text(q)
+        self.assertIn("1.2%", txt)
+        self.assertIn("3.4%", txt)
+        self.assertNotIn("⚠", txt)
+
+    def test_fit_quality_text_warns_when_large(self):
+        q = {"rms_pct": 9.0, "max_pct": 15.0, "max_at": 100.0}
+        txt = CalibrateTab._fit_quality_text(q)
+        self.assertIn("⚠", txt)
+        self.assertIn("deviate", txt)
+
+
 class TestCalibrationPlots(unittest.TestCase):
     """Regression tests for the live calibration plots / wavelength toggles."""
 

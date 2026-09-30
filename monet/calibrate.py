@@ -123,6 +123,8 @@ class CalibrationProtocol1D:
         save_plot=True,
         point_callback=None,
         comment=None,
+        drop_nonfinite=True,
+        drift_check=True,
     ):
         """Calibrate power with parameters from the configuration file.
 
@@ -142,6 +144,12 @@ class CalibrationProtocol1D:
         point_callback : callable or None
             Called after every attenuator step with (index, total, control
             value, measured power), so a caller can follow the curve live.
+        drop_nonfinite : bool
+            If True (default), non-finite readings (NaN/inf, e.g. from a
+            saturated/over-range meter) are dropped and the curve is fit on
+            the remaining finite points, with a warning naming the dropped
+            control values. If False, any non-finite reading raises instead.
+            Either way, if too few finite points remain to fit, it raises.
 
         Returns
         -------
@@ -167,10 +175,100 @@ class CalibrationProtocol1D:
             if point_callback:
                 point_callback(i, len(control_par_vals), ctrlval, powers[i])
 
+        # Non-finite readings (NaN/inf) come from a saturated/over-range or
+        # otherwise-bad meter measurement. Feeding them to lmfit aborts the
+        # fit with a cryptic "model function generated NaN values" error (or
+        # yields a garbage fit), so handle them here — always logging the full
+        # arrays to monet.log for diagnosis.
+        bad = ~np.isfinite(powers)
+        if bad.any():
+            dropped = control_par_vals[bad].tolist()
+            logger.warning(
+                "%d non-finite power reading(s) at control value(s) %s; "
+                "control_par_vals=%s, powers=%s",
+                int(bad.sum()),
+                dropped,
+                control_par_vals,
+                powers,
+            )
+            if not drop_nonfinite:
+                raise ValueError(
+                    "Power meter returned {:d} non-finite reading(s) "
+                    "(NaN/inf) at control value(s) {!s}; cannot fit the "
+                    "attenuation curve. Check the meter for "
+                    "saturation/over-range or a bad measurement, then "
+                    "recalibrate.".format(int(bad.sum()), dropped)
+                )
+            control_par_vals = control_par_vals[~bad]
+            powers = powers[~bad]
+            logger.warning(
+                "Dropped %d non-finite point(s); fitting on the "
+                "remaining %d.",
+                int(bad.sum()),
+                powers.size,
+            )
+
+        if powers.size < 3:
+            raise ValueError(
+                "Only {:d} finite power reading(s) remain after dropping "
+                "non-finite ones; too few to fit the attenuation curve. "
+                "Check the power meter (saturation/over-range) and "
+                "recalibrate.".format(powers.size)
+            )
+
         # analyze
         self.instrument.analyzer.fit(control_par_vals, powers)
         # print(self.instrument.analyzer.fit_result.fit_report())
         self.instrument.is_calibrated = True
+
+        # Fit-quality diagnostic: how well the fitted model reproduces the
+        # calibration data. A large residual points at a poor model / noisy
+        # data as the cause of a calibrate-vs-measure deviation; a small
+        # residual (with a large live deviation) instead points at drift
+        # between calibration and use.
+        self.last_fit_quality = self._fit_quality(control_par_vals, powers)
+        # Keep the raw curve so model comparison can be run on it later.
+        self.last_curve = (
+            np.asarray(control_par_vals, dtype=float),
+            np.asarray(powers, dtype=float),
+        )
+        if self.last_fit_quality is not None:
+            q = self.last_fit_quality
+            logger.info(
+                "calibration fit quality: RMS %.1f%%, max %.1f%% at "
+                "control value %.3f",
+                q["rms_pct"],
+                q["max_pct"],
+                q["max_at"],
+            )
+            if q["rms_pct"] > 5.0:
+                logger.warning(
+                    "calibration fit RMS residual is %.1f%% — the model may "
+                    "not describe this attenuator well, so a set power can "
+                    "deviate from the reading by a similar amount. Consider "
+                    "more calibration points or a different analysis model.",
+                    q["rms_pct"],
+                )
+
+        # Within-sweep drift: re-read the highest-SNR point after the sweep to
+        # detect source drift (laser warm-up/instability, thermal) over the
+        # sweep duration. A drift growing across a day of repeated runs points
+        # at the source rather than the model as the cause of rising residuals.
+        self.last_drift_pct = None
+        if drift_check:
+            self.last_drift_pct = self._measure_drift(
+                control_par_vals, powers, wait_time
+            )
+            if self.last_drift_pct is not None:
+                logger.info(
+                    "calibration within-sweep drift: %+.1f%% at the "
+                    "highest-SNR point",
+                    self.last_drift_pct,
+                )
+        if self.last_fit_quality is not None:
+            self.last_fit_quality["drift_pct"] = self.last_drift_pct
+
+        self._log_fit_quality_history(control_par_vals)
 
         self.save_calibration(
             save_plot=save_plot,
@@ -182,6 +280,386 @@ class CalibrationProtocol1D:
         )
 
         return control_par_vals, powers
+
+    def _fit_quality(self, x, y):
+        """Relative residual of the fitted model against the calibration data.
+
+        Parameters
+        ----------
+        x, y : 1d arrays
+            The control values and the measured powers that were fit.
+
+        Returns
+        -------
+        dict or None
+            ``{'rms_pct', 'max_pct', 'max_at'}`` — the RMS and maximum relative
+            residual (percent) and the control value of the worst point — or
+            ``None`` if it cannot be evaluated.
+        """
+        try:
+            pred = np.asarray(
+                self.instrument.analyzer.estimate_power(x), dtype=float
+            )
+            y = np.asarray(y, dtype=float)
+            pred = np.broadcast_to(pred, y.shape).astype(float)
+            ok = np.isfinite(pred) & np.isfinite(y) & (y > 0)
+            if not ok.any():
+                return None
+            rel = np.abs(y[ok] - pred[ok]) / y[ok]
+            imax = int(np.argmax(rel))
+            return {
+                "rms_pct": float(np.sqrt(np.mean(rel**2)) * 100.0),
+                "max_pct": float(np.max(rel) * 100.0),
+                "max_at": float(np.asarray(x)[ok][imax]),
+            }
+        except Exception as exc:
+            logger.debug("Could not compute fit quality: %s", exc)
+            return None
+
+    def _measure_drift(self, control_par_vals, powers, wait_time):
+        """Re-measure the highest-SNR point to gauge source drift over a sweep.
+
+        Returns the relative change (percent) at that control value between the
+        sweep reading and a fresh reading taken after the whole sweep, or None.
+        """
+        try:
+            powers = np.asarray(powers, dtype=float)
+            finite = np.isfinite(powers) & (powers > 0)
+            if not finite.any():
+                return None
+            idx = np.where(finite)[0]
+            i_ref = int(idx[int(np.argmax(powers[idx]))])
+            ref = float(np.asarray(control_par_vals, dtype=float)[i_ref])
+            p_start = float(powers[i_ref])
+            self.instrument.attenuator.set(ref)
+            time.sleep(wait_time)
+            p_end = float(self.powermeter.read())
+            if p_start and np.isfinite(p_end):
+                return (p_end - p_start) / p_start * 100.0
+        except Exception as exc:
+            logger.debug("drift check failed: %s", exc)
+        return None
+
+    def _log_fit_quality_history(self, control_par_vals):
+        """Append this calibration's fit quality + drift to a durable log.
+
+        Writes one row to ``fit_quality_log.csv`` (in the plot folder, or the
+        database's folder for a local DB) so RMS / max / drift can be tracked
+        and monitored across runs and days.
+        """
+        q = self.last_fit_quality or {}
+        idx = self.instrument.config.get("index", {}) or {}
+        folder = self.instrument.config.get("dest_calibration_plot")
+        if not folder:
+            db = self.instrument.config.get("database")
+            if db and not io._is_server_url(db):
+                folder = os.path.dirname(db) or "."
+        model = self.instrument.config.get("analysis", {}).get("classpath", "")
+        record = {
+            "datetime": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "device": idx.get("name"),
+            "laser": idx.get(LASER_TAG, idx.get("wavelength [nm]")),
+            "laser_power": idx.get(POWER_TAG, idx.get("laser_power [mW]")),
+            "model": model.rsplit(".", 1)[-1],
+            "rms_pct": q.get("rms_pct"),
+            "max_pct": q.get("max_pct"),
+            "max_at": q.get("max_at"),
+            "drift_pct": getattr(self, "last_drift_pct", None),
+            "n_points": int(np.size(control_par_vals)),
+        }
+        io.append_fit_quality_log(folder, record)
+
+    def _verify_angles(
+        self,
+        analyzer,
+        n_angles,
+        wait_time,
+        laser,
+        level,
+        point_callback,
+        predictors=None,
+        model_devs=None,
+    ):
+        """Measure n_angles across the calibrated range for one model.
+
+        If ``predictors`` (from :func:`analysis.fit_candidate_models`) and
+        ``model_devs`` (a name -> list accumulator) are given, each measured
+        point's deviation from every candidate model is also recorded, so all
+        models can be compared against the same fresh measurements.
+        """
+        import time
+
+        params = getattr(analyzer, "analysis_parameters", {}) or {}
+        lo = params.get("min", 0)
+        hi = params.get("max", 180)
+        if not np.isfinite(lo):
+            lo = 0
+        if not np.isfinite(hi):
+            hi = 180
+        out = []
+        for ang in np.linspace(lo, hi, n_angles):
+            ang = float(ang)
+            self.instrument.attenuator.set(ang)
+            time.sleep(wait_time)
+            measured = float(self.powermeter.read())
+            predicted = float(analyzer.estimate_power(ang))
+            if predicted and np.isfinite(measured):
+                dev = (measured - predicted) / predicted * 100.0
+            else:
+                dev = float("nan")
+            rec = {
+                "laser": laser,
+                "laser_power": level,
+                "angle": ang,
+                "measured": measured,
+                "predicted": predicted,
+                "dev_pct": dev,
+            }
+            out.append(rec)
+            if predictors and model_devs is not None:
+                for p in predictors:
+                    try:
+                        pv = float(p["predict"](ang))
+                    except Exception:
+                        pv = float("nan")
+                    if pv and np.isfinite(measured) and np.isfinite(pv):
+                        md = (measured - pv) / pv * 100.0
+                    else:
+                        md = float("nan")
+                    model_devs.setdefault(p["model"], []).append(md)
+            if point_callback:
+                point_callback(rec)
+        return out
+
+    def verify_calibration(
+        self,
+        n_angles=5,
+        wait_time=0.5,
+        switch_time=5,
+        powermeter_type=POWERMETER_BFP,
+        manage_laser_state=True,
+        point_callback=None,
+        compare_degrees=(3, 4, 5, 6),
+    ):
+        """Re-measure a few attenuator angles and compare to the fitted model.
+
+        A *fresh* cross-check of the stored calibration (unlike
+        :meth:`_fit_quality`, which only scores how well the model fit its own
+        acquisition): for each calibrated laser and laser-power level, enable
+        the laser and route the beam to the meter (exactly as a calibration
+        does), then move the attenuator to ``n_angles`` positions across the
+        calibrated range, read the meter, and compare to the model prediction
+        in the meter's own units (so the objective transmission factor is not
+        involved). This catches drift and laser-power-setting effects the fit
+        residual cannot — e.g. if the deviation grows only at certain laser
+        powers, ``dev_pct`` grouped by ``laser_power`` shows it.
+
+        Parameters
+        ----------
+        n_angles : int
+            Attenuator positions to test per laser-power level.
+        wait_time : float
+            Seconds to wait after each move / laser-power change before reading.
+        switch_time : float
+            Seconds to wait after enabling a laser / routing the beam.
+        powermeter_type : str
+            'bfp' or 'sample' — selects the beam-path routing (turret to the
+            powermeter port for BFP).
+        manage_laser_state : bool
+            If True, switch the verified lasers off again at the end.
+        point_callback : callable or None
+            Called with each per-point dict as it is measured (for live UI).
+        compare_degrees : iterable of int or None
+            If set (and the raw calibration curves are available from this
+            session), also evaluate the fresh measurements against the
+            sinusoidal model and polynomials of these degrees. Comparing the
+            per-model *verify* residual to each model's *fit* residual
+            separates model accuracy (a better-fitting model verifies better)
+            from repeatability/drift (all models verify similarly).
+
+        Returns
+        -------
+        dict
+            ``{'points': [...], 'rms_pct', 'max_pct', 'model_summary'}`` where
+            ``model_summary`` maps each model to
+            ``{fit_rms_pct, verify_rms_pct, verify_max_pct}`` (empty if the raw
+            curves are unavailable).
+        """
+        import time
+
+        from monet.analysis import fit_candidate_models
+
+        inst = self.instrument
+        if not getattr(inst, "is_calibrated", False):
+            raise ValueError("Not calibrated. Calibrate before verifying.")
+        powermeter_type = normalize_powermeter_type(powermeter_type)
+
+        protocol = getattr(self, "protocol", None)
+        is_2d = bool(
+            protocol
+            and hasattr(inst, "laser")
+            and hasattr(inst, "laser_enabled")
+        )
+        ana_params = inst.config["analysis"]["init_kwargs"]
+        model_devs = {}
+        model_fit = {}
+
+        def _predictors_for(laser, level):
+            if not compare_degrees:
+                return None
+            if is_2d:
+                curve = getattr(self, "last_curves", {}).get((laser, level))
+            else:
+                curve = getattr(self, "last_curve", None)
+            if curve is None:
+                return None
+            preds = fit_candidate_models(
+                curve[0], curve[1], ana_params, compare_degrees
+            )
+            for p in preds:
+                model_fit.setdefault(p["model"], []).append(p["fit_rms_pct"])
+            return preds
+
+        points = []
+        if not is_2d:
+            # 1D: single calibration; the laser is assumed already on.
+            points = self._verify_angles(
+                inst.analyzer,
+                n_angles,
+                wait_time,
+                None,
+                None,
+                point_callback,
+                predictors=_predictors_for(None, None),
+                model_devs=model_devs,
+            )
+        else:
+            lasers = [
+                las
+                for las in protocol["laser_sequence"]
+                if las in getattr(inst, "lasers", {})
+            ]
+            bp_dict = protocol.get("beampath") or {}
+            orig_laser = getattr(inst, "curr_laser", None)
+            orig_power = getattr(inst, "curr_laserpower", None)
+            # Snapshot each laser's on/off state so a read-only verify restores
+            # it (rather than leaving the user's lit laser switched off).
+            orig_enabled = {}
+            for las in lasers:
+                try:
+                    orig_enabled[las] = inst.lasers[las].enabled
+                except Exception:
+                    orig_enabled[las] = False
+            try:
+                for laser in lasers:
+                    # enable the laser and route the beam to the meter
+                    inst.laser = laser  # re-populates analyzers/power_ranges
+                    inst.laser_enabled = True
+                    if getattr(inst, "use_beampath", False):
+                        try:
+                            if laser in bp_dict:
+                                inst.beampath.positions = bp_dict[laser]
+                            if powermeter_type == POWERMETER_BFP:
+                                scp = bp_dict.get("start_calibrate")
+                                if scp:
+                                    inst.beampath.positions = scp
+                        except Exception as exc:
+                            logger.warning(
+                                "verify: could not set beam path for %s: %s",
+                                laser,
+                                exc,
+                            )
+                    try:
+                        inst.attenuator.set_wavelength(laser)
+                        self.powermeter.wavelength = int(laser)
+                    except Exception:
+                        pass
+                    time.sleep(switch_time)
+
+                    pr = getattr(inst, "_power_ranges", None)
+                    levels = list(pr.index) if pr is not None else []
+                    for level in levels:
+                        inst.laserpower = (
+                            level  # sets power + selects analyzer
+                        )
+                        if "amp" in getattr(self.powermeter, "config", {}):
+                            self.powermeter.config["amp"] = level
+                        time.sleep(wait_time)
+                        points.extend(
+                            self._verify_angles(
+                                inst.analyzer,
+                                n_angles,
+                                wait_time,
+                                laser,
+                                level,
+                                point_callback,
+                                predictors=_predictors_for(laser, level),
+                                model_devs=model_devs,
+                            )
+                        )
+            finally:
+                # Restore the selected laser/power first (selecting a laser may
+                # auto-enable it), then restore each laser's prior on/off state.
+                if orig_laser is not None:
+                    try:
+                        inst.laser = orig_laser
+                        if orig_power is not None:
+                            inst.laserpower = orig_power
+                    except Exception:
+                        pass
+                if manage_laser_state:
+                    for las in lasers:
+                        try:
+                            inst.lasers[las].enabled = orig_enabled.get(
+                                las, False
+                            )
+                        except Exception:
+                            pass
+
+        devs = np.array(
+            [p["dev_pct"] for p in points if np.isfinite(p["dev_pct"])],
+            dtype=float,
+        )
+        rms = float(np.sqrt(np.mean(devs**2))) if devs.size else float("nan")
+        mx = float(np.max(np.abs(devs))) if devs.size else float("nan")
+
+        model_summary = {}
+        for name, mdevs in model_devs.items():
+            arr = np.array([d for d in mdevs if np.isfinite(d)], dtype=float)
+            vrms = (
+                float(np.sqrt(np.mean(arr**2))) if arr.size else float("nan")
+            )
+            vmax = float(np.max(np.abs(arr))) if arr.size else float("nan")
+            fits = model_fit.get(name, [])
+            frms = float(np.mean(fits)) if fits else float("nan")
+            model_summary[name] = {
+                "fit_rms_pct": frms,
+                "verify_rms_pct": vrms,
+                "verify_max_pct": vmax,
+            }
+
+        logger.info(
+            "calibration verification: %d point(s), RMS %.1f%%, "
+            "max |dev| %.1f%%",
+            len(points),
+            rms,
+            mx,
+        )
+        for name, s in sorted(
+            model_summary.items(), key=lambda kv: kv[1]["verify_rms_pct"]
+        ):
+            logger.info(
+                "  verify model %s: fit RMS %.1f%%, verify RMS %.1f%%",
+                name,
+                s["fit_rms_pct"],
+                s["verify_rms_pct"],
+            )
+        return {
+            "points": points,
+            "rms_pct": rms,
+            "max_pct": mx,
+            "model_summary": model_summary,
+        }
 
     def save_calibration(
         self,
@@ -415,6 +893,7 @@ class CalibrationProtocol2D(CalibrationProtocol1D):
         powermeter_type="manual",
         power_filter=None,
         comment=None,
+        drop_nonfinite=True,
     ):
         """Run a protocol over lasers and power settings.
 
@@ -455,10 +934,16 @@ class CalibrationProtocol2D(CalibrationProtocol1D):
         powermeter_type : str
             'sample' (sample plane) or 'bfp' (back focal plane) — annotated
             in every saved calibration.
+        drop_nonfinite : bool
+            Passed through to :meth:`calibrate`; if True (default), non-finite
+            readings are dropped and the curve is fit on the remaining points.
         """
         powermeter_type = normalize_powermeter_type(powermeter_type)
         plotfolder = self.instrument.config.get("dest_calibration_plot")
         self.reset_saved_calibrations()
+        # Per-curve fit quality and raw curves, keyed (laser, laser_power).
+        self.fit_qualities = {}
+        self.last_curves = {}
 
         lasers = [
             las
@@ -565,7 +1050,12 @@ class CalibrationProtocol2D(CalibrationProtocol1D):
                     save_plot=False,
                     point_callback=_on_point,
                     comment=comment,
+                    drop_nonfinite=drop_nonfinite,
                 )
+                if getattr(self, "last_fit_quality", None) is not None:
+                    self.fit_qualities[(laser, lpwr)] = self.last_fit_quality
+                if getattr(self, "last_curve", None) is not None:
+                    self.last_curves[(laser, lpwr)] = self.last_curve
                 for an, pw in zip(angles, powers):
                     measpwrs.loc[an, lpwr] = pw
 

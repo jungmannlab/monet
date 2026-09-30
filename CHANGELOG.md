@@ -10,6 +10,148 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-30
+
+### Fixed
+- **Model-switch robustness (code-review follow-ups).** Selecting a laser with
+  no calibration compatible with the current model no longer *sticks* the whole
+  instrument uncalibrated — the laser setter now re-establishes calibration from
+  the database whenever a valid laser is selected. The fixed-laser/attenuator
+  power paths raise a clear "recalibrate this laser" error instead of crashing
+  on `min()` of an empty analyzer set, and the base `load_calibration` stays
+  uncalibrated (with a warning) instead of crashing on a foreign-model row. A
+  read-only Verify now restores each laser's prior on/off state instead of
+  switching lit lasers off; the transmission offset-bias check compares the
+  slope over the same outlier-filtered points (no spurious warning); and a
+  host-built `pc` bound via `MonetWidget.set_pc` picks up the microscope name so
+  "Set as default" persists.
+- **Switching analysis model no longer crashes with `KeyError: 'nan'`.**
+  After switching the model on an already-calibrated instrument, selecting a
+  laser rebuilt analyzers from the still-loaded (now-incompatible) rows; with
+  those rows skipped the power ranges were empty, so `laserpower` became `NaN`
+  and later `KeyError'd`. Selecting a laser with no calibration compatible with
+  the current model now falls back to uncalibrated (with a warning), and
+  "Apply best model" invalidates the old calibration before recalibrating.
+- **Switching analysis model no longer crashes on old calibration rows
+  (`KeyError: 'p0'`).** A database can hold rows from more than one analysis
+  model (e.g. sinusoidal rows written before switching to polynomial). Loading
+  an old sinusoidal row into the polynomial analyzer failed on the missing
+  `p0` coefficient (worsened by fragile substring key-matching that treated
+  `amp`/`phi` as coefficients). `params2coef` now selects coefficient keys
+  strictly (`p0,p1,…`/`i0,i1,…`) and raises a clear error on a foreign model;
+  `_populate_analyzers` uses the *latest* calibration per laser power and skips
+  rows incompatible with the current model (with a warning); the device-history
+  plot skips such rows instead of aborting.
+
+### Added
+- **Calibrate tab: analysis-model selector.** A dropdown shows the model in use
+  (Sinusoidal / Linear / Polynomial deg 3–6) and **annotates the persisted
+  default** `(default)`; changing it switches the model for the session and
+  invalidates the current calibration (recalibrate to apply). A **"Set as
+  default"** button persists the current selection to the config. "Apply best
+  model" switches, recalibrates and sets the default in one step.
+- **Expert-view toggle.** A toolbar checkbox (default off) hides controls a
+  regular user shouldn't need — the Set Power tab's Backlash check, Refresh
+  hardware state, and the direct Attenuator / Laser-power controls — and reveals
+  them in expert view. `MonetWidget.set_expert_view()` exposes it for embedders.
+- **Within-sweep drift check + durable fit-quality log.** After acquiring a
+  calibration sweep, `calibrate()` re-reads the highest-SNR point to measure
+  source drift over the sweep (`last_drift_pct`; shown in the Calibrate log and
+  added to `last_fit_quality`), and appends one row per calibration to
+  `fit_quality_log.csv` (in the plot folder, or the local DB's folder) with the
+  timestamp, laser, power, model, RMS/max residual, drift and point count. This
+  turns a "runs got worse over the day" impression into a monitorable trend and
+  separates source drift from model mismatch. Disable the extra read with
+  `calibrate(drift_check=False)`.
+- **Set Power tab: a readiness hint next to the Measure button.** A chip
+  (and button tooltip) now says whether light is expected to reach the sensor
+  — warning `⚠ laser OFF — will read ≈ 0` when the selected laser is off, or
+  `⚠ no beam-path preset` when the path won't be routed to the meter, and
+  `✓ light expected` otherwise. This explains the common "why did Measure
+  return 0?" confusion. The hint now also checks the actual hardware state
+  (last-read beam-path positions): it warns `⚠ filter cube not set for <λ> nm`
+  when the filter cube in the path doesn't match the selected laser, and
+  `⚠ objective in path — need meter in sample position` when the objective
+  turret is in the path while the BFP powermeter position is selected (light
+  then goes to the sample plane). The shutter is not called out separately
+  since autoshutter opens it with the laser.
+
+- **Calibration fit-quality diagnostic, surfaced in the GUI.** After fitting,
+  `calibrate()` records the RMS and maximum *relative* residual of the model
+  against the calibration data (`last_fit_quality`; per-curve `fit_qualities`
+  for a protocol run) and logs it, warning when the RMS exceeds 5%. The
+  Calibrate tab now prints this line in its log when a calibration finishes
+  (worst curve for a multi-laser run). A large residual means the model
+  doesn't describe the attenuator (use more points / a different model); a
+  small residual with a large live deviation instead points at laser
+  drift/warm-up between calibration and use.
+- **Calibration verification (Verify button, Calibrate tab).** For each
+  calibrated laser *and* laser-power level, `verify_calibration()` enables the
+  laser and routes the beam to the meter (as a calibration does), re-measures a
+  few attenuator angles, and compares them to the fitted model in the meter's
+  own units — reporting per-point and RMS/max deviation, then switching the
+  lasers off again. Unlike the fit residual this is a *fresh* cross-check, so it
+  catches drift and laser-power-setting effects (e.g. a deviation that grows
+  only at certain laser powers). Each point records its laser and laser power.
+- **Model comparison across all curves (Compare models button).**
+  `compare_models_multi` fits the sinusoidal and polynomial (deg 3–6) models to
+  *every* calibration curve (all wavelengths / powers) and ranks them by the
+  residual pooled across all of them — so the model is chosen from the whole
+  calibration, not one curve. (`compare_models` remains for a single curve.)
+- **Verify against every candidate model.** `verify_calibration` now also
+  evaluates each fresh measurement against the sinusoidal and polynomial models
+  (`model_summary`: per-model *fit* RMS vs *verify* RMS). This separates model
+  accuracy from repeatability: if a better-fitting model verifies better it's
+  the model; if all models verify similarly it's drift/repeatability — the
+  Verify log states which.
+- **Apply best model + recalibrate (button, Calibrate tab).** Switches the
+  microscope's analysis model to the best candidate (by fresh-verify residual
+  if available, else fit residual — via `analysis.model_spec`) and immediately
+  recalibrates. The choice is **persisted to the config file**
+  (`monet.set_config_analysis`, which backs up the previous file to
+  `<path>.bak`) so it survives a restart; the model is a per-microscope
+  setting, so it applies to all of that microscope's lasers.
+- **Attenuator backlash check (Set Power tab).** A "Backlash check" button
+  re-approaches the current attenuator angle from below and from above, reading
+  the power each time; a large power spread points at rotation-mount hysteresis
+  — the prime suspect for a calibrate-vs-measure deviation when both are done in
+  the same plane (where the objective transmission factor cancels). Backed by
+  `IlluminationControl.attenuator_hysteresis_probe()`, which restores the angle
+  and clamps both approaches to the calibrated range.
+- **Transmission-factor offset-bias diagnostic.** The objective transmission
+  factor is stored as a mean of pointwise `P_sample/P_bfp` ratios, which biases
+  by tens of percent when one plane has a large additive offset (stray light /
+  un-zeroed meter). When computing the factor, monet now also derives the
+  offset-immune slope of `P_sample` vs `P_bfp` and logs a warning to
+  `monet.log` if the two disagree by >5%, flagging a possibly-biased factor.
+  Diagnostic only — the stored factor is unchanged.
+
+### Changed
+- **Power meters are now put into power auto-range at open (default on).**
+  monet never configured the meter range — and on the TLPM path `open()`
+  resets the device, wiping any range set in Thorlabs' Optical Power Monitor
+  software — so a fixed, too-low range could silently saturate during a
+  calibration and produce the over-range readings behind the fit failure
+  below. `ThorlabsPowerMeter` and `ThorlabsTLPMPowerMeter` now enable
+  auto-range on connect; set `power_autorange: false` in the powermeter config
+  to pin the device's own range instead. Enabling is fail-soft (a driver/API
+  mismatch logs a warning and still connects).
+
+### Fixed
+- **Calibration aborted with a cryptic "model function generated NaN values"
+  error (or silently produced a garbage fit).** A saturated/over-range power
+  meter reports the SCPI/IEEE-488.2 sentinel `9.9e37` W, which monet converted
+  to ~`1e41` mW and fed straight into the curve fit; because that value is
+  *finite* it slipped past ordinary checks and either overflowed the optimizer
+  (`sin(inf) → NaN`, lmfit aborts) or converged to a nonsensical model. The
+  real-meter read paths (`ThorlabsPowerMeter`, `ThorlabsTLPMPowerMeter`) now
+  normalize over-range/non-finite samples to `NaN`, and `calibrate()` guards the
+  acquired data before fitting: by default it drops the non-finite point(s) and
+  fits the remaining curve, logging the dropped control value(s) and the full
+  arrays to `monet.log`. Pass `drop_nonfinite=False` to raise instead; either
+  way, if too few finite points remain to fit, it raises a clear error — so a
+  bad reading never reaches lmfit or silently produces a garbage calibration.
+
 ## [0.4.4] - 2026-09-30
 
 ### Fixed

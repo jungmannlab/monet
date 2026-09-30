@@ -12,6 +12,8 @@ import os
 import shutil
 import unittest
 
+import numpy as np
+
 import monet.calibrate as mca
 
 
@@ -89,6 +91,218 @@ class TestCalibration(unittest.TestCase):
         pc.instrument.load_calibration()
 
         # assert False
+
+    def _config_1d(self):
+        """A minimal 1D config; control values run 30, 35, ... 100."""
+        try:
+            os.makedirs("monet/tests/TestData/calibrate", exist_ok=True)
+        except Exception:
+            pass
+        return {
+            "database": "monet/tests/TestData/calibrate/power_database.xlsx",
+            "index": {
+                "name": "DefaultMicroscope",
+                "wavelength [nm]": 488,
+                "laser_power [mW]": 100,
+            },
+            "powermeter": {
+                "classpath": "monet.powermeter.TestPowerMeter",
+                "init_kwargs": {
+                    "bkg": 0,
+                    "amp": 50,
+                    "phi": 30,
+                    "start": 10,
+                    "step": 5,
+                    "noise": 3,
+                },
+            },
+            "attenuation": {
+                "classpath": "monet.attenuation.TestAttenuator",
+                "init_kwargs": {
+                    "bkg": 0,
+                    "amp": 50,
+                    "phi": 30,
+                    "start": 10,
+                    "step": 5,
+                },
+            },
+            "analysis": {
+                "classpath": "monet.analysis.SinusAttenuationCurveAnalyzer",
+                "init_kwargs": {
+                    "min": 30,
+                    "max": 100,
+                    "step": 5,
+                },
+            },
+        }
+
+    @staticmethod
+    def _nan_on_calls(pc, nan_calls):
+        """Make ``pc.powermeter.read`` return NaN on the given 1-based calls.
+
+        Simulates a saturated/over-range meter for specific attenuator steps.
+        """
+        real_read = pc.powermeter.read
+        calls = {"n": 0}
+
+        def flaky_read(*args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] in nan_calls:
+                return np.nan
+            return real_read(*args, **kwargs)
+
+        pc.powermeter.read = flaky_read
+
+    def test_02_Calibrator1D_drops_nonfinite(self):
+        """By default a non-finite reading is dropped and the fit proceeds.
+
+        Regression for the over-range meter surfacing lmfit's cryptic
+        "model function generated NaN values" abort: the bad point (2nd
+        step, control value 35) is dropped and the remaining finite points
+        are fit, so the calibration still succeeds.
+        """
+        pc = mca.CalibrationProtocol1D(self._config_1d())
+        self._nan_on_calls(pc, {2})
+
+        ctrl_vals, powers = pc.calibrate(wait_time=0)
+
+        self.assertTrue(np.all(np.isfinite(powers)))
+        self.assertNotIn(35.0, ctrl_vals.tolist())
+        # one of the 15 control values (30..100 step 5) was dropped
+        self.assertEqual(len(ctrl_vals), 14)
+        self.assertTrue(pc.instrument.is_calibrated)
+
+    def test_02b_Calibrator1D_nonfinite_raises_when_opted_out(self):
+        """drop_nonfinite=False raises a clear, control-value-named error."""
+        pc = mca.CalibrationProtocol1D(self._config_1d())
+        self._nan_on_calls(pc, {2})
+
+        with self.assertRaises(ValueError) as context:
+            pc.calibrate(wait_time=0, drop_nonfinite=False)
+        msg = str(context.exception)
+        self.assertIn("non-finite", msg)
+        self.assertIn("35", msg)  # the offending control value
+
+    def test_02c_Calibrator1D_raises_when_too_few_finite(self):
+        """Dropping so many points that too few remain still raises."""
+        pc = mca.CalibrationProtocol1D(self._config_1d())
+        # 15 steps; leave only the first two finite -> below the fit floor.
+        self._nan_on_calls(pc, set(range(3, 16)))
+
+        with self.assertRaises(ValueError) as context:
+            pc.calibrate(wait_time=0)
+        self.assertIn("too few", str(context.exception))
+
+    def test_03_Calibrator1D_reports_fit_quality(self):
+        """calibrate() records an RMS/max relative fit residual."""
+        pc = mca.CalibrationProtocol1D(self._config_1d())
+        pc.calibrate(wait_time=0)
+        q = pc.last_fit_quality
+        self.assertIsNotNone(q)
+        for key in ("rms_pct", "max_pct", "max_at"):
+            self.assertIn(key, q)
+        self.assertGreaterEqual(q["rms_pct"], 0.0)
+        self.assertGreaterEqual(q["max_pct"], q["rms_pct"])
+
+    def test_03c_calibrate_records_drift_and_logs_history(self):
+        """calibrate() records within-sweep drift and appends a history row."""
+        import tempfile
+
+        cfg = self._config_1d()
+        folder = tempfile.mkdtemp()
+        cfg["dest_calibration_plot"] = folder
+        pc = mca.CalibrationProtocol1D(cfg)
+        pc.calibrate(wait_time=0)
+
+        self.assertIn("drift_pct", pc.last_fit_quality)
+        # a durable fit-quality history CSV was written with a data row
+        log = os.path.join(folder, "fit_quality_log.csv")
+        self.assertTrue(os.path.isfile(log))
+        with open(log) as f:
+            lines = f.read().strip().splitlines()
+        self.assertIn("rms_pct", lines[0])  # header
+        self.assertIn("drift_pct", lines[0])
+        self.assertEqual(len(lines), 2)  # header + one run
+        # a second run appends, not overwrites
+        pc.calibrate(wait_time=0)
+        with open(log) as f:
+            self.assertEqual(len(f.read().strip().splitlines()), 3)
+
+    def test_03d_drift_check_can_be_disabled(self):
+        pc = mca.CalibrationProtocol1D(self._config_1d())
+        pc.calibrate(wait_time=0, drift_check=False)
+        self.assertIsNone(pc.last_drift_pct)
+
+    def test_03e_load_calibration_incompatible_model_no_crash(self):
+        """load_calibration on a foreign-model row stays uncalibrated,
+        rather than crashing (control.load_calibration guard)."""
+        import tempfile
+
+        from monet.util import load_class
+
+        cfg = self._config_1d()
+        cfg["database"] = os.path.join(tempfile.mkdtemp(), "db.xlsx")
+        pc = mca.CalibrationProtocol1D(cfg)
+        pc.calibrate(wait_time=0)  # writes a sinusoidal row
+        self.assertTrue(pc.instrument.is_calibrated)
+
+        # switch to the polynomial model and reload the (sinusoidal) row
+        poly = {
+            "classpath": "monet.analysis.PolynomAttenuationCurveAnalyzer",
+            "init_kwargs": {"min": 30, "max": 100, "step": 5, "polydegree": 5},
+        }
+        pc.instrument.config["analysis"] = poly
+        pc.instrument.analyzer = load_class(
+            poly["classpath"], poly["init_kwargs"]
+        )
+        pc.instrument.load_calibration()  # must not raise
+        self.assertFalse(pc.instrument.is_calibrated)
+
+    def test_03b_fit_quality_flags_model_mismatch(self):
+        """A model that mispredicts the data yields a large relative residual.
+
+        The fitted model is replaced with one whose amplitude is 10% low, so
+        _fit_quality reports a residual near 10% (the calibrate-vs-measure
+        signature of a poor fit rather than backlash/drift).
+        """
+        import numpy as np
+
+        pc = mca.CalibrationProtocol1D(self._config_1d())
+        pc.calibrate(wait_time=0)
+        ana = pc.instrument.analyzer
+        pars = dict(ana.get_model())
+        x = np.arange(30.0, 101.0, 5.0)
+        y_true = np.asarray(ana.estimate_power(x), dtype=float)
+        pars["amp"] = pars["amp"] * 0.9  # model now under-predicts by ~10%
+        ana.load_model(pars)
+        q = pc._fit_quality(x, y_true)
+        self.assertIsNotNone(q)
+        # under-predicting the amplitude by 10% shows up as a sizeable residual
+        self.assertGreater(q["max_pct"], 5.0)
+
+    def test_04_verify_calibration_1d_structure(self):
+        """verify_calibration re-measures angles and returns per-point data."""
+        pc = mca.CalibrationProtocol1D(self._config_1d())
+        pc.calibrate(wait_time=0)
+        res = pc.verify_calibration(n_angles=4, wait_time=0)
+        self.assertEqual(len(res["points"]), 4)
+        for p in res["points"]:
+            for k in (
+                "laser_power",
+                "angle",
+                "measured",
+                "predicted",
+                "dev_pct",
+            ):
+                self.assertIn(k, p)
+            self.assertIsNone(p["laser_power"])  # 1D: single calibration
+        self.assertIn("rms_pct", res)
+        self.assertIn("max_pct", res)
+
+    def test_04b_verify_requires_calibration(self):
+        pc = mca.CalibrationProtocol1D(self._config_1d())
+        with self.assertRaises(ValueError):
+            pc.verify_calibration(wait_time=0)
 
     def test_01_Calibrator2D(self):
         try:
@@ -195,3 +409,285 @@ class TestCalibration(unittest.TestCase):
         pc.instrument.power = 2000
 
         assert True
+
+    def test_05_verify_and_fit_qualities_2d(self):
+        try:
+            os.makedirs("monet/tests/TestData/calibrate", exist_ok=True)
+        except Exception:
+            pass
+        db = "monet/tests/TestData/calibrate/verify2d.xlsx"
+        try:
+            os.remove(db)
+        except Exception:
+            pass
+        config = {
+            "database": db,
+            "index": {"name": "DefaultMicroscope"},
+            "powermeter": {
+                "classpath": "monet.powermeter.TestPowerMeter",
+                "init_kwargs": {
+                    "bkg": 0,
+                    "amp": 50,
+                    "phi": 30,
+                    "start": 10,
+                    "step": 5,
+                    "noise": 1,
+                },
+            },
+            "attenuation": {
+                "classpath": "monet.attenuation.TestAttenuator",
+                "init_kwargs": {
+                    "bkg": 0,
+                    "amp": 50,
+                    "phi": 30,
+                    "start": 10,
+                    "step": 5,
+                },
+            },
+            "analysis": {
+                "classpath": "monet.analysis.SinusAttenuationCurveAnalyzer",
+                "init_kwargs": {"min": 30, "max": 100, "step": 5},
+            },
+            "lasers": {
+                488: {
+                    "classpath": "monet.laser.TestLaser",
+                    "init_kwargs": {"port": "COM4"},
+                },
+            },
+            "beampath": {
+                "shutter01": {
+                    "classpath": "monet.beampath.TestShutter",
+                    "init_kwargs": {"SN": 234},
+                },
+            },
+        }
+        protocol = {
+            "laser_sequence": [488],
+            "laser_powers": {488: [100, 200]},
+            "beampath": {488: {"shutter01": True}},
+        }
+        pc = mca.CalibrationProtocol2D(config, protocol)
+        pc.run_protocol(wait_time=0)
+
+        # per-curve fit quality was collected for each (laser, power)
+        self.assertIn((488, 100), pc.fit_qualities)
+        self.assertIn((488, 200), pc.fit_qualities)
+
+        pc.instrument.load_calibration_database()
+        res = pc.verify_calibration(n_angles=2, wait_time=0, switch_time=0)
+
+        # 2 angles x 2 calibrated laser powers (one laser)
+        self.assertEqual(len(res["points"]), 4)
+        levels = {p["laser_power"] for p in res["points"]}
+        self.assertEqual(levels, {100, 200})
+        # every point records which laser it came from
+        self.assertEqual({p["laser"] for p in res["points"]}, {488})
+        # the laser is switched off again after verification
+        self.assertFalse(pc.instrument.lasers[488].enabled)
+        # candidate models were evaluated against the fresh measurements
+        ms = res["model_summary"]
+        self.assertIn("sinus", ms)
+        self.assertTrue(any(k.startswith("poly") for k in ms))
+        for s in ms.values():
+            for key in ("fit_rms_pct", "verify_rms_pct", "verify_max_pct"):
+                self.assertIn(key, s)
+
+        # a laser that was ON before verify is left ON afterwards (its prior
+        # on/off state is restored, not force-disabled).
+        pc.instrument.lasers[488].enabled = True
+        pc.verify_calibration(n_angles=2, wait_time=0, switch_time=0)
+        self.assertTrue(pc.instrument.lasers[488].enabled)
+
+    def test_06_switch_model_reuses_mixed_db(self):
+        """Switching analysis model reuses a DB with old (foreign) rows.
+
+        Regression: after a sinusoidal calibration, switching to the
+        polynomial model and recalibrating on the *same* database must not
+        crash loading the older sinusoidal rows (KeyError 'p0'). The latest
+        (polynomial) row per power is used; incompatible rows are skipped.
+        """
+        import tempfile
+
+        tmp = tempfile.mkdtemp()
+        db = os.path.join(tmp, "mixed.xlsx")
+        plotdir = os.path.join(tmp, "plots")
+        os.makedirs(plotdir, exist_ok=True)
+
+        def make_config(classpath, extra_ana):
+            ana_kwargs = {"min": 30, "max": 100, "step": 5}
+            ana_kwargs.update(extra_ana)
+            return {
+                "database": db,
+                "dest_calibration_plot": plotdir,
+                "index": {"name": "DefaultMicroscope"},
+                "powermeter": {
+                    "classpath": "monet.powermeter.TestPowerMeter",
+                    "init_kwargs": {
+                        "bkg": 1,
+                        "amp": 50,
+                        "phi": 30,
+                        "start": 10,
+                        "step": 5,
+                        "noise": 1,
+                    },
+                },
+                "attenuation": {
+                    "classpath": "monet.attenuation.TestAttenuator",
+                    "init_kwargs": {
+                        "bkg": 0,
+                        "amp": 50,
+                        "phi": 30,
+                        "start": 10,
+                        "step": 5,
+                    },
+                },
+                "analysis": {
+                    "classpath": classpath,
+                    "init_kwargs": ana_kwargs,
+                },
+                "lasers": {
+                    488: {
+                        "classpath": "monet.laser.TestLaser",
+                        "init_kwargs": {"port": "COM4"},
+                    },
+                },
+                "beampath": {
+                    "shutter01": {
+                        "classpath": "monet.beampath.TestShutter",
+                        "init_kwargs": {"SN": 234},
+                    },
+                },
+            }
+
+        protocol = {
+            "laser_sequence": [488],
+            "laser_powers": {488: [100, 200]},
+            "beampath": {488: {"shutter01": True}},
+        }
+
+        # 1) sinusoidal calibration writes sinus rows (bkg/amp/phi)
+        pc_s = mca.CalibrationProtocol2D(
+            make_config("monet.analysis.SinusAttenuationCurveAnalyzer", {}),
+            protocol,
+        )
+        pc_s.run_protocol(wait_time=0)
+
+        # 2) switch to polynomial on the SAME db and recalibrate — must not
+        # crash loading/plotting the older sinusoidal rows.
+        pc_p = mca.CalibrationProtocol2D(
+            make_config(
+                "monet.analysis.PolynomAttenuationCurveAnalyzer",
+                {"polydegree": 3},
+            ),
+            protocol,
+        )
+        pc_p.run_protocol(wait_time=0)
+
+        # loading (latest = polynomial rows) and setting power must work
+        pc_p.instrument.load_calibration_database()
+        self.assertTrue(pc_p.instrument.is_calibrated)
+        pc_p.instrument.power = 5
+
+    def test_07_switch_model_on_calibrated_instrument_no_nan(self):
+        """Switching the analysis model on a *calibrated* instrument (as the
+        GUI 'Apply best model' does) must not KeyError 'nan'.
+
+        Regression: with the old calibration still loaded, selecting a laser
+        rebuilt analyzers from incompatible rows -> empty power ranges ->
+        laserpower = NaN -> KeyError 'nan'. It now falls back to uncalibrated.
+        """
+        import tempfile
+
+        from monet.util import load_class
+
+        tmp = tempfile.mkdtemp()
+        db = os.path.join(tmp, "switch.xlsx")
+        plotdir = os.path.join(tmp, "plots")
+        os.makedirs(plotdir, exist_ok=True)
+        config = {
+            "database": db,
+            "dest_calibration_plot": plotdir,
+            "index": {"name": "DefaultMicroscope"},
+            "powermeter": {
+                "classpath": "monet.powermeter.TestPowerMeter",
+                "init_kwargs": {
+                    "bkg": 1,
+                    "amp": 50,
+                    "phi": 30,
+                    "start": 10,
+                    "step": 5,
+                    "noise": 1,
+                },
+            },
+            "attenuation": {
+                "classpath": "monet.attenuation.TestAttenuator",
+                "init_kwargs": {
+                    "bkg": 0,
+                    "amp": 50,
+                    "phi": 30,
+                    "start": 10,
+                    "step": 5,
+                },
+            },
+            "analysis": {
+                "classpath": "monet.analysis.SinusAttenuationCurveAnalyzer",
+                "init_kwargs": {"min": 30, "max": 100, "step": 5},
+            },
+            "lasers": {
+                488: {
+                    "classpath": "monet.laser.TestLaser",
+                    "init_kwargs": {"port": "COM4"},
+                },
+            },
+            "beampath": {
+                "shutter01": {
+                    "classpath": "monet.beampath.TestShutter",
+                    "init_kwargs": {"SN": 234},
+                },
+            },
+        }
+        protocol = {
+            "laser_sequence": [488],
+            "laser_powers": {488: [100, 200]},
+            "beampath": {488: {"shutter01": True}},
+        }
+        pc = mca.CalibrationProtocol2D(config, protocol)
+        pc.run_protocol(wait_time=0)
+        pc.instrument.load_calibration_database()
+        self.assertTrue(pc.instrument.is_calibrated)
+
+        # mimic "apply best model": swap in the polynomial analyzer on the
+        # already-calibrated instrument, then select the laser.
+        poly = {
+            "classpath": "monet.analysis.PolynomAttenuationCurveAnalyzer",
+            "init_kwargs": {"min": 30, "max": 100, "step": 5, "polydegree": 5},
+        }
+        pc.instrument.config["analysis"] = poly
+        pc.instrument.analyzer = load_class(
+            poly["classpath"], poly["init_kwargs"]
+        )
+
+        # while still is_calibrated (no reselect yet), an explicit query for a
+        # laser with no compatible calibration raises a clear error instead of
+        # crashing on min() of an empty analyzers dict.
+        self.assertTrue(pc.instrument.is_calibrated)
+        with self.assertRaises(ValueError) as ctx:
+            pc.instrument._analyzers_for(488)
+        self.assertIn("No calibration compatible", str(ctx.exception))
+
+        pc.instrument.laser = 488  # must not raise KeyError 'nan'
+        # the stale (sinusoidal) calibration is no longer considered valid
+        self.assertFalse(pc.instrument.is_calibrated)
+
+        # recovery: switching back to a compatible model and reselecting the
+        # laser re-establishes calibration (no sticky lockout).
+        sinus = {
+            "classpath": "monet.analysis.SinusAttenuationCurveAnalyzer",
+            "init_kwargs": {"min": 30, "max": 100, "step": 5},
+        }
+        pc.instrument.config["analysis"] = sinus
+        pc.instrument.analyzer = load_class(
+            sinus["classpath"], sinus["init_kwargs"]
+        )
+        pc.instrument.laser = 488
+        self.assertTrue(pc.instrument.is_calibrated)

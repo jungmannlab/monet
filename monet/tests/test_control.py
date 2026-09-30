@@ -38,6 +38,25 @@ class _TrackingAttenuator:
         self._pos = 0.0
 
 
+class _BacklashAttenuator(_TrackingAttenuator):
+    """Attenuator whose *effective* angle lags the commanded one by
+    ``backlash`` in the direction of the last move — a rotation-mount with
+    hysteresis. ``curr_pos()`` still reports the commanded angle (as real
+    encoders do after a move), so only a power reading reveals the backlash."""
+
+    def __init__(self, start=0.0, backlash=1.0):
+        super().__init__(start)
+        self._backlash = backlash
+        self._last_dir = 0
+
+    def set(self, val):
+        self._last_dir = 1 if val >= self._pos else -1
+        super().set(val)
+
+    def effective_pos(self):
+        return self._pos - self._backlash * self._last_dir
+
+
 class _LaserPowerMeter:
     """Fake powermeter whose reading tracks the laser power set-point.
     Models 'fixed_attenuator' mode, where only the laser power changes."""
@@ -296,6 +315,57 @@ class TestControl(unittest.TestCase):
                 self._minimal_control_config(), do_load_cal=False
             )
         self.assertIsNotNone(ctrl.attenuator)
+
+    def test_hysteresis_probe_ideal_attenuator_zero_spread(self):
+        """A backlash-free attenuator: both approaches agree, angle restored."""
+        ctrl = mco.IlluminationControl(
+            self._minimal_control_config(), do_load_cal=False, auto_home=False
+        )
+        ctrl.attenuator = _TrackingAttenuator(start=50.0)
+        # power is a deterministic function of the reported angle
+        res = ctrl.attenuator_hysteresis_probe(
+            read_power=lambda: 2.0 * ctrl.attenuator.curr_pos(),
+            delta=5.0,
+            settle=0,
+        )
+        self.assertAlmostEqual(res["power_spread_frac"], 0.0, places=9)
+        self.assertEqual(res["target"], 50.0)
+        # left where we found it
+        self.assertEqual(ctrl.attenuator.curr_pos(), 50.0)
+        # both approaches stayed inside [0, 100]
+        self.assertGreaterEqual(res["approach_below"], 0)
+        self.assertLessEqual(res["approach_above"], 100)
+
+    def test_hysteresis_probe_detects_backlash(self):
+        """A mount with hysteresis yields a non-zero power spread."""
+        ctrl = mco.IlluminationControl(
+            self._minimal_control_config(), do_load_cal=False, auto_home=False
+        )
+        att = _BacklashAttenuator(start=50.0, backlash=1.0)
+        ctrl.attenuator = att
+        res = ctrl.attenuator_hysteresis_probe(
+            read_power=lambda: 2.0 * att.effective_pos(),
+            delta=5.0,
+            settle=0,
+        )
+        # from below: last move up -> effective = 50-1=49 -> 98
+        # from above: last move down -> effective = 50+1=51 -> 102
+        self.assertAlmostEqual(res["power_from_below"], 98.0, places=6)
+        self.assertAlmostEqual(res["power_from_above"], 102.0, places=6)
+        self.assertGreater(res["power_spread_frac"], 0.03)
+        self.assertEqual(ctrl.attenuator.curr_pos(), 50.0)
+
+    def test_hysteresis_probe_clamps_to_range(self):
+        """Approaches never leave the calibrated angle range."""
+        ctrl = mco.IlluminationControl(
+            self._minimal_control_config(), do_load_cal=False, auto_home=False
+        )
+        ctrl.attenuator = _TrackingAttenuator(start=98.0)  # near max=100
+        res = ctrl.attenuator_hysteresis_probe(
+            read_power=lambda: 1.0, delta=5.0, settle=0
+        )
+        self.assertLessEqual(res["approach_above"], 100.0)
+        self.assertGreaterEqual(res["approach_below"], 0.0)
 
     @mock.patch("time.sleep")
     def test_run_power_feedback_fixed_attenuator(self, _sleep):

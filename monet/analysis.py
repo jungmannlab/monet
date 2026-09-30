@@ -11,6 +11,7 @@ Analysis of attenuation curves.
 
 import abc
 import logging
+import re
 from collections.abc import Iterable
 
 import lmfit
@@ -816,11 +817,27 @@ class PolynomAttenuationCurveAnalyzer(AbstractAttenuationCurveAnalyzer):
         coef_bw : np array
             The coefficients of the inverse polynomial.
         """
-        n_fw = len([1 for k in list(params.keys()) if "p" in k])
-        n_bw = len([1 for k in list(params.keys()) if "i" in k])
-        coef_fw = np.array([params["p{:d}".format(i)] for i in range(n_fw)])
+        # Select exactly the polynomial coefficient keys p0,p1,... / i0,i1,...
+        # (a substring test would wrongly match e.g. 'amp'/'phi' from a
+        # sinusoidal-model row, then KeyError on 'p0'). Ordered by index.
+        p_keys = sorted(
+            (k for k in params if re.fullmatch(r"p\d+", str(k))),
+            key=lambda k: int(str(k)[1:]),
+        )
+        i_keys = sorted(
+            (k for k in params if re.fullmatch(r"i\d+", str(k))),
+            key=lambda k: int(str(k)[1:]),
+        )
+        if not p_keys:
+            raise ValueError(
+                "polynomial model parameters (p0, p1, ...) not found in "
+                "{}. This calibration was likely made with a different "
+                "analysis model (e.g. sinusoidal); recalibrate with the "
+                "current model.".format(sorted(map(str, params.keys())))
+            )
+        coef_fw = np.array([params[k] for k in p_keys], dtype=float)
         coef_fw[np.isnan(coef_fw)] = 0
-        coef_bw = np.array([params["i{:d}".format(i)] for i in range(n_bw)])
+        coef_bw = np.array([params[k] for k in i_keys], dtype=float)
         coef_bw[np.isnan(coef_bw)] = 0
         return coef_fw, coef_bw
 
@@ -906,6 +923,200 @@ class PolynomAttenuationCurveAnalyzer(AbstractAttenuationCurveAnalyzer):
         ax.set_title(title)
         fig.savefig(fname)
         plt.close(fig)
+
+
+def _model_residual(name, y, pred):
+    """Relative residual (percent) of ``pred`` against ``y`` for a model."""
+    y = np.asarray(y, dtype=float)
+    pred = np.asarray(pred, dtype=float)
+    ok = np.isfinite(y) & np.isfinite(pred) & (y > 0)
+    if not ok.any():
+        return {
+            "model": name,
+            "rms_pct": float("inf"),
+            "max_pct": float("inf"),
+        }
+    rel = np.abs(y[ok] - pred[ok]) / y[ok]
+    return {
+        "model": name,
+        "rms_pct": float(np.sqrt(np.mean(rel**2)) * 100.0),
+        "max_pct": float(np.max(rel) * 100.0),
+    }
+
+
+def model_spec(name):
+    """Map a compare/fit model name to its ``(classpath, extra_init_kwargs)``.
+
+    E.g. ``"sinus"`` ->
+    ``("monet.analysis.SinusAttenuationCurveAnalyzer", {})``,
+    ``"poly deg 5"`` ->
+    ``("monet.analysis.PolynomAttenuationCurveAnalyzer", {"polydegree": 5})``,
+    ``"linear"`` -> ``("monet.analysis.LinearCurveAnalyzer", {})``.
+    """
+    if name.startswith("poly"):
+        deg = int(name.split()[-1])
+        return (
+            "monet.analysis.PolynomAttenuationCurveAnalyzer",
+            {"polydegree": deg},
+        )
+    if name == "linear":
+        return ("monet.analysis.LinearCurveAnalyzer", {})
+    return ("monet.analysis.SinusAttenuationCurveAnalyzer", {})
+
+
+def model_name_from_config(classpath, init_kwargs=None):
+    """Reverse of :func:`model_spec`: a config's analysis section -> name.
+
+    Returns ``"sinus"``, ``"linear"`` or ``"poly deg N"`` (``N`` from
+    ``init_kwargs['polydegree']``), or the bare class name for an unrecognized
+    analyzer.
+    """
+    cls = (classpath or "").rsplit(".", 1)[-1]
+    if cls == "SinusAttenuationCurveAnalyzer":
+        return "sinus"
+    if cls == "LinearCurveAnalyzer":
+        return "linear"
+    if cls == "PolynomAttenuationCurveAnalyzer":
+        deg = (init_kwargs or {}).get("polydegree")
+        return "poly deg {}".format(deg) if deg is not None else "poly"
+    return cls
+
+
+def fit_candidate_models(x, y, analysis_parameters, degrees=(3, 4, 5, 6)):
+    """Fit candidate models to a calibration curve; return fitted predictors.
+
+    Fits the sinusoidal model and a least-squares polynomial of each degree in
+    ``degrees`` to ``(x, y)`` (angle, measured power).
+
+    Returns
+    -------
+    list of dict
+        ``[{'model', 'predict', 'fit_rms_pct', 'fit_max_pct'}, ...]`` where
+        ``predict`` is a callable ``angle -> power`` (vectorized). Models that
+        fail to fit are omitted.
+    """
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    out = []
+
+    try:
+        ana = SinusAttenuationCurveAnalyzer(dict(analysis_parameters))
+        ana.fit(x, y)
+        res = _model_residual("sinus", y, ana.estimate_power(x))
+        out.append(
+            {
+                "model": "sinus",
+                "predict": (
+                    lambda a, m=ana: np.asarray(
+                        m.estimate_power(a), dtype=float
+                    )
+                ),
+                "fit_rms_pct": res["rms_pct"],
+                "fit_max_pct": res["max_pct"],
+            }
+        )
+    except Exception as exc:
+        logger.debug("fit_candidate_models: sinus fit failed: %s", exc)
+
+    ok = np.isfinite(x) & np.isfinite(y)
+    for d in degrees:
+        name = "poly deg {:d}".format(d)
+        try:
+            coef = np.polyfit(x[ok], y[ok], d)
+            res = _model_residual(name, y, np.polyval(coef, x))
+            out.append(
+                {
+                    "model": name,
+                    "predict": (
+                        lambda a, c=coef: np.polyval(
+                            c, np.asarray(a, dtype=float)
+                        )
+                    ),
+                    "fit_rms_pct": res["rms_pct"],
+                    "fit_max_pct": res["max_pct"],
+                }
+            )
+        except Exception as exc:
+            logger.debug("fit_candidate_models: %s failed: %s", name, exc)
+
+    return out
+
+
+def compare_models(x, y, analysis_parameters, degrees=(3, 4, 5, 6)):
+    """Fit candidate models to one calibration curve and rank them by residual.
+
+    Fits the sinusoidal model and a least-squares polynomial of each degree in
+    ``degrees`` to ``(x, y)`` (angle, measured power) and returns each one's
+    relative residual, best (lowest RMS) first — so a user can pick the model
+    that actually describes their attenuator instead of guessing.
+
+    Returns
+    -------
+    list of dict
+        ``[{'model', 'rms_pct', 'max_pct'}, ...]`` sorted by ``rms_pct``.
+    """
+    fits = fit_candidate_models(x, y, analysis_parameters, degrees)
+    results = [
+        {
+            "model": f["model"],
+            "rms_pct": f["fit_rms_pct"],
+            "max_pct": f["fit_max_pct"],
+        }
+        for f in fits
+    ]
+    results.sort(key=lambda r: r["rms_pct"])
+    return results
+
+
+def compare_models_multi(curves, analysis_parameters, degrees=(3, 4, 5, 6)):
+    """Rank candidate models pooled across several calibration curves.
+
+    Fits each candidate model to every ``(x, y)`` curve in ``curves`` and pools
+    the relative residuals across all curves per model, so the model is chosen
+    from the whole calibration (all wavelengths / powers) rather than one
+    curve.
+
+    Parameters
+    ----------
+    curves : iterable of (x, y)
+        The per-condition calibration curves.
+    analysis_parameters : dict
+        The analyzer config (``min``/``max``/...) for the sinusoidal fit.
+    degrees : iterable of int
+        Polynomial degrees to try.
+
+    Returns
+    -------
+    list of dict
+        ``[{'model', 'rms_pct', 'max_pct', 'n_curves'}, ...]`` sorted by pooled
+        ``rms_pct`` (best first).
+    """
+    pooled = {}
+    counts = {}
+    for x, y in curves:
+        fits = fit_candidate_models(x, y, analysis_parameters, degrees)
+        yy = np.asarray(y, dtype=float)
+        for f in fits:
+            pred = np.asarray(f["predict"](np.asarray(x, float)), dtype=float)
+            ok = np.isfinite(yy) & np.isfinite(pred) & (yy > 0)
+            if not ok.any():
+                continue
+            rel = np.abs(yy[ok] - pred[ok]) / yy[ok]
+            pooled.setdefault(f["model"], []).extend(rel.tolist())
+            counts[f["model"]] = counts.get(f["model"], 0) + 1
+    results = []
+    for name, rel in pooled.items():
+        arr = np.asarray(rel, dtype=float)
+        results.append(
+            {
+                "model": name,
+                "rms_pct": float(np.sqrt(np.mean(arr**2)) * 100.0),
+                "max_pct": float(np.max(arr) * 100.0),
+                "n_curves": counts.get(name, 0),
+            }
+        )
+    results.sort(key=lambda r: r["rms_pct"])
+    return results
 
 
 def test_PolynomAttenuationCurveAnalyzer():
