@@ -79,6 +79,29 @@ class TestDashboard(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertIn("text/html", resp.headers["content-type"])
 
+    def test_dashboard_shows_monet_version(self):
+        import monet
+
+        resp = self.client.get("/dashboard/")
+        self.assertEqual(resp.status_code, 200)
+        # the version is injected into the shell; the placeholder is gone
+        self.assertIn("v" + monet.__version__, resp.text)
+        self.assertNotIn("__MONET_VERSION__", resp.text)
+
+    def test_record_fields_are_html_escaped(self):
+        # Stored-XSS guard: the table renderers must HTML-escape DB record
+        # fields before building innerHTML, so a device named
+        # "<img src=x onerror=...>" (writable via POST /calibrations) cannot
+        # execute in another viewer's browser (and steal the localStorage
+        # token). See esc() in the dashboard JS.
+        from monet.dashboard import _DASHBOARD_HTML as html
+
+        self.assertIn("function esc(", html)
+        self.assertIn("${esc(r.device)}", html)
+        self.assertIn("${esc(r.date)}", html)
+        # the raw, unescaped interpolation must be gone from the tables
+        self.assertNotIn("<td>${r.device}</td>", html)
+
     # ── /dashboard/api/filters ───────────────────────────────────────────
 
     def test_filters_empty(self):
@@ -181,6 +204,73 @@ class TestDashboard(unittest.TestCase):
         records = resp.json()["records"]
         self.assertEqual(len(records), 1)
         self.assertEqual(records[0]["device_name"], "ScopeA")
+
+
+class TestDashboardAuth(unittest.TestCase):
+    """The dashboard data routes require a token when the server enforces auth;
+    the HTML shell stays public so the login UI can load."""
+
+    def _client(self, auth):
+        import shutil
+
+        self.tmpdir = tempfile.mkdtemp()
+        os.environ["MONET_DB_PATH"] = os.path.join(self.tmpdir, "test.db")
+        os.environ.pop("PAINT_MONET_TOKENS", None)
+        from monet.server import create_app
+
+        client = TestClient(create_app(auth=auth))
+        client.__enter__()
+        self.addCleanup(client.__exit__, None, None, None)
+        self.addCleanup(lambda: shutil.rmtree(self.tmpdir, ignore_errors=True))
+        return client
+
+    def test_html_shell_is_public(self):
+        from monet.serviceauth import AuthConfig, TokenInfo
+
+        client = self._client(
+            AuthConfig({"r": TokenInfo(scope="read", label="viewer")})
+        )
+        # The page must load without a token so the login UI can render.
+        self.assertEqual(client.get("/dashboard/").status_code, 200)
+
+    def test_data_routes_require_read_token(self):
+        from monet.serviceauth import AuthConfig, TokenInfo
+
+        client = self._client(
+            AuthConfig({"r": TokenInfo(scope="read", label="viewer")})
+        )
+        # no token -> 401 on every data route
+        self.assertEqual(client.get("/dashboard/api/filters").status_code, 401)
+        self.assertEqual(
+            client.post("/dashboard/api/timeseries", json={}).status_code, 401
+        )
+        self.assertEqual(
+            client.get("/dashboard/api/transmission_objectives").status_code,
+            401,
+        )
+        # read token -> 200
+        h = {"Authorization": "Bearer r"}
+        self.assertEqual(
+            client.get("/dashboard/api/filters", headers=h).status_code, 200
+        )
+        self.assertEqual(
+            client.post(
+                "/dashboard/api/timeseries", json={}, headers=h
+            ).status_code,
+            200,
+        )
+        self.assertEqual(
+            client.get(
+                "/dashboard/api/transmission_objectives", headers=h
+            ).status_code,
+            200,
+        )
+
+    def test_auth_disabled_needs_no_token(self):
+        from monet.serviceauth import AuthConfig
+
+        client = self._client(AuthConfig({}))  # disabled (loopback dev)
+        self.assertEqual(client.get("/dashboard/api/filters").status_code, 200)
 
 
 if __name__ == "__main__":

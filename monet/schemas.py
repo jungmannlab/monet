@@ -140,3 +140,14 @@ class LaserStatusResponse(BaseModel):
     lasers: List[LaserState]
     current_laser: int
     label: Optional[str] = None  # attributable token holder (auth on)
+
+
+class WhoAmIResponse(BaseModel):
+    """Auth introspection for ``GET /auth/whoami`` — lets a client confirm the
+    server accepts its token and see the ``(scope, label)`` it maps to."""
+
+    # a valid token was presented (False on the server's auth-off path)
+    authenticated: bool
+    auth_enabled: bool  # whether the server enforces auth at all
+    label: Optional[str] = None  # token holder as registered server-side
+    scope: Optional[str] = None  # 'read' or 'write'

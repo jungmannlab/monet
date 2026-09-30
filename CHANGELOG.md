@@ -36,6 +36,81 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
   way, if too few finite points remain to fit, it raises a clear error — so a
   bad reading never reaches lmfit or silently produces a garbage calibration.
 
+## [0.4.4] - 2026-09-30
+
+### Fixed
+- **`deploy/setup-server.sh` re-run failed with git "dubious ownership".** The
+  script's `git`/`pip` steps ran as root against the `monet`-owned
+  `/opt/monet/src` checkout, so on any re-run (e.g. to upgrade `GIT_REF`) git
+  refused with `fatal: detected dubious ownership` and the source never
+  updated. Those steps now run as the `monet` user (repo/venv owner), with an
+  ownership fix-up first — so upgrading a deployed server is just
+  `sudo GIT_REF=vX.Y.Z bash deploy/setup-server.sh` again.
+
+### Added
+- **Deployment: `monet` on PATH + a layout/token guide.** The setup script now
+  symlinks `/usr/local/bin/monet → /opt/monet/.venv/bin/monet`, so
+  `sudo -u monet monet token …` works without activating anything (the CLI was
+  only inside the venv). `docs/deployment.md` gains a **"Where everything lives"**
+  map (venv / source / `/etc/monet/monet.env` tokens / DB / log / unit), a
+  **"Managing tokens on the deployed server"** section, and a note that the
+  service does **not** use any conda env — clearing up the "`monet: command not
+  found`, which install is which?" confusion.
+- **Dashboard shows the running monet version.** `GET /dashboard/` injects
+  `monet.__version__` under the title, so an operator can confirm which build is
+  deployed (e.g. whether the dashboard-auth from 0.4.3 is actually running) —
+  useful when "is the server up to date?" is the question.
+
+## [0.4.3] - 2026-09-29
+
+### Security
+- **The web dashboard now requires a token to view and edit.** Its data routes
+  (`/dashboard/api/filters`, `/timeseries`, `/transmission_objectives`) are now
+  `read`-scoped, and edits already go through the `write`-scoped main API — so a
+  browser needs a valid token to see any data and a `write` token to delete.
+  The HTML shell (`GET /dashboard/`) stays public so a small **login prompt** can
+  load; the page collects the token, keeps it in `localStorage`, sends it as
+  `Authorization: Bearer` on every request, re-prompts on 401, shows the signed-in
+  `label`/`scope` (via `/auth/whoami`), and greys the delete controls for a
+  read-only token. On an auth-disabled loopback server nothing changes (no login).
+  Previously the dashboard was unauthenticated and relied on a reverse proxy
+  (ADR-001); it is now self-authenticating too.
+- **Dashboard: escape DB record fields before rendering (stored-XSS fix).** The
+  All-Records / Latest-Calibrations tables interpolated calibration fields
+  (device name, date, parameters) into `innerHTML` unescaped, so a record
+  written via `POST /calibrations` with a device named e.g.
+  `<img src=x onerror=…>` would execute in another viewer's browser — and, now
+  that the dashboard stores a bearer token in `localStorage`, could exfiltrate
+  it. All dynamic fields are now HTML-escaped (`esc()`); chart labels already
+  used `textContent`. A pre-existing sink, hardened here alongside the auth work.
+
+### Added
+- **`monet auth test` CLI + `GET /auth/whoami`.** A client-side command to
+  verify a rig can authenticate to a monet server and see the `(scope, label)`
+  its token maps to server-side — replacing the ad-hoc curl/probe. Reads the
+  same `PAINT_MONET_TOKEN` / `PAINT_MONET_AUTH` the DB client uses, hits
+  `/health` (reachability) then the new `/auth/whoami` (auth + identity), and
+  prints a verdict (exit 0 = accepted or auth-off, 1 = rejected/unreachable).
+  Usage: `monet auth test --url http://server:8000` or `monet auth test <Name>`
+  (reads the server URL from that microscope's `database`). `GET /auth/whoami`
+  is read-scoped and returns the caller's `TokenInfo`; against an older server
+  without it, `auth test` falls back to a read-scoped route to still report
+  accepted/rejected (label unavailable until the server is upgraded).
+
+## [0.4.2] - 2026-09-29
+
+### Added
+- **systemd deployment template, setup script + docs.** `deploy/monet.service`
+  (a unit template for running the DB-only calibration server as a managed
+  service), `deploy/setup-server.sh` (one-shot dedicated-user install into
+  `/opt/monet` that preserves an existing token file + DB), and
+  `docs/deployment.md`. The unit sets `WorkingDirectory`/`HOME` to a writable
+  service-owned dir (monet opens a relative `monet.log` at import, which fails
+  under `ProtectSystem=strict` when CWD is `/`). Docs cover the dedicated service
+  user, `EnvironmentFile` tokens, stop/restart, and troubleshooting for
+  `217/USER` / `203/EXEC` / the read-only-`/monet.log` crash / the
+  `ProtectHome`-vs-`/root` interpreter gotcha.
+
 ## [0.4.1] - 2026-09-29
 
 ### Fixed
