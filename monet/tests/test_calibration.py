@@ -226,6 +226,30 @@ class TestCalibration(unittest.TestCase):
         # under-predicting the amplitude by 10% shows up as a sizeable residual
         self.assertGreater(q["max_pct"], 5.0)
 
+    def test_04_verify_calibration_1d_structure(self):
+        """verify_calibration re-measures angles and returns per-point data."""
+        pc = mca.CalibrationProtocol1D(self._config_1d())
+        pc.calibrate(wait_time=0)
+        res = pc.verify_calibration(n_angles=4, wait_time=0)
+        self.assertEqual(len(res["points"]), 4)
+        for p in res["points"]:
+            for k in (
+                "laser_power",
+                "angle",
+                "measured",
+                "predicted",
+                "dev_pct",
+            ):
+                self.assertIn(k, p)
+            self.assertIsNone(p["laser_power"])  # 1D: single calibration
+        self.assertIn("rms_pct", res)
+        self.assertIn("max_pct", res)
+
+    def test_04b_verify_requires_calibration(self):
+        pc = mca.CalibrationProtocol1D(self._config_1d())
+        with self.assertRaises(ValueError):
+            pc.verify_calibration(wait_time=0)
+
     def test_01_Calibrator2D(self):
         try:
             shutil.rmtree("monet/tests/TestData/calibrate")
@@ -331,3 +355,77 @@ class TestCalibration(unittest.TestCase):
         pc.instrument.power = 2000
 
         assert True
+
+    def test_05_verify_and_fit_qualities_2d(self):
+        try:
+            os.makedirs("monet/tests/TestData/calibrate", exist_ok=True)
+        except Exception:
+            pass
+        db = "monet/tests/TestData/calibrate/verify2d.xlsx"
+        try:
+            os.remove(db)
+        except Exception:
+            pass
+        config = {
+            "database": db,
+            "index": {"name": "DefaultMicroscope"},
+            "powermeter": {
+                "classpath": "monet.powermeter.TestPowerMeter",
+                "init_kwargs": {
+                    "bkg": 0,
+                    "amp": 50,
+                    "phi": 30,
+                    "start": 10,
+                    "step": 5,
+                    "noise": 1,
+                },
+            },
+            "attenuation": {
+                "classpath": "monet.attenuation.TestAttenuator",
+                "init_kwargs": {
+                    "bkg": 0,
+                    "amp": 50,
+                    "phi": 30,
+                    "start": 10,
+                    "step": 5,
+                },
+            },
+            "analysis": {
+                "classpath": "monet.analysis.SinusAttenuationCurveAnalyzer",
+                "init_kwargs": {"min": 30, "max": 100, "step": 5},
+            },
+            "lasers": {
+                488: {
+                    "classpath": "monet.laser.TestLaser",
+                    "init_kwargs": {"port": "COM4"},
+                },
+            },
+            "beampath": {
+                "shutter01": {
+                    "classpath": "monet.beampath.TestShutter",
+                    "init_kwargs": {"SN": 234},
+                },
+            },
+        }
+        protocol = {
+            "laser_sequence": [488],
+            "laser_powers": {488: [100, 200]},
+            "beampath": {488: {"shutter01": True}},
+        }
+        pc = mca.CalibrationProtocol2D(config, protocol)
+        pc.run_protocol(wait_time=0)
+
+        # per-curve fit quality was collected for each (laser, power)
+        self.assertIn((488, 100), pc.fit_qualities)
+        self.assertIn((488, 200), pc.fit_qualities)
+
+        pc.instrument.load_calibration_database()
+        original = pc.instrument.curr_laserpower
+        res = pc.verify_calibration(n_angles=2, wait_time=0)
+
+        # 2 angles x 2 calibrated laser powers
+        self.assertEqual(len(res["points"]), 4)
+        levels = {p["laser_power"] for p in res["points"]}
+        self.assertEqual(levels, {100, 200})
+        # the current laser power is restored afterwards
+        self.assertEqual(pc.instrument.curr_laserpower, original)

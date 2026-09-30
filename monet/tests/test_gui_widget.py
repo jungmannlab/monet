@@ -150,6 +150,28 @@ class TestMeasureReadiness(unittest.TestCase):
         self.assertIn("light expected", short)
 
 
+class TestCalibrateTabVerify(unittest.TestCase):
+    """Fit-quality surfacing and the Verify button on the Calibrate tab."""
+
+    def test_verify_button_exists_and_starts_disabled(self):
+        tab = CalibrateTab()
+        self.assertIsNotNone(tab._btn_verify)
+        self.assertFalse(tab._btn_verify.isEnabled())
+
+    def test_fit_quality_text_plain(self):
+        q = {"rms_pct": 1.2, "max_pct": 3.4, "max_at": 104.5}
+        txt = CalibrateTab._fit_quality_text(q)
+        self.assertIn("1.2%", txt)
+        self.assertIn("3.4%", txt)
+        self.assertNotIn("⚠", txt)
+
+    def test_fit_quality_text_warns_when_large(self):
+        q = {"rms_pct": 9.0, "max_pct": 15.0, "max_at": 100.0}
+        txt = CalibrateTab._fit_quality_text(q)
+        self.assertIn("⚠", txt)
+        self.assertIn("deviate", txt)
+
+
 class TestCalibrationPlots(unittest.TestCase):
     """Regression tests for the live calibration plots / wavelength toggles."""
 

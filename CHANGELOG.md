@@ -24,13 +24,21 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
   then goes to the sample plane). The shutter is not called out separately
   since autoshutter opens it with the laser.
 
-- **Calibration fit-quality diagnostic.** After fitting, `calibrate()` records
-  the RMS and maximum *relative* residual of the model against the calibration
-  data (`last_fit_quality`) and logs it, warning when the RMS exceeds 5%. This
-  separates the two remaining causes of a same-plane calibrate-vs-measure
-  deviation: a large residual means the model doesn't describe the attenuator
-  (use more points / a different model), a small residual with a large live
-  deviation instead points at laser drift/warm-up between calibration and use.
+- **Calibration fit-quality diagnostic, surfaced in the GUI.** After fitting,
+  `calibrate()` records the RMS and maximum *relative* residual of the model
+  against the calibration data (`last_fit_quality`; per-curve `fit_qualities`
+  for a protocol run) and logs it, warning when the RMS exceeds 5%. The
+  Calibrate tab now prints this line in its log when a calibration finishes
+  (worst curve for a multi-laser run). A large residual means the model
+  doesn't describe the attenuator (use more points / a different model); a
+  small residual with a large live deviation instead points at laser
+  drift/warm-up between calibration and use.
+- **Calibration verification (Verify button, Calibrate tab).** Re-measures a
+  few attenuator angles at each calibrated laser power and compares them to the
+  fitted model in the meter's own units (`verify_calibration()`), reporting
+  per-point and RMS/max deviation. Unlike the fit residual this is a *fresh*
+  cross-check, so it catches drift and laser-power-setting effects — e.g. a
+  deviation that grows only at certain laser powers.
 - **Attenuator backlash check (Set Power tab).** A "Backlash check" button
   re-approaches the current attenuator angle from below and from above, reading
   the power each time; a large power spread points at rotation-mount hysteresis

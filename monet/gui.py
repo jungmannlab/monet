@@ -850,6 +850,8 @@ class CalibrateTab(QWidget):
         self._worker = None
         self._discard_worker = None  # keep alive to prevent GC
         self._history_worker = None  # keep alive to prevent GC
+        self._verify_worker = None  # keep alive to prevent GC
+        self._pm_available = True
         self._checkboxes = {}
         # Latest outlier report from CalibrationPlots (list of dicts).
         self._flagged_report = []
@@ -997,14 +999,35 @@ class CalibrateTab(QWidget):
             "Delete the calibration records written by the last run from "
             "the database."
         )
+        self._btn_verify = QPushButton("Verify")
+        self._btn_verify.setEnabled(False)
+        self._btn_verify.setToolTip(
+            "Re-measure a few attenuator angles at each calibrated laser "
+            "power and compare to the fitted model. A fresh cross-check that "
+            "catches drift and laser-power-setting effects the fit residual "
+            "cannot."
+        )
         self._btn_start.clicked.connect(self._on_start)
         self._btn_cancel.clicked.connect(self._on_cancel)
         self._btn_discard.clicked.connect(self._on_discard)
+        self._btn_verify.clicked.connect(self._on_verify)
         btn_row2.addWidget(self._btn_start)
         btn_row2.addWidget(self._btn_cancel)
         btn_row2.addWidget(self._btn_discard)
+        btn_row2.addWidget(self._btn_verify)
         btn_row2.addStretch()
         layout.addLayout(btn_row2)
+
+    @staticmethod
+    def _fit_quality_text(q, prefix="Fit quality"):
+        """One-line summary of a _fit_quality dict for the calibration log."""
+        txt = "{}: RMS {:.1f}%, max {:.1f}% at {:.2f}".format(
+            prefix, q["rms_pct"], q["max_pct"], q["max_at"]
+        )
+        if q["rms_pct"] > 5.0:
+            txt += "  ⚠ model may not fit well — a set power can deviate by a"
+            txt += " similar amount"
+        return txt
 
     def set_pc(self, pc):
         self._pc = pc
@@ -1026,6 +1049,7 @@ class CalibrateTab(QWidget):
             idx = self._pm_pos_combo.findData(POWERMETER_SAMPLE)
             if idx >= 0:
                 self._pm_pos_combo.setCurrentIndex(idx)
+        self._update_verify_enabled()
 
     def _rebuild_checkboxes(self):
         # Remove old checkboxes (keep the button row at index 0)
@@ -1102,11 +1126,15 @@ class CalibrateTab(QWidget):
                 )
                 self._plots.add_curve(laser, lpwr, ctrl_vals, powers)
                 self._log.append("Done.")
+                q = getattr(self._pc, "last_fit_quality", None)
+                if q:
+                    self._log.append(self._fit_quality_text(q))
                 self._emit_status("Calibration complete.", 5000)
             except Exception as exc:
                 QMessageBox.critical(self, "Error", str(exc))
                 self._emit_status("Calibration failed.", 5000)
             self._btn_discard.setEnabled(bool(self._pc.saved_calibrations))
+            self._update_verify_enabled()
             return
 
         selected = self._selected_lasers()
@@ -1219,12 +1247,26 @@ class CalibrateTab(QWidget):
 
     def _on_finished(self):
         self._log.append("Calibration complete.")
+        fqs = getattr(self._pc, "fit_qualities", None) or {}
+        if fqs:
+            (laser, lpwr), q = max(
+                fqs.items(), key=lambda kv: kv[1]["rms_pct"]
+            )
+            self._log.append(
+                self._fit_quality_text(
+                    q,
+                    prefix="Fit quality (worst: {} nm @ {} mW)".format(
+                        laser, lpwr
+                    ),
+                )
+            )
         self._progress.setFormat("Done")
         self._btn_start.setEnabled(True)
         self._btn_cancel.setEnabled(False)
         self._update_discard_enabled()
         self._worker = None
         self._update_flagged_buttons()
+        self._update_verify_enabled()
         self._emit_status("Calibration complete.", 5000)
         self.calibration_finished.emit()
 
@@ -1473,11 +1515,79 @@ class CalibrateTab(QWidget):
 
     def set_powermeter_available(self, available):
         """Enable or disable calibration controls per powermeter state."""
+        self._pm_available = available
         self._btn_start.setEnabled(available)
+        self._update_verify_enabled()
         if not available:
             self._log.append(
                 "WARNING: PowerMeter not available. Calibration is disabled."
             )
+
+    def _update_verify_enabled(self):
+        """Enable Verify only when calibrated and the meter is available."""
+        calibrated = bool(
+            self._pc is not None
+            and getattr(self._pc, "instrument", None) is not None
+            and getattr(self._pc.instrument, "is_calibrated", False)
+        )
+        self._btn_verify.setEnabled(calibrated and self._pm_available)
+
+    def _on_verify(self):
+        """Re-measure a few angles per laser power and compare to the model."""
+        if self._pc is None:
+            return
+
+        def _do():
+            return self._pc.verify_calibration()
+
+        def _on_result(res):
+            for p in res["points"]:
+                lp = p["laser_power"]
+                lp_txt = "{} mW".format(lp) if lp is not None else "current"
+                self._log.append(
+                    "  verify {}: angle {:.2f} → measured {:.3f}, "
+                    "predicted {:.3f}  ({:+.1f}%)".format(
+                        lp_txt,
+                        p["angle"],
+                        p["measured"],
+                        p["predicted"],
+                        p["dev_pct"],
+                    )
+                )
+            self._log.append(
+                "Verification: RMS {:.1f}%, max |dev| {:.1f}% over {} "
+                "point(s).".format(
+                    res["rms_pct"], res["max_pct"], len(res["points"])
+                )
+            )
+            self._emit_status(
+                "Verification: RMS {:.1f}%, max {:.1f}%".format(
+                    res["rms_pct"], res["max_pct"]
+                ),
+                8000,
+            )
+
+        def _on_error(msg):
+            self._log.append(f"ERROR verifying calibration: {msg}")
+            QMessageBox.critical(self, "Verify error", msg)
+            self._emit_status(f"Verify failed: {msg}", 5000)
+
+        def _on_finished():
+            self._btn_start.setEnabled(self._pm_available)
+            self._update_verify_enabled()
+            self._verify_worker = None
+
+        self._btn_start.setEnabled(False)
+        self._btn_verify.setEnabled(False)
+        self._log.append("Verifying calibration (re-measuring angles)…")
+        self._emit_status("Verifying calibration…")
+
+        worker = GenericWorker(_do)
+        worker.result.connect(_on_result)
+        worker.error.connect(_on_error)
+        worker.finished.connect(_on_finished)
+        self._verify_worker = worker
+        worker.start()
 
     def cancel_worker_and_wait(self):
         if self._worker and self._worker.isRunning():

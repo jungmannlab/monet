@@ -290,6 +290,109 @@ class CalibrationProtocol1D:
             logger.debug("Could not compute fit quality: %s", exc)
             return None
 
+    def verify_calibration(
+        self, n_angles=5, wait_time=0.5, point_callback=None
+    ):
+        """Re-measure a few attenuator angles and compare to the fitted model.
+
+        A *fresh* cross-check of the stored calibration (unlike
+        :meth:`_fit_quality`, which only scores how well the model fit its own
+        acquisition): for each calibrated laser-power level, set that laser
+        power, move the attenuator to ``n_angles`` positions spread across the
+        calibrated range, read the meter, and compare to the model prediction
+        in the meter's own units (so the objective transmission factor is not
+        involved). This catches drift and laser-power-setting effects that the
+        fit residual cannot — e.g. if the deviation grows only at certain laser
+        powers, ``dev_pct`` grouped by ``laser_power`` shows it.
+
+        Parameters
+        ----------
+        n_angles : int
+            Number of attenuator positions to test per laser-power level.
+        wait_time : float
+            Seconds to wait after each move / laser-power change before reading.
+        point_callback : callable or None
+            Called with each per-point dict as it is measured (for live UI).
+
+        Returns
+        -------
+        dict
+            ``{'points': [{laser_power, angle, measured, predicted, dev_pct},
+            ...], 'rms_pct': float, 'max_pct': float}``.
+        """
+        import time
+
+        inst = self.instrument
+        if not getattr(inst, "is_calibrated", False):
+            raise ValueError("Not calibrated. Calibrate before verifying.")
+
+        # Laser-power levels: the calibrated levels (2D) or the single
+        # current calibration (1D, level = None).
+        power_ranges = getattr(inst, "_power_ranges", None)
+        has_levels = power_ranges is not None and hasattr(inst, "laserpower")
+        if has_levels:
+            levels = list(power_ranges.index)
+            original_level = getattr(inst, "curr_laserpower", None)
+        else:
+            levels = [None]
+            original_level = None
+
+        points = []
+        try:
+            for level in levels:
+                if level is not None:
+                    inst.laserpower = level  # sets laser + selects analyzer
+                    time.sleep(wait_time)
+                analyzer = inst.analyzer
+                params = getattr(analyzer, "analysis_parameters", {}) or {}
+                lo = params.get("min", 0)
+                hi = params.get("max", 180)
+                if not np.isfinite(lo):
+                    lo = 0
+                if not np.isfinite(hi):
+                    hi = 180
+                for ang in np.linspace(lo, hi, n_angles):
+                    ang = float(ang)
+                    inst.attenuator.set(ang)
+                    time.sleep(wait_time)
+                    measured = float(self.powermeter.read())
+                    predicted = float(analyzer.estimate_power(ang))
+                    if predicted and np.isfinite(measured):
+                        dev = (measured - predicted) / predicted * 100.0
+                    else:
+                        dev = float("nan")
+                    rec = {
+                        "laser_power": level,
+                        "angle": ang,
+                        "measured": measured,
+                        "predicted": predicted,
+                        "dev_pct": dev,
+                    }
+                    points.append(rec)
+                    if point_callback:
+                        point_callback(rec)
+        finally:
+            if has_levels and original_level is not None:
+                try:
+                    inst.laserpower = original_level
+                except Exception:
+                    pass
+
+        devs = np.array(
+            [p["dev_pct"] for p in points if np.isfinite(p["dev_pct"])],
+            dtype=float,
+        )
+        rms = float(np.sqrt(np.mean(devs**2))) if devs.size else float("nan")
+        mx = float(np.max(np.abs(devs))) if devs.size else float("nan")
+        logger.info(
+            "calibration verification: %d point(s), RMS %.1f%%, "
+            "max |dev| %.1f%%",
+            len(points),
+            rms,
+            mx,
+        )
+        return {"points": points, "rms_pct": rms, "max_pct": mx}
+
     def save_calibration(
         self,
         save_plot=True,
@@ -570,6 +673,8 @@ class CalibrationProtocol2D(CalibrationProtocol1D):
         powermeter_type = normalize_powermeter_type(powermeter_type)
         plotfolder = self.instrument.config.get("dest_calibration_plot")
         self.reset_saved_calibrations()
+        # Per-curve fit quality, keyed (laser, laser_power); see _fit_quality.
+        self.fit_qualities = {}
 
         lasers = [
             las
@@ -678,6 +783,8 @@ class CalibrationProtocol2D(CalibrationProtocol1D):
                     comment=comment,
                     drop_nonfinite=drop_nonfinite,
                 )
+                if getattr(self, "last_fit_quality", None) is not None:
+                    self.fit_qualities[(laser, lpwr)] = self.last_fit_quality
                 for an, pw in zip(angles, powers):
                     measpwrs.loc[an, lpwr] = pw
 
