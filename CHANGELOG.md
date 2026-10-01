@@ -10,6 +10,14 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
+### Added
+- **Reproducibility probe (`docs/diagnostics/reproducibility_probe.py`).** A
+  stand-alone rig diagnostic that isolates the sources of calibrate-vs-measure
+  irreproducibility — laser stability, meter dark drift, attenuator
+  repeatability, backlash, homing impact, run-to-run fit/model variation, and
+  end-to-end set-power deviation — each to its own timestamped CSV, with a
+  cycle loop for multi-hour unattended runs. See `docs/diagnostics/README.md`.
+
 ## [0.5.0] - 2026-09-30
 
 ### Fixed
