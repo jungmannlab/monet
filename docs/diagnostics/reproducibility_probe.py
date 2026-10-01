@@ -577,26 +577,50 @@ class ReproducibilityProbe:
             except Exception:
                 pass
 
+    def _targets_for(self, laser):
+        """Target powers (mW) for ``laser``.
+
+        ``--target-fracs`` picks them as fractions of the laser's *accessible*
+        range (so they never clamp); otherwise the absolute ``--targets``.
+        """
+        if self.args.target_fracs:
+            try:
+                lo, hi = self.instrument.accessible_power_range(
+                    "combined", laser
+                )
+                return [lo + f * (hi - lo) for f in self.args.target_fracs]
+            except Exception as exc:
+                print("  (no accessible range for %s: %s)" % (laser, exc))
+                return []
+        return self.args.targets or []
+
     def setpower(self, stop):
         """Set target powers open-loop from the calibration, measure actual ->
-        end-to-end reproducibility."""
+        end-to-end reproducibility. Targets come from --target-fracs (per-laser
+        in-range) or absolute --targets; ``commanded`` records what the set
+        actually aimed for (differs from target if the request was clamped)."""
         if not getattr(self.instrument, "is_calibrated", False):
             print(
                 "  (instrument not calibrated; skipping setpower experiment)"
             )
             return
-        targets = self.args.targets or []
-        if not targets:
-            print("  (no --targets given; skipping setpower experiment)")
+        if not self.args.targets and not self.args.target_fracs:
+            print("  (no --targets/--target-fracs; skipping setpower)")
             return
         for laser in self._lasers():
             self._select(laser, None, on=True)
+            targets = self._targets_for(laser)
             for rep in range(self.args.reps):
                 for target in targets:
                     stop()
                     try:
                         self.instrument.power = target
                         time.sleep(self.args.settle)
+                        # what the set actually aimed for (clamped prediction)
+                        try:
+                            commanded = float(self.instrument.power)
+                        except Exception:
+                            commanded = float("nan")
                         measured = self._read()
                         att_pos = float(self.instrument.attenuator.curr_pos())
                     except Exception as exc:
@@ -616,6 +640,7 @@ class ReproducibilityProbe:
                             "laser",
                             "rep",
                             "target",
+                            "commanded",
                             "measured",
                             "dev_pct",
                             "att_pos",
@@ -623,7 +648,8 @@ class ReproducibilityProbe:
                         {
                             "laser": laser,
                             "rep": rep,
-                            "target": target,
+                            "target": round(target, 4),
+                            "commanded": commanded,
                             "measured": measured,
                             "dev_pct": dev,
                             "att_pos": att_pos,
@@ -748,7 +774,14 @@ def main(argv=None):
         "--targets",
         type=lambda s: [float(x) for x in s.split(",")],
         default=None,
-        help="comma-separated target powers (mW) for the setpower experiment",
+        help="comma-separated absolute target powers (mW) for setpower",
+    )
+    p.add_argument(
+        "--target-fracs",
+        type=lambda s: [float(x) for x in s.split(",")],
+        default=None,
+        help="setpower targets as fractions of each laser's accessible range "
+        "(e.g. 0.25,0.5,0.9) — avoids out-of-range clamping",
     )
     p.add_argument(
         "--cal-steps",

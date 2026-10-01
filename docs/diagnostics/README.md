@@ -73,7 +73,9 @@ python docs/diagnostics/reproducibility_probe.py MyScope \
 Key options: `--angle` working angle (default: analysis-range midpoint),
 `--park` approach offset for directional moves, `--settle` wait after each move,
 `--averaging` meter reads per point, `--ref-angles`/`--targets` for the
-`calibration`/`setpower` experiments, and `--cal-steps` / `--cal-models` to
+`calibration`/`setpower` experiments (`--target-fracs 0.25,0.5,0.9` picks
+set-power targets as fractions of each laser's *accessible* range so they never
+clamp out of range), and `--cal-steps` / `--cal-models` to
 sweep the calibration over sampling density / model (e.g.
 `--cal-steps 2.5,5,10 --cal-models "sinus,poly deg 5"`). The laser is switched
 off and the hardware released on exit (including Ctrl-C, which stops after the
