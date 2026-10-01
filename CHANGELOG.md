@@ -16,7 +16,12 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
   irreproducibility — laser stability, meter dark drift, attenuator
   repeatability, backlash, homing impact, run-to-run fit/model variation, and
   end-to-end set-power deviation — each to its own timestamped CSV, with a
-  cycle loop for multi-hour unattended runs. See `docs/diagnostics/README.md`.
+  cycle loop for multi-hour unattended runs. The calibration experiment can
+  sweep parameter variants (`--cal-steps`, `--cal-models`) to study
+  sampling-density/model impact. Results default to a timestamped directory
+  under `docs/diagnostics/results/` (committable for later analysis), and
+  `plot_results.py` (or `--plot`) renders a PNG per experiment. See
+  `docs/diagnostics/README.md`.
 
 ## [0.5.0] - 2026-09-30
 

@@ -357,64 +357,131 @@ class ReproducibilityProbe:
                 },
             )
 
+    def _cal_variants(self):
+        """(model_label, classpath, extra_kwargs) x step-size combinations.
+
+        Defaults to the config's own model/step (one variant) unless
+        ``--cal-models`` / ``--cal-steps`` request a sweep over sampling
+        density and/or analysis model.
+        """
+        from monet import analysis as _an
+
+        ana = self.instrument.config["analysis"]
+        models = self.args.cal_models or [None]
+        steps = self.args.cal_steps or [ana.get("init_kwargs", {}).get("step")]
+        out = []
+        for name in models:
+            if name is None:
+                label, classpath, extra = "config", ana["classpath"], {}
+            else:
+                classpath, extra = _an.model_spec(name)
+                label = name
+            for step in steps:
+                out.append((label, classpath, extra, step))
+        return out
+
     def calibration(self, stop):
-        """Repeat full calibrate()+fit; record fit params, residuals, drift,
-        and predicted-vs-measured at reference angles -> fit variation and
-        model adequacy. Uses dry_run so nothing is written to the database."""
+        """Repeat full calibration sweeps (as configured) and, optionally,
+        variants with different step size / model; record fit params, RMS/max
+        residual, within-sweep drift, point count, and predicted-vs-measured at
+        reference angles. dry_run, so nothing is written to the database.
+
+        Isolates run-to-run fit variation, model adequacy, and the effect of
+        sampling density (step size) on both."""
+        from monet.util import load_class
+
         self._set_laser(on=True)
         refs = self.args.ref_angles or [self._angle()]
-        for run in range(self.args.reps):
-            stop()
+        ana = self.instrument.config["analysis"]
+        orig_classpath = ana["classpath"]
+        orig_kwargs = dict(ana.get("init_kwargs", {}))
+        fields = [
+            "model_variant",
+            "step",
+            "run",
+            "n_points",
+            "rms_pct",
+            "max_pct",
+            "drift_pct",
+            "ref_angle",
+            "predicted",
+            "measured",
+            "dev_pct",
+            "model",
+        ]
+        try:
+            for label, classpath, extra, step in self._cal_variants():
+                kw = dict(orig_kwargs)
+                kw.pop("polydegree", None)
+                kw.update(extra)
+                if step is not None:
+                    kw["step"] = step
+                ana["classpath"] = classpath
+                ana["init_kwargs"] = kw
+                for run in range(self.args.reps):
+                    stop()
+                    try:
+                        self.instrument.analyzer = load_class(classpath, kw)
+                        self.pc.calibrate(
+                            wait_time=self.args.settle,
+                            dry_run=True,
+                            save_plot=False,
+                            drift_check=True,
+                        )
+                    except Exception as exc:
+                        print(
+                            "  calibration %s/step=%s run %d failed: %s"
+                            % (label, step, run, exc)
+                        )
+                        continue
+                    q = getattr(self.pc, "last_fit_quality", None) or {}
+                    curve = getattr(self.pc, "last_curve", None)
+                    n_points = len(curve[0]) if curve is not None else None
+                    model = self.instrument.analyzer.get_model()
+                    model_str = ";".join(
+                        "{}={:.5g}".format(k, float(v))
+                        for k, v in model.items()
+                    )
+                    for ref in refs:
+                        stop()
+                        predicted = float(
+                            self.instrument.analyzer.estimate_power(ref)
+                        )
+                        self._set_angle(ref, approach="below")
+                        measured = self._read()
+                        dev = (
+                            (measured - predicted) / predicted * 100.0
+                            if predicted
+                            else float("nan")
+                        )
+                        self._log(
+                            "calibration",
+                            fields,
+                            {
+                                "model_variant": label,
+                                "step": step,
+                                "run": run,
+                                "n_points": n_points,
+                                "rms_pct": q.get("rms_pct"),
+                                "max_pct": q.get("max_pct"),
+                                "drift_pct": q.get("drift_pct"),
+                                "ref_angle": ref,
+                                "predicted": predicted,
+                                "measured": measured,
+                                "dev_pct": dev,
+                                "model": model_str,
+                            },
+                        )
+        finally:
+            # restore the config's analysis model/step
+            ana["classpath"] = orig_classpath
+            ana["init_kwargs"] = orig_kwargs
             try:
-                self.pc.calibrate(
-                    wait_time=self.args.settle,
-                    dry_run=True,
-                    save_plot=False,
-                    drift_check=True,
+                self.instrument.analyzer = load_class(
+                    orig_classpath, orig_kwargs
                 )
-            except Exception as exc:
-                print("  calibration run %d failed: %s" % (run, exc))
-                continue
-            q = getattr(self.pc, "last_fit_quality", None) or {}
-            model = self.instrument.analyzer.get_model()
-            model_str = ";".join(
-                "{}={:.5g}".format(k, float(v)) for k, v in model.items()
-            )
-            for ref in refs:
-                stop()
-                predicted = float(self.instrument.analyzer.estimate_power(ref))
-                self._set_angle(ref, approach="below")
-                measured = self._read()
-                dev = (
-                    (measured - predicted) / predicted * 100.0
-                    if predicted
-                    else float("nan")
-                )
-                self._log(
-                    "calibration",
-                    [
-                        "run",
-                        "rms_pct",
-                        "max_pct",
-                        "drift_pct",
-                        "ref_angle",
-                        "predicted",
-                        "measured",
-                        "dev_pct",
-                        "model",
-                    ],
-                    {
-                        "run": run,
-                        "rms_pct": q.get("rms_pct"),
-                        "max_pct": q.get("max_pct"),
-                        "drift_pct": q.get("drift_pct"),
-                        "ref_angle": ref,
-                        "predicted": predicted,
-                        "measured": measured,
-                        "dev_pct": dev,
-                        "model": model_str,
-                    },
-                )
+            except Exception:
+                pass
 
     def setpower(self, stop):
         """Set target powers open-loop from the calibration, measure actual ->
@@ -547,6 +614,20 @@ def main(argv=None):
         help="comma-separated target powers (mW) for the setpower experiment",
     )
     p.add_argument(
+        "--cal-steps",
+        type=lambda s: [float(x) for x in s.split(",")],
+        default=None,
+        help="comma-separated attenuator step sizes for the calibration "
+        "experiment (default: the config's step)",
+    )
+    p.add_argument(
+        "--cal-models",
+        type=lambda s: [x.strip() for x in s.split(",")],
+        default=None,
+        help="comma-separated models for the calibration experiment, e.g. "
+        "'sinus,poly deg 5' (default: the config's model)",
+    )
+    p.add_argument(
         "--duration", type=float, default=60.0, help="stability [s]"
     )
     p.add_argument("--interval", type=float, default=5.0, help="stability [s]")
@@ -556,8 +637,26 @@ def main(argv=None):
     p.add_argument("--averaging", type=int, default=10)
     p.add_argument("--cycles", type=int, default=1, help="battery repeats")
     p.add_argument("--cycle-interval", type=float, default=0.0, help="[s]")
-    p.add_argument("--outdir", default="repro_probe")
+    p.add_argument(
+        "--outdir",
+        default=None,
+        help="output dir (default: docs/diagnostics/results/run_<timestamp> "
+        "inside the repo, so results can be committed back for analysis)",
+    )
+    p.add_argument(
+        "--plot",
+        action="store_true",
+        help="render PNGs from the CSVs when finished (plot_results.py)",
+    )
     args = p.parse_args(argv)
+
+    if args.outdir is None:
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        args.outdir = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "results",
+            "run_" + stamp,
+        )
 
     if not args.test and not args.microscope:
         p.error("give a microscope config name or --test")
@@ -596,6 +695,14 @@ def main(argv=None):
             pc.disconnect()
         except Exception:
             pass
+
+    if args.plot:
+        try:
+            import plot_results
+
+            plot_results.plot_dir(args.outdir)
+        except Exception as exc:
+            print("Plotting failed: %s" % exc)
 
 
 if __name__ == "__main__":

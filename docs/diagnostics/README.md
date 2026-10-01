@@ -19,7 +19,7 @@ exercises the real hardware path.
 | `repeatability` | set the **same** angle repeatedly, always approached from one direction | attenuator positioning repeatability (backlash removed) |
 | `hysteresis` | re-approach one angle from below vs above (backlash probe) | rotation-mount backlash |
 | `homing` | read at an angle, **home** the mount, return, read again | whether homing shifts the angle→power mapping |
-| `calibration` | run a full sweep + fit repeatedly (dry-run, nothing written to the DB); record fit params, RMS/max residual, within-sweep drift, and predicted-vs-measured at reference angles | run-to-run fit variation & model adequacy |
+| `calibration` | run a full sweep + fit repeatedly (dry-run, nothing written to the DB) — optionally over **variants** of step size (`--cal-steps`) and/or model (`--cal-models`); record fit params, RMS/max residual, within-sweep drift, point count, and predicted-vs-measured at reference angles | run-to-run fit variation, model adequacy, and **sampling-density (step) impact** |
 | `setpower` | set target powers open-loop from the calibration, measure the actual power | end-to-end reproducibility (what you ultimately care about) |
 
 Every CSV row carries `iso_time`, `elapsed_s` (since start) and `cycle` (which
@@ -52,8 +52,20 @@ python docs/diagnostics/reproducibility_probe.py MyScope \
 Key options: `--angle` working angle (default: analysis-range midpoint),
 `--park` approach offset for directional moves, `--settle` wait after each move,
 `--averaging` meter reads per point, `--ref-angles`/`--targets` for the
-`calibration`/`setpower` experiments. The laser is switched off and the hardware
-released on exit (including Ctrl-C, which stops after the current reading).
+`calibration`/`setpower` experiments, and `--cal-steps` / `--cal-models` to
+sweep the calibration over sampling density / model (e.g.
+`--cal-steps 2.5,5,10 --cal-models "sinus,poly deg 5"`). The laser is switched
+off and the hardware released on exit (including Ctrl-C, which stops after the
+current reading).
+
+`--outdir` defaults to a timestamped directory under
+`docs/diagnostics/results/` **inside the repo**, so a run can be committed back
+for analysis (see `results/README.md`). Pass `--plot` to render PNGs when the
+run finishes, or generate them later:
+
+```bash
+python docs/diagnostics/plot_results.py docs/diagnostics/results/run_XXXX
+```
 
 ## Interpreting the output
 
@@ -73,5 +85,10 @@ Plot each CSV against `iso_time`/`elapsed_s`. Rough guide:
 - **`calibration` `rms_pct`/`dev_pct` vary run-to-run while `drift_pct` stays
   small** → fit/model noise, not drift; try a different model (see the Calibrate
   tab's model comparison). If `drift_pct` grows across runs → source drift.
+- **`calibration` across `--cal-steps` / `--cal-models`** → compare `rms_pct`
+  and `dev_pct` grouped by `step` and `model_variant` (the `calibration.png`
+  panels): if finer steps or a different model markedly lower both, sampling
+  density / model choice is a real contributor; if they don't move, the
+  limiting factor is elsewhere (drift / repeatability).
 - **`setpower` `dev_pct`** is the bottom line — correlate its sign/size with the
   other series to find which source dominates.
