@@ -20,7 +20,10 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
   sweep parameter variants (`--cal-steps`, `--cal-models`) to study
   sampling-density/model impact. Results default to a timestamped directory
   under `docs/diagnostics/results/` (committable for later analysis), and
-  `plot_results.py` (or `--plot`) renders a PNG per experiment. See
+  `plot_results.py` (or `--plot`) renders a PNG per experiment. Laser-dependent
+  experiments run across multiple `(laser, power)` operating points via
+  `--lasers`/`--laser-powers` or `--full-protocol` (the config's whole
+  line/power grid, with per-laser beam-path routing). See
   `docs/diagnostics/README.md`.
 
 ## [0.5.0] - 2026-09-30

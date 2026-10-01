@@ -65,6 +65,7 @@ import numpy as np
 
 import monet
 import monet.calibrate as mca
+from monet import POWERMETER_BFP, normalize_powermeter_type
 
 # A fully-simulated config for --test (no rig, no vendor SDKs) so the script
 # can be smoke-tested end to end.
@@ -182,23 +183,85 @@ class ReproducibilityProbe:
             self.instrument, "laser_enabled"
         )
 
-    def _set_laser(self, on=True):
-        """Select the laser / power and set its on/off state (2D only)."""
+    def _lasers(self):
+        """Laser wavelengths to cover (list), for laser-only experiments."""
+        proto = getattr(self.pc, "protocol", None) or {}
+        if self.args.full_protocol and proto.get("laser_sequence"):
+            return list(proto["laser_sequence"])
+        if self.args.lasers:
+            return self.args.lasers
+        return [self.args.laser] if self.args.laser is not None else [None]
+
+    def _operating_points(self):
+        """(laser, laser_power) points to run laser+power experiments at.
+
+        ``--full-protocol`` uses the config protocol's full grid; otherwise
+        ``--lasers`` x ``--laser-powers`` (or the single ``--laser`` /
+        ``--laser-power``, or one ``(None, None)`` point for a 1-D / no-laser
+        setup)."""
+        proto = getattr(self.pc, "protocol", None) or {}
+        if self.args.full_protocol and proto.get("laser_sequence"):
+            powers = proto.get("laser_powers", {})
+            pts = [
+                (laser, pwr)
+                for laser in proto["laser_sequence"]
+                for pwr in powers.get(laser, [None])
+            ]
+            if pts:
+                return pts
+        lasers = self.args.lasers or (
+            [self.args.laser] if self.args.laser is not None else [None]
+        )
+        powers = self.args.laser_powers or (
+            [self.args.laser_power]
+            if self.args.laser_power is not None
+            else [None]
+        )
+        return [(la, pw) for la in lasers for pw in powers]
+
+    def _select(self, laser, power, on=True):
+        """Select laser+power, route the beam to the meter, set on/off (2D)."""
         inst = self.instrument
-        if not self._is_2d() or self.args.laser is None:
+        if not self._is_2d() or laser is None:
             return
-        inst.laser = self.args.laser
-        if self.args.laser_power is not None and hasattr(inst, "laserpower"):
+        inst.laser = laser
+        if power is not None and hasattr(inst, "laserpower"):
             try:
-                inst.laserpower = self.args.laser_power
+                inst.laserpower = power
+            except Exception:
+                pass
+        proto = getattr(self.pc, "protocol", None) or {}
+        bp = proto.get("beampath") or {}
+        if getattr(inst, "use_beampath", False):
+            try:
+                if laser in bp:
+                    inst.beampath.positions = bp[laser]
+                if (
+                    normalize_powermeter_type(self.args.powermeter_type)
+                    == POWERMETER_BFP
+                ):
+                    scp = bp.get("start_calibrate")
+                    if scp:
+                        inst.beampath.positions = scp
             except Exception:
                 pass
         try:
-            inst.attenuator.set_wavelength(self.args.laser)
-            self.powermeter.wavelength = int(self.args.laser)
+            inst.attenuator.set_wavelength(laser)
+            self.powermeter.wavelength = int(laser)
         except Exception:
             pass
         inst.laser_enabled = on
+        time.sleep(self.args.switch_time)
+
+    def _all_lasers_off(self):
+        inst = self.instrument
+        if not self._is_2d():
+            return
+        for las in getattr(inst, "lasers", {}):
+            try:
+                inst.lasers[las].enabled = False
+            except Exception:
+                pass
 
     def _set_angle(self, angle, approach="direct"):
         """Move the attenuator to ``angle``; ``approach`` below/above parks
@@ -232,27 +295,30 @@ class ReproducibilityProbe:
     # ---- experiments ------------------------------------------------------
 
     def laser_stability(self, stop):
-        """Fixed everything; read power over time -> laser/meter stability."""
-        self._set_laser(on=True)
-        angle = self._set_angle(self._angle())
-        n = max(1, int(self.args.duration / max(self.args.interval, 1e-3)))
-        for i in range(n):
-            stop()
-            self._log(
-                "laser_stability",
-                ["i", "angle", "laser_power", "power"],
-                {
-                    "i": i,
-                    "angle": angle,
-                    "laser_power": self.args.laser_power,
-                    "power": self._read(),
-                },
-            )
-            time.sleep(self.args.interval)
+        """Fixed everything; read power over time -> laser/meter stability.
+        Repeated for each (laser, power) operating point."""
+        for laser, power in self._operating_points():
+            self._select(laser, power, on=True)
+            angle = self._set_angle(self._angle())
+            n = max(1, int(self.args.duration / max(self.args.interval, 1e-3)))
+            for i in range(n):
+                stop()
+                self._log(
+                    "laser_stability",
+                    ["laser", "laser_power", "i", "angle", "power"],
+                    {
+                        "laser": laser,
+                        "laser_power": power,
+                        "i": i,
+                        "angle": angle,
+                        "power": self._read(),
+                    },
+                )
+                time.sleep(self.args.interval)
 
     def meter_dark(self, stop):
-        """Laser off; read meter over time -> dark/zero drift, ambient."""
-        self._set_laser(on=False)
+        """All lasers off; read meter over time -> dark/zero drift, ambient."""
+        self._all_lasers_off()
         n = max(1, int(self.args.duration / max(self.args.interval, 1e-3)))
         for i in range(n):
             stop()
@@ -263,99 +329,119 @@ class ReproducibilityProbe:
 
     def repeatability(self, stop):
         """Set the same angle N times from one direction -> positioning
-        repeatability (backlash excluded)."""
-        self._set_laser(on=True)
-        angle = self._angle()
-        for i in range(self.args.reps):
-            stop()
-            readback = self._set_angle(angle, approach="below")
-            self._log(
-                "repeatability",
-                ["i", "commanded", "readback", "power"],
-                {
-                    "i": i,
-                    "commanded": angle,
-                    "readback": readback,
-                    "power": self._read(),
-                },
-            )
+        repeatability (backlash excluded). Per operating point."""
+        for laser, power in self._operating_points():
+            self._select(laser, power, on=True)
+            angle = self._angle()
+            for i in range(self.args.reps):
+                stop()
+                readback = self._set_angle(angle, approach="below")
+                self._log(
+                    "repeatability",
+                    [
+                        "laser",
+                        "laser_power",
+                        "i",
+                        "commanded",
+                        "readback",
+                        "power",
+                    ],
+                    {
+                        "laser": laser,
+                        "laser_power": power,
+                        "i": i,
+                        "commanded": angle,
+                        "readback": readback,
+                        "power": self._read(),
+                    },
+                )
 
     def hysteresis(self, stop):
-        """Re-approach one angle from below and above -> backlash."""
-        self._set_laser(on=True)
-        self._set_angle(self._angle())
-        for i in range(self.args.reps):
-            stop()
-            res = self.instrument.attenuator_hysteresis_probe(
-                read_power=self._read,
-                delta=self.args.park,
-                settle=self.args.settle,
-            )
-            self._log(
-                "hysteresis",
-                [
-                    "i",
-                    "target",
-                    "power_from_below",
-                    "power_from_above",
-                    "power_spread_frac",
-                ],
-                {
-                    "i": i,
-                    "target": res.get("target"),
-                    "power_from_below": res.get("power_from_below"),
-                    "power_from_above": res.get("power_from_above"),
-                    "power_spread_frac": res.get("power_spread_frac"),
-                },
-            )
+        """Re-approach one angle from below and above -> backlash. Per point."""
+        for laser, power in self._operating_points():
+            self._select(laser, power, on=True)
+            self._set_angle(self._angle())
+            for i in range(self.args.reps):
+                stop()
+                res = self.instrument.attenuator_hysteresis_probe(
+                    read_power=self._read,
+                    delta=self.args.park,
+                    settle=self.args.settle,
+                )
+                self._log(
+                    "hysteresis",
+                    [
+                        "laser",
+                        "laser_power",
+                        "i",
+                        "target",
+                        "power_from_below",
+                        "power_from_above",
+                        "power_spread_frac",
+                    ],
+                    {
+                        "laser": laser,
+                        "laser_power": power,
+                        "i": i,
+                        "target": res.get("target"),
+                        "power_from_below": res.get("power_from_below"),
+                        "power_from_above": res.get("power_from_above"),
+                        "power_spread_frac": res.get("power_spread_frac"),
+                    },
+                )
 
     def homing(self, stop):
         """Measure at an angle, home, return, measure -> home-reference
-        dependence of the angle->power mapping."""
+        dependence of the angle->power mapping. Per operating point."""
         att = self.instrument.attenuator
         if not hasattr(att, "home"):
             print("  (attenuator has no home(); skipping homing experiment)")
             return
-        self._set_laser(on=True)
         angle = self._angle()
-        for i in range(self.args.reps):
-            stop()
-            rb_before = self._set_angle(angle, approach="below")
-            p_before = self._read()
-            try:
-                att.home()
-            except Exception as exc:
-                print("  home() failed: %s" % exc)
-                return
-            time.sleep(self.args.settle)
-            rb_after = self._set_angle(angle, approach="below")
-            p_after = self._read()
-            rel = (
-                (p_after - p_before) / p_before * 100.0
-                if p_before
-                else float("nan")
-            )
-            self._log(
-                "homing",
-                [
-                    "i",
-                    "commanded",
-                    "readback_before",
-                    "readback_after",
-                    "power_before",
-                    "power_after",
-                    "rel_change_pct",
-                ],
-                {
-                    "i": i,
-                    "commanded": angle,
-                    "readback_before": rb_before,
-                    "readback_after": rb_after,
-                    "power_before": p_before,
-                    "power_after": p_after,
-                    "rel_change_pct": rel,
-                },
-            )
+        for laser, power in self._operating_points():
+            self._select(laser, power, on=True)
+            for i in range(self.args.reps):
+                stop()
+                rb_before = self._set_angle(angle, approach="below")
+                p_before = self._read()
+                try:
+                    att.home()
+                except Exception as exc:
+                    print("  home() failed: %s" % exc)
+                    return
+                time.sleep(self.args.settle)
+                rb_after = self._set_angle(angle, approach="below")
+                p_after = self._read()
+                rel = (
+                    (p_after - p_before) / p_before * 100.0
+                    if p_before
+                    else float("nan")
+                )
+                self._log(
+                    "homing",
+                    [
+                        "laser",
+                        "laser_power",
+                        "i",
+                        "commanded",
+                        "readback_before",
+                        "readback_after",
+                        "power_before",
+                        "power_after",
+                        "rel_change_pct",
+                    ],
+                    {
+                        "laser": laser,
+                        "laser_power": power,
+                        "i": i,
+                        "commanded": angle,
+                        "readback_before": rb_before,
+                        "readback_after": rb_after,
+                        "power_before": p_before,
+                        "power_after": p_after,
+                        "rel_change_pct": rel,
+                    },
+                )
 
     def _cal_variants(self):
         """(model_label, classpath, extra_kwargs) x step-size combinations.
@@ -390,12 +476,13 @@ class ReproducibilityProbe:
         sampling density (step size) on both."""
         from monet.util import load_class
 
-        self._set_laser(on=True)
         refs = self.args.ref_angles or [self._angle()]
         ana = self.instrument.config["analysis"]
         orig_classpath = ana["classpath"]
         orig_kwargs = dict(ana.get("init_kwargs", {}))
         fields = [
+            "laser",
+            "laser_power",
             "model_variant",
             "step",
             "run",
@@ -410,68 +497,75 @@ class ReproducibilityProbe:
             "model",
         ]
         try:
-            for label, classpath, extra, step in self._cal_variants():
-                kw = dict(orig_kwargs)
-                kw.pop("polydegree", None)
-                kw.update(extra)
-                if step is not None:
-                    kw["step"] = step
-                ana["classpath"] = classpath
-                ana["init_kwargs"] = kw
-                for run in range(self.args.reps):
-                    stop()
-                    try:
-                        self.instrument.analyzer = load_class(classpath, kw)
-                        self.pc.calibrate(
-                            wait_time=self.args.settle,
-                            dry_run=True,
-                            save_plot=False,
-                            drift_check=True,
-                        )
-                    except Exception as exc:
-                        print(
-                            "  calibration %s/step=%s run %d failed: %s"
-                            % (label, step, run, exc)
-                        )
-                        continue
-                    q = getattr(self.pc, "last_fit_quality", None) or {}
-                    curve = getattr(self.pc, "last_curve", None)
-                    n_points = len(curve[0]) if curve is not None else None
-                    model = self.instrument.analyzer.get_model()
-                    model_str = ";".join(
-                        "{}={:.5g}".format(k, float(v))
-                        for k, v in model.items()
-                    )
-                    for ref in refs:
+            for laser, power in self._operating_points():
+                self._select(laser, power, on=True)
+                for label, classpath, extra, step in self._cal_variants():
+                    kw = dict(orig_kwargs)
+                    kw.pop("polydegree", None)
+                    kw.update(extra)
+                    if step is not None:
+                        kw["step"] = step
+                    ana["classpath"] = classpath
+                    ana["init_kwargs"] = kw
+                    for run in range(self.args.reps):
                         stop()
-                        predicted = float(
-                            self.instrument.analyzer.estimate_power(ref)
+                        try:
+                            self.instrument.analyzer = load_class(
+                                classpath, kw
+                            )
+                            self.pc.calibrate(
+                                wait_time=self.args.settle,
+                                dry_run=True,
+                                save_plot=False,
+                                drift_check=True,
+                            )
+                        except Exception as exc:
+                            print(
+                                "  calibration %s %smW %s/step=%s run %d "
+                                "failed: %s"
+                                % (laser, power, label, step, run, exc)
+                            )
+                            continue
+                        q = getattr(self.pc, "last_fit_quality", None) or {}
+                        curve = getattr(self.pc, "last_curve", None)
+                        n_points = len(curve[0]) if curve is not None else None
+                        model = self.instrument.analyzer.get_model()
+                        model_str = ";".join(
+                            "{}={:.5g}".format(k, float(v))
+                            for k, v in model.items()
                         )
-                        self._set_angle(ref, approach="below")
-                        measured = self._read()
-                        dev = (
-                            (measured - predicted) / predicted * 100.0
-                            if predicted
-                            else float("nan")
-                        )
-                        self._log(
-                            "calibration",
-                            fields,
-                            {
-                                "model_variant": label,
-                                "step": step,
-                                "run": run,
-                                "n_points": n_points,
-                                "rms_pct": q.get("rms_pct"),
-                                "max_pct": q.get("max_pct"),
-                                "drift_pct": q.get("drift_pct"),
-                                "ref_angle": ref,
-                                "predicted": predicted,
-                                "measured": measured,
-                                "dev_pct": dev,
-                                "model": model_str,
-                            },
-                        )
+                        for ref in refs:
+                            stop()
+                            predicted = float(
+                                self.instrument.analyzer.estimate_power(ref)
+                            )
+                            self._set_angle(ref, approach="below")
+                            measured = self._read()
+                            dev = (
+                                (measured - predicted) / predicted * 100.0
+                                if predicted
+                                else float("nan")
+                            )
+                            self._log(
+                                "calibration",
+                                fields,
+                                {
+                                    "laser": laser,
+                                    "laser_power": power,
+                                    "model_variant": label,
+                                    "step": step,
+                                    "run": run,
+                                    "n_points": n_points,
+                                    "rms_pct": q.get("rms_pct"),
+                                    "max_pct": q.get("max_pct"),
+                                    "drift_pct": q.get("drift_pct"),
+                                    "ref_angle": ref,
+                                    "predicted": predicted,
+                                    "measured": measured,
+                                    "dev_pct": dev,
+                                    "model": model_str,
+                                },
+                            )
         finally:
             # restore the config's analysis model/step
             ana["classpath"] = orig_classpath
@@ -491,38 +585,50 @@ class ReproducibilityProbe:
                 "  (instrument not calibrated; skipping setpower experiment)"
             )
             return
-        self._set_laser(on=True)
         targets = self.args.targets or []
         if not targets:
             print("  (no --targets given; skipping setpower experiment)")
             return
-        for rep in range(self.args.reps):
-            for target in targets:
-                stop()
-                try:
-                    self.instrument.power = target
-                    time.sleep(self.args.settle)
-                    measured = self._read()
-                    att_pos = float(self.instrument.attenuator.curr_pos())
-                except Exception as exc:
-                    print("  setpower %s failed: %s" % (target, exc))
-                    continue
-                dev = (
-                    (measured - target) / target * 100.0
-                    if target
-                    else float("nan")
-                )
-                self._log(
-                    "setpower",
-                    ["rep", "target", "measured", "dev_pct", "att_pos"],
-                    {
-                        "rep": rep,
-                        "target": target,
-                        "measured": measured,
-                        "dev_pct": dev,
-                        "att_pos": att_pos,
-                    },
-                )
+        for laser in self._lasers():
+            self._select(laser, None, on=True)
+            for rep in range(self.args.reps):
+                for target in targets:
+                    stop()
+                    try:
+                        self.instrument.power = target
+                        time.sleep(self.args.settle)
+                        measured = self._read()
+                        att_pos = float(self.instrument.attenuator.curr_pos())
+                    except Exception as exc:
+                        print(
+                            "  setpower %s @ %s failed: %s"
+                            % (target, laser, exc)
+                        )
+                        continue
+                    dev = (
+                        (measured - target) / target * 100.0
+                        if target
+                        else float("nan")
+                    )
+                    self._log(
+                        "setpower",
+                        [
+                            "laser",
+                            "rep",
+                            "target",
+                            "measured",
+                            "dev_pct",
+                            "att_pos",
+                        ],
+                        {
+                            "laser": laser,
+                            "rep": rep,
+                            "target": target,
+                            "measured": measured,
+                            "dev_pct": dev,
+                            "att_pos": att_pos,
+                        },
+                    )
 
     # ---- driver -----------------------------------------------------------
 
@@ -595,6 +701,37 @@ def main(argv=None):
     )
     p.add_argument("--laser", type=int, default=None)
     p.add_argument("--laser-power", type=float, default=None)
+    p.add_argument(
+        "--lasers",
+        type=lambda s: [int(x) for x in s.split(",")],
+        default=None,
+        help="comma-separated laser wavelengths to cover (overrides --laser)",
+    )
+    p.add_argument(
+        "--laser-powers",
+        type=lambda s: [float(x) for x in s.split(",")],
+        default=None,
+        help="comma-separated laser powers to cover (overrides --laser-power)",
+    )
+    p.add_argument(
+        "--full-protocol",
+        action="store_true",
+        help="run laser-dependent experiments across the config protocol's "
+        "full (laser, power) grid (all lines and powers)",
+    )
+    p.add_argument(
+        "--powermeter-type",
+        default="bfp",
+        choices=["bfp", "sample"],
+        help="beam routing for measurements (BFP uses the start_calibrate "
+        "turret position)",
+    )
+    p.add_argument(
+        "--switch-time",
+        type=float,
+        default=2.0,
+        help="seconds to settle after switching laser / beam path",
+    )
     p.add_argument(
         "--angle",
         type=float,
@@ -687,7 +824,7 @@ def main(argv=None):
         print("\nInterrupted; wrote partial results.")
     finally:
         try:
-            probe._set_laser(on=False)
+            probe._all_lasers_off()
         except Exception:
             pass
         probe.close()

@@ -27,6 +27,27 @@ battery repeat), so all series share a clock and can be cross-correlated — e.g
 subtract the concurrent `laser_stability` trend from `repeatability` to separate
 laser drift from the mount.
 
+### Multiple lasers and powers
+
+The laser-dependent experiments (`laser_stability`, `repeatability`,
+`hysteresis`, `homing`, `calibration`, `setpower`) run at one or more
+**operating points** `(laser, laser_power)`, and tag every row with `laser` /
+`laser_power`:
+
+- `--lasers 488,561,640` and `--laser-powers 100,500` cover that grid, or
+- `--full-protocol` covers the config protocol's **entire** `(laser, power)`
+  grid — i.e. exactly what a full calibration would sweep, repeated for
+  reproducibility across all lines and powers.
+
+For each laser the beam path (filter/shutter, and the BFP turret port for
+`--powermeter-type bfp`) is set exactly as calibration does, with a
+`--switch-time` settle. Without `--lasers`/`--full-protocol` it falls back to
+the single `--laser`/`--laser-power` (backwards compatible).
+
+> Note: `--full-protocol` multiplies run time — `laser_stability` runs its full
+> `--duration` at *every* operating point. For long stability soaks use a single
+> point; reserve `--full-protocol` for `calibration`/`setpower`.
+
 ## Running
 
 Dry-run (no rig; simulated `Test*` hardware, just proves the script works):
