@@ -23,8 +23,10 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
   `plot_results.py` (or `--plot`) renders a PNG per experiment. Laser-dependent
   experiments run across multiple `(laser, power)` operating points via
   `--lasers`/`--laser-powers` or `--full-protocol` (the config's whole
-  line/power grid, with per-laser beam-path routing). See
-  `docs/diagnostics/README.md`.
+  line/power grid, with per-laser beam-path routing). A `setpower_breakdown`
+  experiment decomposes the open-loop set-power deviation into its inverse-step,
+  model-vs-reality and raw-vs-sample-plane (transmission-factor) components to
+  localize where it arises. See `docs/diagnostics/README.md`.
 
 ## [0.5.0] - 2026-09-30
 

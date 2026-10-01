@@ -161,6 +161,48 @@ def _plot_calibration(df, outdir):
     _save(fig, outdir, "calibration")
 
 
+def _plot_setpower_breakdown(df, outdir):
+    """End-to-end deviation split into inverse / model / factor components."""
+    comps = [
+        ("dev_sample_pct", "end-to-end (sample)"),
+        ("inverse_err_pct", "inverse (commanded-target)"),
+        ("model_err_pct", "model vs reality"),
+    ]
+    comps = [(c, lbl) for c, lbl in comps if c in df.columns]
+    if not comps:
+        return
+    lasers = sorted(df["laser"].unique()) if "laser" in df else [None]
+    fig, axes = plt.subplots(
+        1, len(lasers), figsize=(5 * len(lasers), 4), squeeze=False
+    )
+    for ax, laser in zip(axes[0], lasers):
+        sub = df[df["laser"] == laser] if laser is not None else df
+        x = sub["target"] if "target" in sub else range(len(sub))
+        for col, lbl in comps:
+            g = sub.groupby("target")[col].mean() if "target" in sub else None
+            if g is not None:
+                ax.plot(g.index, g.values, "o-", ms=4, label=lbl)
+            else:
+                ax.plot(list(x), sub[col], "o-", ms=4, label=lbl)
+        # raw-vs-sample gap = transmission-factor contribution
+        if {"dev_raw_pct", "dev_sample_pct"} <= set(sub.columns):
+            gr = sub.groupby("target").mean(numeric_only=True)
+            ax.plot(
+                gr.index,
+                gr["dev_raw_pct"] - gr["dev_sample_pct"],
+                "s--",
+                ms=4,
+                label="raw-vs-sample (factor)",
+            )
+        ax.axhline(0, color="k", lw=0.8)
+        ax.set_xlabel("target power [mW]")
+        ax.set_ylabel("deviation [%]")
+        ax.set_title("set-power breakdown — %s nm" % laser)
+        ax.grid(True, alpha=0.3)
+        ax.legend(fontsize=7)
+    _save(fig, outdir, "setpower_breakdown")
+
+
 _PLOTTERS = {
     "laser_stability": _plot_laser_stability,
     "meter_dark": _plot_meter_dark,
@@ -168,6 +210,7 @@ _PLOTTERS = {
     "hysteresis": _plot_hysteresis,
     "homing": _plot_homing,
     "setpower": _plot_setpower,
+    "setpower_breakdown": _plot_setpower_breakdown,
     "calibration": _plot_calibration,
 }
 

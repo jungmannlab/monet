@@ -125,6 +125,7 @@ ALL_EXPERIMENTS = [
     "homing",
     "calibration",
     "setpower",
+    "setpower_breakdown",
 ]
 
 
@@ -145,6 +146,12 @@ class ReproducibilityProbe:
         self.cycle = 0
         self._writers = {}  # name -> (file, csv.writer, fieldnames)
         os.makedirs(outdir, exist_ok=True)
+        # Tell the instrument where the meter physically is, so the
+        # transmission-factor / to_sample_plane logic is applied consistently.
+        try:
+            self.instrument.powermeter_position = args.powermeter_type
+        except Exception:
+            pass
 
     # ---- infrastructure ---------------------------------------------------
 
@@ -653,6 +660,108 @@ class ReproducibilityProbe:
                             "measured": measured,
                             "dev_pct": dev,
                             "att_pos": att_pos,
+                        },
+                    )
+
+    def setpower_breakdown(self, stop):
+        """Decompose the open-loop set-power path to localize the deviation.
+
+        For each (laser, target): set the power, then record the chosen
+        laser-power level and actual laser power, the achieved attenuator
+        angle, the model's predicted power for that state
+        (``instrument.power`` getter, sample plane), the raw meter reading, the
+        transmission factor, and the sample-plane reading. The derived errors
+        split the end-to-end deviation into:
+
+          inverse_err_pct  commanded(model) vs target -> the inverse step chose
+                           an angle whose model power isn't the target
+          model_err_pct    sample-measured vs commanded -> model vs reality at
+                           the achieved angle (fit residual / drift)
+          dev_raw vs dev_sample -> a raw-vs-sample-plane gap is the
+                           transmission factor (dev_raw - dev_sample)
+        """
+        if not getattr(self.instrument, "is_calibrated", False):
+            print("  (not calibrated; skipping setpower_breakdown)")
+            return
+        if not self.args.targets and not self.args.target_fracs:
+            print("  (no --targets/--target-fracs; skipping breakdown)")
+            return
+
+        def pct(a, b):
+            return (a - b) / b * 100.0 if b else float("nan")
+
+        fields = [
+            "laser",
+            "rep",
+            "target",
+            "commanded",
+            "achieved_angle",
+            "laser_power_level",
+            "laser_power_actual",
+            "raw",
+            "factor",
+            "sample",
+            "dev_raw_pct",
+            "dev_sample_pct",
+            "inverse_err_pct",
+            "model_err_pct",
+        ]
+        for laser in self._lasers():
+            self._select(laser, None, on=True)
+            for rep in range(self.args.reps):
+                for target in self._targets_for(laser):
+                    stop()
+                    try:
+                        self.instrument.power = target
+                        time.sleep(self.args.settle)
+                        commanded = float(self.instrument.power)
+                        angle = float(self.instrument.attenuator.curr_pos())
+                        lp_level = getattr(
+                            self.instrument, "curr_laserpower", None
+                        )
+                        try:
+                            lp_actual = float(
+                                self.instrument.lasers[laser].power
+                            )
+                        except Exception:
+                            lp_actual = float("nan")
+                        raw = self._read()
+                        try:
+                            factor = float(
+                                self.instrument._measurement_factor(laser)
+                            )
+                        except Exception:
+                            factor = float("nan")
+                        try:
+                            sample = float(
+                                self.instrument.to_sample_plane(raw, laser)
+                            )
+                        except Exception:
+                            sample = raw
+                    except Exception as exc:
+                        print(
+                            "  breakdown %s @ %s failed: %s"
+                            % (target, laser, exc)
+                        )
+                        continue
+                    self._log(
+                        "setpower_breakdown",
+                        fields,
+                        {
+                            "laser": laser,
+                            "rep": rep,
+                            "target": round(target, 4),
+                            "commanded": commanded,
+                            "achieved_angle": angle,
+                            "laser_power_level": lp_level,
+                            "laser_power_actual": lp_actual,
+                            "raw": raw,
+                            "factor": factor,
+                            "sample": sample,
+                            "dev_raw_pct": pct(raw, target),
+                            "dev_sample_pct": pct(sample, target),
+                            "inverse_err_pct": pct(commanded, target),
+                            "model_err_pct": pct(sample, commanded),
                         },
                     )
 

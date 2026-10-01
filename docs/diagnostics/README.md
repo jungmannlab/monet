@@ -21,6 +21,7 @@ exercises the real hardware path.
 | `homing` | read at an angle, **home** the mount, return, read again | whether homing shifts the angle→power mapping |
 | `calibration` | run a full sweep + fit repeatedly (dry-run, nothing written to the DB) — optionally over **variants** of step size (`--cal-steps`) and/or model (`--cal-models`); record fit params, RMS/max residual, within-sweep drift, point count, and predicted-vs-measured at reference angles | run-to-run fit variation, model adequacy, and **sampling-density (step) impact** |
 | `setpower` | set target powers open-loop from the calibration, measure the actual power | end-to-end reproducibility (what you ultimately care about) |
+| `setpower_breakdown` | like `setpower`, but also logs the chosen laser-power level/actual, the achieved attenuator angle, the model's predicted power (`commanded`), the raw and sample-plane readings and the transmission `factor` — and the derived `inverse_err_pct` / `model_err_pct` / raw-vs-sample gap | **where** the set-power deviation comes from: the inverse step (wrong angle), model-vs-reality, or a raw-vs-sample-plane (transmission factor) mismatch |
 
 Every CSV row carries `iso_time`, `elapsed_s` (since start) and `cycle` (which
 battery repeat), so all series share a clock and can be cross-correlated — e.g.
