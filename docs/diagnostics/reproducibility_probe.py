@@ -129,6 +129,7 @@ ALL_EXPERIMENTS = [
     "setpower_breakdown",
     "model_sweep",
     "drift_curve",
+    "power_warmup",
 ]
 
 
@@ -147,6 +148,7 @@ class ReproducibilityProbe:
         self.args = args
         self.t0 = time.time()
         self.cycle = 0
+        self.phase = None  # set by the weekend plan to tag CSV rows
         self._writers = {}  # name -> (file, csv.writer, fieldnames)
         os.makedirs(outdir, exist_ok=True)
         # Tell the instrument where the meter physically is, so the
@@ -160,7 +162,7 @@ class ReproducibilityProbe:
 
     def _log(self, name, fields, row):
         """Append one row to <outdir>/<name>.csv (header written once)."""
-        base = ["iso_time", "elapsed_s", "cycle"]
+        base = ["iso_time", "elapsed_s", "cycle", "phase"]
         header = base + fields
         if name not in self._writers:
             f = open(os.path.join(self.outdir, name + ".csv"), "a", newline="")
@@ -173,6 +175,7 @@ class ReproducibilityProbe:
             "iso_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "elapsed_s": round(time.time() - self.t0, 3),
             "cycle": self.cycle,
+            "phase": self.phase,
         }
         full.update(row)
         w.writerow({k: full.get(k) for k in header})
@@ -955,6 +958,73 @@ class ReproducibilityProbe:
                     },
                 )
 
+    def _warmup_levels(self, laser):
+        """Laser-power setpoints to step through in ``power_warmup``.
+
+        ``--warmup-powers`` (absolute setpoints) if given; else the config
+        protocol's ``laser_powers`` for this laser; else a single current
+        level (so the experiment degrades to a pure enable-settle watch)."""
+        if self.args.warmup_powers:
+            return list(self.args.warmup_powers)
+        proto = getattr(self.pc, "protocol", None) or {}
+        levels = (proto.get("laser_powers") or {}).get(laser)
+        if levels:
+            return list(levels)
+        cur = getattr(self.instrument, "curr_laserpower", None)
+        return [cur] if cur is not None else [None]
+
+    def power_warmup(self, stop):
+        """At a fixed angle, step the laser *output-power* setpoint and watch
+        the meter settle after each change -> the thermal transient of
+        (a) enabling emission (the first level, read right after the laser is
+        enabled) and (b) changing the laser power setpoint (each later level).
+
+        Logs ``t_since_change`` (seconds since the setpoint was applied) and the
+        reading, per (laser, level), so the settle time and overshoot are
+        visible. Watches each level for ``--warmup-watch`` s at
+        ``--warmup-interval`` s."""
+        angle = self._angle()
+        fields = [
+            "laser",
+            "level_index",
+            "laser_power_level",
+            "t_since_change",
+            "power",
+        ]
+        for laser, _power in self._operating_points():
+            self._select(laser, None, on=True)
+            self._set_angle(angle)
+            for li, level in enumerate(self._warmup_levels(laser)):
+                stop()
+                if level is not None and hasattr(
+                    self.instrument, "laserpower"
+                ):
+                    try:
+                        self.instrument.laserpower = level
+                    except Exception as exc:
+                        print(
+                            "  warmup %s level %s failed: %s"
+                            % (laser, level, exc)
+                        )
+                        continue
+                t_change = time.time()
+                watched = 0.0
+                while watched < self.args.warmup_watch:
+                    stop()
+                    self._log(
+                        "power_warmup",
+                        fields,
+                        {
+                            "laser": laser,
+                            "level_index": li,
+                            "laser_power_level": level,
+                            "t_since_change": round(time.time() - t_change, 3),
+                            "power": self._read(),
+                        },
+                    )
+                    time.sleep(self.args.warmup_interval)
+                    watched = time.time() - t_change
+
     # ---- driver -----------------------------------------------------------
 
     def run(self, experiments, stop):
@@ -974,6 +1044,132 @@ class ReproducibilityProbe:
                     stop()
                     time.sleep(min(1.0, self.args.cycle_interval - waited))
                     waited += 1.0
+
+    def _loop_for(self, fn, stop, duration_s, interval):
+        """Call ``fn`` repeatedly (bumping ``cycle``) for ~``duration_s``,
+        waiting ``interval`` s between calls (interruptibly)."""
+        start = time.time()
+        while time.time() - start < duration_s:
+            stop()
+            fn(stop)
+            self.cycle += 1
+            waited = 0.0
+            while waited < interval and (time.time() - start) < duration_s:
+                stop()
+                time.sleep(min(1.0, interval - waited))
+                waited += 1.0
+
+    def run_weekend_plan(self, stop):
+        """Staggered weekend protocol. Precondition: all lasers manually
+        powered to **standby** (power + interlock on) but **not enabled** to
+        lase.
+
+          Phase 1  for each ``--lasers`` line in turn: software-enable it, run
+                   ``power_warmup`` (the enable transient + each power-setpoint
+                   change) then ``drift_curve`` on a loop for ``--single-hours``.
+                   Because every line was already powered at standby, a later
+                   line has thermalised its power-on heat longer before being
+                   enabled -- so comparing the enable transients across lines
+                   separates *power-on/standby* warm-up from *emission* warm-up.
+          Phase 2  enable all lines together and loop ``drift_curve`` for
+                   ``--soak-hours`` (or until Ctrl-C) -- the multi-line aging
+                   soak under realistic all-lasing thermal load.
+
+        ``manifest.csv`` records each phase's wall-clock span and lasing set so
+        analyze_aging / analyze_warmup can place every curve on the global
+        timeline (and the per-phase since-enable clock = elapsed_s minus the
+        phase's elapsed_start_s)."""
+        import csv as _csv
+
+        lasers = self.args.lasers or (
+            [self.args.laser] if self.args.laser is not None else []
+        )
+        if not lasers:
+            print("  weekend plan needs --lasers; aborting")
+            return
+        saved = self.args.lasers
+        manifest = []
+
+        def _begin():
+            return (
+                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                round(time.time() - self.t0, 3),
+            )
+
+        def _record(phase, lasing, start):
+            iso0, el0 = start
+            manifest.append(
+                {
+                    "phase": phase,
+                    "lasing": "+".join(str(x) for x in lasing),
+                    "iso_start": iso0,
+                    "elapsed_start_s": el0,
+                    "iso_end": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "elapsed_end_s": round(time.time() - self.t0, 3),
+                }
+            )
+
+        single_s = self.args.single_hours * 3600.0
+        soak_s = (
+            self.args.soak_hours * 3600.0
+            if self.args.soak_hours
+            else float("inf")
+        )
+        try:
+            # ---- Phase 1: staggered single-line warm-up + aging ----
+            for idx, laser in enumerate(lasers):
+                self.phase = "single_%s" % laser
+                self.args.lasers = [laser]
+                start = _begin()
+                print(
+                    "[plan] phase %s: enable + warmup, then %.2f h single-line"
+                    % (self.phase, self.args.single_hours)
+                )
+                t_phase = time.time()
+                self.power_warmup(stop)
+                remaining = single_s - (time.time() - t_phase)
+                if remaining > 0:
+                    self._loop_for(
+                        self.drift_curve,
+                        stop,
+                        remaining,
+                        self.args.cycle_interval,
+                    )
+                _record(self.phase, [laser], start)
+                # keep the first line enabled as a long reference; optionally
+                # disable later lines to limit added bench heating
+                if idx > 0 and self.args.disable_after_single:
+                    self._select(laser, None, on=False)
+            # ---- Phase 2: multi-line soak ----
+            self.phase = "multi"
+            self.args.lasers = list(lasers)
+            start = _begin()
+            print("[plan] phase multi: enable all lines; aging soak")
+            for laser in lasers:  # ensure all are lasing together
+                self._select(laser, None, on=True)
+            self._loop_for(
+                self.drift_curve, stop, soak_s, self.args.cycle_interval
+            )
+            _record("multi", list(lasers), start)
+        finally:
+            self.args.lasers = saved
+            try:
+                mpath = os.path.join(self.outdir, "manifest.csv")
+                cols = [
+                    "phase",
+                    "lasing",
+                    "iso_start",
+                    "elapsed_start_s",
+                    "iso_end",
+                    "elapsed_end_s",
+                ]
+                with open(mpath, "w", newline="") as f:
+                    w = _csv.DictWriter(f, fieldnames=cols)
+                    w.writeheader()
+                    for row in manifest:
+                        w.writerow(row)
+            except Exception as exc:
+                print("  manifest write failed:", exc)
 
 
 def _build_pc(args):
@@ -1130,6 +1326,53 @@ def main(argv=None):
         "(default: config step)",
     )
     p.add_argument(
+        "--warmup-powers",
+        type=lambda s: [float(x) for x in s.split(",")],
+        default=None,
+        help="laser-power setpoints to step through in power_warmup "
+        "(default: the config protocol's laser_powers for each line)",
+    )
+    p.add_argument(
+        "--warmup-watch",
+        type=float,
+        default=120.0,
+        help="seconds to watch the meter settle after each power change "
+        "[power_warmup]",
+    )
+    p.add_argument(
+        "--warmup-interval",
+        type=float,
+        default=2.0,
+        help="seconds between reads while watching settle [power_warmup]",
+    )
+    p.add_argument(
+        "--plan",
+        choices=["weekend"],
+        default=None,
+        help="run a staggered multi-phase protocol instead of uniform cycles. "
+        "'weekend': per-line enable+warmup+aging, then an all-lines soak "
+        "(requires all lasers manually powered to standby first)",
+    )
+    p.add_argument(
+        "--single-hours",
+        type=float,
+        default=2.0,
+        help="hours of single-line warmup+aging per line [--plan weekend]",
+    )
+    p.add_argument(
+        "--soak-hours",
+        type=float,
+        default=None,
+        help="hours of the all-lines soak (default: until Ctrl-C) "
+        "[--plan weekend]",
+    )
+    p.add_argument(
+        "--disable-after-single",
+        action="store_true",
+        help="disable each line (except the first) after its single-line "
+        "phase, to limit bench heating [--plan weekend]",
+    )
+    p.add_argument(
         "--duration", type=float, default=60.0, help="stability [s]"
     )
     p.add_argument("--interval", type=float, default=5.0, help="stability [s]")
@@ -1183,7 +1426,10 @@ def main(argv=None):
     probe = ReproducibilityProbe(pc, args.outdir, args)
     print("Writing CSVs to %s/" % os.path.abspath(args.outdir))
     try:
-        probe.run(experiments, stop)
+        if args.plan == "weekend":
+            probe.run_weekend_plan(stop)
+        else:
+            probe.run(experiments, stop)
         print("Done.")
     except _Stop:
         print("\nInterrupted; wrote partial results.")

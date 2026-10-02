@@ -22,7 +22,8 @@ exercises the real hardware path.
 | `calibration` | run a full sweep + fit repeatedly (dry-run, nothing written to the DB) — optionally over **variants** of step size (`--cal-steps`) and/or model (`--cal-models`); record fit params, RMS/max residual, within-sweep drift, point count, and predicted-vs-measured at reference angles | run-to-run fit variation, model adequacy, and **sampling-density (step) impact** |
 | `setpower` | set target powers open-loop from the calibration, measure the actual power | end-to-end reproducibility (what you ultimately care about) |
 | `setpower_breakdown` | like `setpower`, but also logs the chosen laser-power level/actual, the achieved attenuator angle, the model's predicted power (`commanded`), the raw and sample-plane readings and the transmission `factor` — and the derived `inverse_err_pct` / `model_err_pct` / raw-vs-sample gap | **where** the set-power deviation comes from: the inverse step (wrong angle), model-vs-reality, or a raw-vs-sample-plane (transmission factor) mismatch |
-| `drift_curve` | re-acquire each laser's **full** attenuation curve, timestamped, on a loop (`--cycles`/`--cycle-interval`) over hours or a weekend; `--drift-step` sets the sampling | whether the calibrate-vs-use drift is a pure **amplitude** rescale (a one-point recal would fix it) or a **shape/phase** change — analyze with `analyze_drift.py` |
+| `drift_curve` | re-acquire each laser's **full** attenuation curve, timestamped, on a loop (`--cycles`/`--cycle-interval`) over hours or a weekend; `--drift-step` sets the sampling | whether the calibrate-vs-use drift is a pure **amplitude** rescale (a one-point recal would fix it) or a **shape/phase** change — analyze with `analyze_drift.py` / `analyze_aging.py` |
+| `power_warmup` | at a fixed angle, step the laser **output-power** setpoint (`--warmup-powers`) and watch the meter settle after each change (`--warmup-watch`/`--warmup-interval`), logging `t_since_change` | the thermal transient of **enabling emission** (first level) and of **changing laser power** (later levels): settle time + excursion — analyze with `analyze_warmup.py` |
 | `model_sweep` | for each operating point and step size: acquire one sweep, fit every candidate model (`--sweep-models`, default sinus / poly 3 / poly 5 / spline), then score each on **fresh off-grid test angles**; logs `fit_rms_pct` (biased), `test_rms_pct` (per-point relative — inflated by the trough), **`test_fullscale_pct`** (RMS error / max power — trough-robust), `n_points`, `acquire_time_s`, `fit_time_s`. `--spline-smoothing` overrides the spline's auto noise-aware smoothing | the **optimum model + step size**: lowest fresh-test error vs calibration cost. Rank on **`test_fullscale_pct`** (fit RMS is biased — a spline overfits it; per-point relative RMS is trough-dominated) |
 
 Every CSV row carries `iso_time`, `elapsed_s` (since start) and `cycle` (which
@@ -91,6 +92,40 @@ run finishes, or generate them later:
 
 ```bash
 python docs/diagnostics/plot_results.py docs/diagnostics/results/run_XXXX
+```
+
+## Weekend plan (staggered warm-up + aging over a whole weekend)
+
+`--plan weekend` runs a single continuous, multi-phase protocol (it must be one
+invocation — the probe disables lasers and re-homes on exit, so phases can't be
+split across runs). **Precondition:** manually power every laser to **standby**
+(power button + interlock key) but do **not** enable emission yet.
+
+- **Phase 1 — staggered single-line.** For each `--lasers` line in turn:
+  software-enable it, run `power_warmup` (enable + power-setpoint transients),
+  then loop `drift_curve` for `--single-hours`. Because every line was already
+  powered at standby, lines enabled *later* sat at standby longer — so comparing
+  their enable transients separates **power-on/standby** warm-up from the
+  **emission/enable** transient.
+- **Phase 2 — multi-line soak.** Enable all lines together and loop
+  `drift_curve` for `--soak-hours` (or until Ctrl-C) under realistic all-lasing
+  thermal load.
+
+Rows are tagged with a `phase` column, and `manifest.csv` records each phase's
+wall-clock span + lasing set, so the analyzers can place every curve on the
+global timeline. `--disable-after-single` disables each line (except the first,
+kept as a long reference) after its single-line phase to limit bench heating.
+
+```bash
+python docs/diagnostics/reproducibility_probe.py Skylab --plan weekend \
+    --lasers 405,488,560,642 \
+    --single-hours 2 --soak-hours 48 \
+    --drift-step 2.5 --settle 0.5 --averaging 20 --switch-time 3 \
+    --warmup-powers 50,200,500 --warmup-watch 300 --warmup-interval 2 \
+    --outdir docs/diagnostics/results/weekend_$(date +%Y%m%d_%H%M)
+# then, per run:
+python docs/diagnostics/analyze_warmup.py docs/diagnostics/results/weekend_XXXX
+python docs/diagnostics/analyze_aging.py  docs/diagnostics/results/weekend_XXXX
 ```
 
 ## Calibration aging (is the deviation drift or a systematic bias?)
