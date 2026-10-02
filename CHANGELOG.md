@@ -11,6 +11,18 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 ## [Unreleased]
 
 ### Added
+- **Spline attenuation model (`SplineAttenuationCurveAnalyzer`).** A scipy
+  smoothing-spline analyzer for attenuation curves the sinusoidal / polynomial
+  models don't capture; the smoothing factor rejects measurement noise (good
+  for dim lasers) and it round-trips through the calibration DB via its
+  knots/coefficients. Selectable as `spline` in `analysis.model_spec`, the
+  Calibrate tab's model dropdown, and the probe's model experiments.
+- **Reproducibility probe `model_sweep` experiment.** Calibrates with every
+  candidate model at several step sizes and scores each on *fresh off-grid test
+  angles* (unbiased generalization error — a spline overfits the fit RMS),
+  logging `test_rms_pct` with `n_points` / `acquire_time_s` / `fit_time_s` to
+  find the best model + step vs calibration cost (`--sweep-models`,
+  `--sweep-steps`, `--n-test`; plotted by `plot_results.py`).
 - **Reproducibility probe (`docs/diagnostics/reproducibility_probe.py`).** A
   stand-alone rig diagnostic that isolates the sources of calibrate-vs-measure
   irreproducibility — laser stability, meter dark drift, attenuator

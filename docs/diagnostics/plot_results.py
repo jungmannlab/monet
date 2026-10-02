@@ -203,6 +203,37 @@ def _plot_setpower_breakdown(df, outdir):
     _save(fig, outdir, "setpower_breakdown")
 
 
+def _plot_model_sweep(df, outdir):
+    """Fresh-test error (and calibration cost) vs step size, per model."""
+    if "test_rms_pct" not in df.columns:
+        return
+    lasers = sorted(df["laser"].unique()) if "laser" in df else [None]
+    fig, axes = plt.subplots(
+        2, len(lasers), figsize=(5 * len(lasers), 8), squeeze=False
+    )
+    for j, laser in enumerate(lasers):
+        sub = df[df["laser"] == laser] if laser is not None else df
+        ax = axes[0][j]
+        for model, g in sub.groupby("model"):
+            gg = g.groupby("step")["test_rms_pct"].mean()
+            ax.plot(gg.index, gg.values, "o-", ms=4, label=model)
+        ax.set_xlabel("step size [deg]")
+        ax.set_ylabel("fresh-test RMS [%]")
+        ax.set_title("generalization error — %s nm" % laser)
+        ax.grid(True, alpha=0.3)
+        ax.legend(fontsize=7)
+        # calibration cost vs step (model-independent; use acquire time)
+        axc = axes[1][j]
+        if "acquire_time_s" in sub.columns:
+            gc = sub.groupby("step")["acquire_time_s"].mean()
+            axc.plot(gc.index, gc.values, "s-", color="gray")
+            axc.set_ylabel("sweep acquire time [s]")
+        axc.set_xlabel("step size [deg]")
+        axc.set_title("calibration cost — %s nm" % laser)
+        axc.grid(True, alpha=0.3)
+    _save(fig, outdir, "model_sweep")
+
+
 _PLOTTERS = {
     "laser_stability": _plot_laser_stability,
     "meter_dark": _plot_meter_dark,
@@ -211,6 +242,7 @@ _PLOTTERS = {
     "homing": _plot_homing,
     "setpower": _plot_setpower,
     "setpower_breakdown": _plot_setpower_breakdown,
+    "model_sweep": _plot_model_sweep,
     "calibration": _plot_calibration,
 }
 

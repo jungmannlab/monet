@@ -64,6 +64,7 @@ from datetime import datetime
 import numpy as np
 
 import monet
+import monet.analysis as analysis
 import monet.calibrate as mca
 from monet import POWERMETER_BFP, normalize_powermeter_type
 
@@ -126,6 +127,7 @@ ALL_EXPERIMENTS = [
     "calibration",
     "setpower",
     "setpower_breakdown",
+    "model_sweep",
 ]
 
 
@@ -765,6 +767,138 @@ class ReproducibilityProbe:
                         },
                     )
 
+    def model_sweep(self, stop):
+        """Find the best analysis model + step size by cross-validation.
+
+        For each operating point and each step size: acquire ONE calibration
+        sweep, fit every candidate model to it, then measure a set of FRESH
+        angles that are *not* on the calibration grid and score each model on
+        those. The fresh-angle ``test_rms_pct`` is the unbiased
+        generalization error (fit RMS is biased — a spline overfits it to ~0),
+        so the optimum = lowest test_rms at an acceptable calibration cost
+        (logged as n_points / acquire_time_s / fit_time_s).
+        """
+        import time as _t
+
+        from monet.util import load_class
+
+        models = self.args.sweep_models or [
+            "sinus",
+            "poly deg 3",
+            "poly deg 5",
+            "spline",
+        ]
+        ana = self.instrument.config["analysis"]
+        orig_cp = ana["classpath"]
+        orig_kw = dict(ana.get("init_kwargs", {}))
+        lo = orig_kw.get("min", 0)
+        hi = orig_kw.get("max", 180)
+        if not np.isfinite(lo):
+            lo = 0
+        if not np.isfinite(hi):
+            hi = 180
+        steps = self.args.sweep_steps or [orig_kw.get("step") or 5]
+        n_test = self.args.n_test
+        # fresh test angles, offset so they never coincide with a sweep grid
+        test_angles = (np.linspace(lo, hi, n_test + 2)[1:-1]).astype(float)
+        test_angles = [float(a) + 0.37 for a in test_angles]
+
+        def rel(y, pred):
+            y = np.asarray(y, float)
+            pred = np.asarray(pred, float)
+            ok = np.isfinite(y) & np.isfinite(pred) & (y > 0)
+            if not ok.any():
+                return float("nan"), float("nan")
+            r = np.abs(y[ok] - pred[ok]) / y[ok]
+            return (
+                float(np.sqrt(np.mean(r**2)) * 100.0),
+                float(np.max(r) * 100.0),
+            )
+
+        fields = [
+            "laser",
+            "laser_power",
+            "step",
+            "model",
+            "n_points",
+            "acquire_time_s",
+            "fit_time_s",
+            "fit_rms_pct",
+            "test_rms_pct",
+            "test_max_pct",
+        ]
+        try:
+            for laser, power in self._operating_points():
+                self._select(laser, power, on=True)
+                for step in steps:
+                    st = step or 5
+                    xs = np.arange(lo, hi + st, st)
+                    # one calibration sweep
+                    t0 = _t.time()
+                    ys = []
+                    for a in xs:
+                        stop()
+                        self.instrument.attenuator.set(float(a))
+                        _t.sleep(self.args.settle)
+                        ys.append(self._read())
+                    acquire_time = _t.time() - t0
+                    xs = np.asarray(xs, float)
+                    ys = np.asarray(ys, float)
+                    # one fresh test set (shared by all models -> fair)
+                    tmeas = []
+                    for a in test_angles:
+                        stop()
+                        self.instrument.attenuator.set(a)
+                        _t.sleep(self.args.settle)
+                        tmeas.append(self._read())
+                    tmeas = np.asarray(tmeas, float)
+                    for name in models:
+                        stop()
+                        cp, extra = analysis.model_spec(name)
+                        kw = dict(orig_kw)
+                        kw.pop("polydegree", None)
+                        kw.update(extra)
+                        if step is not None:
+                            kw["step"] = step
+                        try:
+                            anlz = load_class(cp, kw)
+                            tf = _t.time()
+                            anlz.fit(xs, ys)
+                            fit_time = _t.time() - tf
+                        except Exception as exc:
+                            print(
+                                "  model_sweep fit %s step=%s failed: %s"
+                                % (name, step, exc)
+                            )
+                            continue
+                        fit_rms, _ = rel(ys, anlz.estimate_power(xs))
+                        test_rms, test_max = rel(
+                            tmeas, anlz.estimate_power(np.asarray(test_angles))
+                        )
+                        self._log(
+                            "model_sweep",
+                            fields,
+                            {
+                                "laser": laser,
+                                "laser_power": power,
+                                "step": step,
+                                "model": name,
+                                "n_points": len(xs),
+                                "acquire_time_s": round(acquire_time, 3),
+                                "fit_time_s": round(fit_time, 4),
+                                "fit_rms_pct": fit_rms,
+                                "test_rms_pct": test_rms,
+                                "test_max_pct": test_max,
+                            },
+                        )
+        finally:
+            ana["classpath"] = orig_cp
+            ana["init_kwargs"] = orig_kw
+            try:
+                self.instrument.analyzer = load_class(orig_cp, orig_kw)
+            except Exception:
+                pass
+
     # ---- driver -----------------------------------------------------------
 
     def run(self, experiments, stop):
@@ -905,6 +1039,25 @@ def main(argv=None):
         default=None,
         help="comma-separated models for the calibration experiment, e.g. "
         "'sinus,poly deg 5' (default: the config's model)",
+    )
+    p.add_argument(
+        "--sweep-models",
+        type=lambda s: [x.strip() for x in s.split(",")],
+        default=None,
+        help="models for the model_sweep experiment (default: "
+        "sinus,poly deg 3,poly deg 5,spline)",
+    )
+    p.add_argument(
+        "--sweep-steps",
+        type=lambda s: [float(x) for x in s.split(",")],
+        default=None,
+        help="attenuator step sizes for model_sweep (default: config step)",
+    )
+    p.add_argument(
+        "--n-test",
+        type=int,
+        default=12,
+        help="number of fresh off-grid test angles for model_sweep",
     )
     p.add_argument(
         "--duration", type=float, default=60.0, help="stability [s]"
