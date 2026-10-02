@@ -925,6 +925,146 @@ class PolynomAttenuationCurveAnalyzer(AbstractAttenuationCurveAnalyzer):
         plt.close(fig)
 
 
+class SplineAttenuationCurveAnalyzer(AbstractAttenuationCurveAnalyzer):
+    """Smoothing-spline attenuation model (scipy ``splrep``/``splev``).
+
+    A flexible, non-parametric fit for attenuation curves the sinusoidal /
+    polynomial models do not capture. The smoothing factor ``s`` trades fit
+    against noise: ``s=0`` interpolates every point (and overfits noise), larger
+    values smooth. The default targets ~1% RMS of the power span, so it rejects
+    measurement noise instead of chasing it — important for dim lasers. Judge it
+    on *fresh* measurements, not the fit residual (a spline can drive the fit
+    residual to ~0 by overfitting).
+
+    Serialised compactly via the spline's knots/coefficients (``t*``/``c*``/
+    ``spl_k``), so it round-trips through the calibration database.
+
+    analysis_parameters: ``min``, ``max``, ``step`` and optional ``smoothing``
+    (the absolute ``s``; overrides the auto default). Assumes the calibrated
+    range is monotonic in power (as a calibration slope is), which the inverse
+    relies on.
+    """
+
+    def __init__(self, analysis_parameters):
+        self._tck = None  # (knots, coeffs, degree) from scipy.splrep
+        self.curr_params = None
+        self.analysis_parameters = analysis_parameters
+
+    # --- abstract-method implementations (satisfy the ABC) ---------------
+
+    def _model_function(self, x, **pars):
+        return self.estimate_power(x)
+
+    def _model_function_inv(self, y, **pars):
+        return self.estimate(y)
+
+    def _model_function_estinit(self, y, x):
+        return {}
+
+    def output_range(self):
+        lo = self.analysis_parameters.get("min", 0)
+        hi = self.analysis_parameters.get("max", 180)
+        ys = np.asarray(self.estimate_power(np.linspace(lo, hi, 200)), float)
+        return [float(np.min(ys)), float(np.max(ys))]
+
+    # --- fitting / evaluation -------------------------------------------
+
+    def fit(self, x, y):
+        """Fit a smoothing cubic spline to (control value, power) data."""
+        from scipy.interpolate import splrep
+
+        x = np.asarray(x, dtype=float)
+        y = np.asarray(y, dtype=float)
+        order = np.argsort(x)
+        x, y = x[order], y[order]
+        # splrep needs strictly increasing x; collapse duplicate angles.
+        keep = np.concatenate(([True], np.diff(x) > 0))
+        x, y = x[keep], y[keep]
+        s = self.analysis_parameters.get("smoothing")
+        if s is None:
+            # Target the measurement-noise level, so the spline smooths noise
+            # instead of ringing through it. Estimate noise robustly from the
+            # second differences (Gasser): sigma ~ MAD(diff2)/0.6745/sqrt(6).
+            if len(y) >= 5:
+                d2 = np.diff(y, 2)
+                sigma = np.median(np.abs(d2)) / 0.6745 / np.sqrt(6.0)
+                sigma = max(float(sigma), 1e-12)
+                s = len(x) * sigma**2
+            else:
+                s = 0.0
+        k = 3 if len(x) > 3 else max(1, len(x) - 1)
+        self._tck = splrep(x, y, k=k, s=float(s))
+        self.curr_params = self._tck_to_params(self._tck)
+
+    def estimate_power(self, x):
+        from scipy.interpolate import splev
+
+        return splev(np.asarray(x, dtype=float), self._tck)
+
+    def estimate(self, y):
+        """Inverse: control value for a desired power (monotonic range)."""
+        from scipy.interpolate import splev
+
+        lo = self.analysis_parameters.get("min", 0)
+        hi = self.analysis_parameters.get("max", 180)
+        grid = np.linspace(lo, hi, 2001)
+        p = np.asarray(splev(grid, self._tck), dtype=float)
+        order = np.argsort(p)  # monotonic-range assumption
+        return np.interp(y, p[order], grid[order])
+
+    def get_model(self):
+        if self._tck is not None:
+            return self._tck_to_params(self._tck)
+        return self.curr_params
+
+    def _tck_to_params(self, tck):
+        t, c, k = tck
+        params = {"spl_k": int(k)}
+        for i, v in enumerate(np.asarray(t, dtype=float)):
+            params["t{:d}".format(i)] = float(v)
+        for i, v in enumerate(np.asarray(c, dtype=float)):
+            params["c{:d}".format(i)] = float(v)
+        return params
+
+    def load_model(self, model_parameters):
+        t_keys = sorted(
+            (k for k in model_parameters if re.fullmatch(r"t\d+", str(k))),
+            key=lambda k: int(str(k)[1:]),
+        )
+        c_keys = sorted(
+            (k for k in model_parameters if re.fullmatch(r"c\d+", str(k))),
+            key=lambda k: int(str(k)[1:]),
+        )
+        if not t_keys or not c_keys:
+            raise ValueError(
+                "spline model parameters (t0.., c0..) not found in {}. This "
+                "calibration was likely made with a different analysis model; "
+                "recalibrate with the current model.".format(
+                    sorted(map(str, model_parameters.keys()))
+                )
+            )
+        t = np.array([model_parameters[k] for k in t_keys], dtype=float)
+        c = np.array([model_parameters[k] for k in c_keys], dtype=float)
+        k = int(model_parameters.get("spl_k", 3))
+        self._tck = (t, c, k)
+        self.curr_params = dict(model_parameters)
+
+    def plot(self, fname, xlabel=None, ylabel=None, title=None):
+        """Plot the fitted spline over the calibrated range."""
+        plt.switch_backend("agg")
+        fig, ax = plt.subplots()
+        lo = self.analysis_parameters.get("min", 0)
+        hi = self.analysis_parameters.get("max", 180)
+        grid = np.linspace(lo, hi, 200)
+        ax.plot(grid, np.asarray(self.estimate_power(grid), float))
+        ax.set_xlabel(xlabel or "control value")
+        ax.set_ylabel(ylabel or "power")
+        ax.set_title(title or "spline fit")
+        ax.grid(True, alpha=0.3)
+        fig.savefig(fname)
+        plt.close(fig)
+
+
 def _model_residual(name, y, pred):
     """Relative residual (percent) of ``pred`` against ``y`` for a model."""
     y = np.asarray(y, dtype=float)
@@ -961,6 +1101,8 @@ def model_spec(name):
         )
     if name == "linear":
         return ("monet.analysis.LinearCurveAnalyzer", {})
+    if name == "spline":
+        return ("monet.analysis.SplineAttenuationCurveAnalyzer", {})
     return ("monet.analysis.SinusAttenuationCurveAnalyzer", {})
 
 
@@ -976,6 +1118,8 @@ def model_name_from_config(classpath, init_kwargs=None):
         return "sinus"
     if cls == "LinearCurveAnalyzer":
         return "linear"
+    if cls == "SplineAttenuationCurveAnalyzer":
+        return "spline"
     if cls == "PolynomAttenuationCurveAnalyzer":
         deg = (init_kwargs or {}).get("polydegree")
         return "poly deg {}".format(deg) if deg is not None else "poly"

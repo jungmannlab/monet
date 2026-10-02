@@ -878,6 +878,7 @@ class CalibrateTab(QWidget):
         ("Polynomial (deg 4)", "poly deg 4"),
         ("Polynomial (deg 5)", "poly deg 5"),
         ("Polynomial (deg 6)", "poly deg 6"),
+        ("Spline (smoothing)", "spline"),
     ]
 
     def _build_ui(self):
