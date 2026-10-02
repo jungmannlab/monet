@@ -205,7 +205,13 @@ def _plot_setpower_breakdown(df, outdir):
 
 def _plot_model_sweep(df, outdir):
     """Fresh-test error (and calibration cost) vs step size, per model."""
-    if "test_rms_pct" not in df.columns:
+    # Prefer the trough-robust full-scale metric; fall back to relative.
+    ycol = (
+        "test_fullscale_pct"
+        if "test_fullscale_pct" in df.columns
+        else "test_rms_pct"
+    )
+    if ycol not in df.columns:
         return
     lasers = sorted(df["laser"].unique()) if "laser" in df else [None]
     fig, axes = plt.subplots(
@@ -215,10 +221,14 @@ def _plot_model_sweep(df, outdir):
         sub = df[df["laser"] == laser] if laser is not None else df
         ax = axes[0][j]
         for model, g in sub.groupby("model"):
-            gg = g.groupby("step")["test_rms_pct"].mean()
+            gg = g.groupby("step")[ycol].mean()
             ax.plot(gg.index, gg.values, "o-", ms=4, label=model)
         ax.set_xlabel("step size [deg]")
-        ax.set_ylabel("fresh-test RMS [%]")
+        ax.set_ylabel(
+            "fresh-test error [%% full-scale]"
+            if ycol == "test_fullscale_pct"
+            else "fresh-test RMS [%]"
+        )
         ax.set_title("generalization error — %s nm" % laser)
         ax.grid(True, alpha=0.3)
         ax.legend(fontsize=7)

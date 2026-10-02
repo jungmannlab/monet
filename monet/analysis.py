@@ -982,9 +982,16 @@ class SplineAttenuationCurveAnalyzer(AbstractAttenuationCurveAnalyzer):
         x, y = x[keep], y[keep]
         s = self.analysis_parameters.get("smoothing")
         if s is None:
-            # target ~1% of the power span as RMS residual (noise rejection)
-            span = float(np.ptp(y)) or 1.0
-            s = len(x) * (0.01 * span) ** 2
+            # Target the measurement-noise level, so the spline smooths noise
+            # instead of ringing through it. Estimate noise robustly from the
+            # second differences (Gasser): sigma ~ MAD(diff2)/0.6745/sqrt(6).
+            if len(y) >= 5:
+                d2 = np.diff(y, 2)
+                sigma = np.median(np.abs(d2)) / 0.6745 / np.sqrt(6.0)
+                sigma = max(float(sigma), 1e-12)
+                s = len(x) * sigma**2
+            else:
+                s = 0.0
         k = 3 if len(x) > 3 else max(1, len(x) - 1)
         self._tck = splrep(x, y, k=k, s=float(s))
         self.curr_params = self._tck_to_params(self._tck)

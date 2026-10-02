@@ -803,17 +803,30 @@ class ReproducibilityProbe:
         test_angles = (np.linspace(lo, hi, n_test + 2)[1:-1]).astype(float)
         test_angles = [float(a) + 0.37 for a in test_angles]
 
-        def rel(y, pred):
+        def errors(y, pred):
+            """Return (rel_rms%, rel_max%, fullscale_rms%).
+
+            rel_* are per-point relative errors (inflated by low-power trough
+            points); fullscale is RMS error / max|power| — the trough-robust
+            metric to rank models on.
+            """
             y = np.asarray(y, float)
             pred = np.asarray(pred, float)
-            ok = np.isfinite(y) & np.isfinite(pred) & (y > 0)
+            ok = np.isfinite(y) & np.isfinite(pred)
             if not ok.any():
-                return float("nan"), float("nan")
-            r = np.abs(y[ok] - pred[ok]) / y[ok]
-            return (
-                float(np.sqrt(np.mean(r**2)) * 100.0),
-                float(np.max(r) * 100.0),
-            )
+                return float("nan"), float("nan"), float("nan")
+            resid = y[ok] - pred[ok]
+            scale = np.max(np.abs(y[ok])) or 1.0
+            fs = float(np.sqrt(np.mean(resid**2)) / scale * 100.0)
+            okr = ok & (y > 0)
+            if okr.any():
+                r = np.abs(y[okr] - pred[okr]) / y[okr]
+                return (
+                    float(np.sqrt(np.mean(r**2)) * 100.0),
+                    float(np.max(r) * 100.0),
+                    fs,
+                )
+            return float("nan"), float("nan"), fs
 
         fields = [
             "laser",
@@ -826,6 +839,7 @@ class ReproducibilityProbe:
             "fit_rms_pct",
             "test_rms_pct",
             "test_max_pct",
+            "test_fullscale_pct",
         ]
         try:
             for laser, power in self._operating_points():
@@ -860,6 +874,10 @@ class ReproducibilityProbe:
                         kw.update(extra)
                         if step is not None:
                             kw["step"] = step
+                        if name == "spline" and (
+                            self.args.spline_smoothing is not None
+                        ):
+                            kw["smoothing"] = self.args.spline_smoothing
                         try:
                             anlz = load_class(cp, kw)
                             tf = _t.time()
@@ -871,8 +889,8 @@ class ReproducibilityProbe:
                                 % (name, step, exc)
                             )
                             continue
-                        fit_rms, _ = rel(ys, anlz.estimate_power(xs))
-                        test_rms, test_max = rel(
+                        fit_rms, _, _ = errors(ys, anlz.estimate_power(xs))
+                        test_rms, test_max, test_fs = errors(
                             tmeas, anlz.estimate_power(np.asarray(test_angles))
                         )
                         self._log(
@@ -889,6 +907,7 @@ class ReproducibilityProbe:
                                 "fit_rms_pct": fit_rms,
                                 "test_rms_pct": test_rms,
                                 "test_max_pct": test_max,
+                                "test_fullscale_pct": test_fs,
                             },
                         )
         finally:
@@ -1058,6 +1077,13 @@ def main(argv=None):
         type=int,
         default=12,
         help="number of fresh off-grid test angles for model_sweep",
+    )
+    p.add_argument(
+        "--spline-smoothing",
+        type=float,
+        default=None,
+        help="override the spline smoothing factor s in model_sweep "
+        "(default: auto noise-aware)",
     )
     p.add_argument(
         "--duration", type=float, default=60.0, help="stability [s]"

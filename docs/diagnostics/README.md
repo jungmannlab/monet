@@ -22,7 +22,7 @@ exercises the real hardware path.
 | `calibration` | run a full sweep + fit repeatedly (dry-run, nothing written to the DB) — optionally over **variants** of step size (`--cal-steps`) and/or model (`--cal-models`); record fit params, RMS/max residual, within-sweep drift, point count, and predicted-vs-measured at reference angles | run-to-run fit variation, model adequacy, and **sampling-density (step) impact** |
 | `setpower` | set target powers open-loop from the calibration, measure the actual power | end-to-end reproducibility (what you ultimately care about) |
 | `setpower_breakdown` | like `setpower`, but also logs the chosen laser-power level/actual, the achieved attenuator angle, the model's predicted power (`commanded`), the raw and sample-plane readings and the transmission `factor` — and the derived `inverse_err_pct` / `model_err_pct` / raw-vs-sample gap | **where** the set-power deviation comes from: the inverse step (wrong angle), model-vs-reality, or a raw-vs-sample-plane (transmission factor) mismatch |
-| `model_sweep` | for each operating point and step size: acquire one sweep, fit every candidate model (`--sweep-models`, default sinus / poly 3 / poly 5 / spline), then score each on **fresh off-grid test angles**; logs `fit_rms_pct` (biased), **`test_rms_pct`** (unbiased generalization error), `n_points`, `acquire_time_s`, `fit_time_s` | the **optimum model + step size**: lowest fresh-test error vs calibration cost. Fit RMS is biased (a spline overfits it to ~0), so rank on `test_rms_pct` |
+| `model_sweep` | for each operating point and step size: acquire one sweep, fit every candidate model (`--sweep-models`, default sinus / poly 3 / poly 5 / spline), then score each on **fresh off-grid test angles**; logs `fit_rms_pct` (biased), `test_rms_pct` (per-point relative — inflated by the trough), **`test_fullscale_pct`** (RMS error / max power — trough-robust), `n_points`, `acquire_time_s`, `fit_time_s`. `--spline-smoothing` overrides the spline's auto noise-aware smoothing | the **optimum model + step size**: lowest fresh-test error vs calibration cost. Rank on **`test_fullscale_pct`** (fit RMS is biased — a spline overfits it; per-point relative RMS is trough-dominated) |
 
 Every CSV row carries `iso_time`, `elapsed_s` (since start) and `cycle` (which
 battery repeat), so all series share a clock and can be cross-correlated — e.g.
@@ -110,11 +110,13 @@ Plot each CSV against `iso_time`/`elapsed_s`. Rough guide:
 - **`calibration` `rms_pct`/`dev_pct` vary run-to-run while `drift_pct` stays
   small** → fit/model noise, not drift; try a different model (see the Calibrate
   tab's model comparison). If `drift_pct` grows across runs → source drift.
-- **`model_sweep`** → in `model_sweep.png`, read `test_rms_pct` (fresh-angle
-  generalization error) vs step size, one line per model, per laser; the lowest
-  curve is the best model, and the knee against the `acquire_time_s` panel is
-  the step size worth paying for. Ignore `fit_rms_pct` for ranking — a spline
-  drives it to ~0 by overfitting; only the fresh-test error is honest.
+- **`model_sweep`** → in `model_sweep.png`, read `test_fullscale_pct` (fresh
+  off-grid error as % of full scale) vs step size, one line per model, per
+  laser; the lowest curve is the best model, and the knee against the
+  `acquire_time_s` panel is the step size worth paying for. Ignore `fit_rms_pct`
+  (a spline overfits it to ~0) and don't rank on `test_rms_pct` (per-point
+  relative error is dominated by the low-power trough) — the full-scale metric
+  is the honest one.
 - **`calibration` across `--cal-steps` / `--cal-models`** → compare `rms_pct`
   and `dev_pct` grouped by `step` and `model_variant` (the `calibration.png`
   panels): if finer steps or a different model markedly lower both, sampling
