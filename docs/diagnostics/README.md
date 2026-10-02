@@ -93,6 +93,36 @@ run finishes, or generate them later:
 python docs/diagnostics/plot_results.py docs/diagnostics/results/run_XXXX
 ```
 
+## Calibration aging (is the deviation drift or a systematic bias?)
+
+A `drift_curve` run also feeds `analyze_aging.py`, which turns the periodic
+full-curve sweeps into a **calibration-aging matrix** without any extra hardware
+pass. It fits each cycle's curve and asks: how well would a calibration made at
+hour 0 set power at hour *t*, as it ages? For each target it inverts the
+reference (oldest) calibration to an angle and reads the *actual* power off the
+later measured curve.
+
+```bash
+python docs/diagnostics/analyze_aging.py docs/diagnostics/results/run_XXXX \
+    --model "poly deg 5" --ref-cycle 0 --target-fracs 0.25,0.5,0.9
+```
+
+It separates the two candidate causes of the calibrate-vs-use deviation:
+
+- **Fresh floor** (recalibrate at use time, the matrix diagonal) — if this is
+  already high, the deviation is a **systematic model/factor bias**, not aging.
+- **Stale cal** (oldest calibration, aged) vs **+ one-point rescale** — if stale
+  rises with age and one-point rescale pulls it back near the fresh floor, the
+  deviation is **drift** and a quick one-point recal fixes it.
+- The bottom row (none / best-scale / affine curve residual) says whether that
+  drift is a pure **amplitude** change (rescale works), a **background** shift
+  (needs scale+offset), or a **shape/phase** change (rescale can't fix it).
+
+For this to be meaningful the `drift_curve` run should use a **fine
+`--drift-step`** (so the inverse is accurate) and ideally start on a **cold
+laser left on continuously** (a single `--lasers` line) so the warm-up transient
+is captured — see the aging command at the bottom of "Running".
+
 ## Interpreting the output
 
 Plot each CSV against `iso_time`/`elapsed_s`. Rough guide:
