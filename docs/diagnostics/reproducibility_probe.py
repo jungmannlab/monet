@@ -128,6 +128,7 @@ ALL_EXPERIMENTS = [
     "setpower",
     "setpower_breakdown",
     "model_sweep",
+    "drift_curve",
 ]
 
 
@@ -918,6 +919,42 @@ class ReproducibilityProbe:
             except Exception:
                 pass
 
+    def drift_curve(self, stop):
+        """Re-acquire each laser's full attenuation curve, timestamped, so a
+        later analysis can tell whether the drift between calibration and use
+        is a pure *amplitude* rescale (a one-point measurement would correct
+        the stored calibration) or a *shape/phase* change (it would not).
+
+        Designed to run on a loop (``--cycles`` / ``--cycle-interval``) for
+        hours or a weekend: each cycle writes one full curve per laser.
+        """
+        ana = self.instrument.config["analysis"]
+        kw = ana.get("init_kwargs", {}) or {}
+        lo = kw.get("min", 0)
+        hi = kw.get("max", 180)
+        if not np.isfinite(lo):
+            lo = 0
+        if not np.isfinite(hi):
+            hi = 180
+        step = self.args.drift_step or kw.get("step") or 5
+        angles = np.arange(lo, hi + step, step)
+        for laser, power in self._operating_points():
+            self._select(laser, power, on=True)
+            for a in angles:
+                stop()
+                self.instrument.attenuator.set(float(a))
+                time.sleep(self.args.settle)
+                self._log(
+                    "drift_curve",
+                    ["laser", "laser_power", "angle", "power"],
+                    {
+                        "laser": laser,
+                        "laser_power": power,
+                        "angle": float(a),
+                        "power": self._read(),
+                    },
+                )
+
     # ---- driver -----------------------------------------------------------
 
     def run(self, experiments, stop):
@@ -1084,6 +1121,13 @@ def main(argv=None):
         default=None,
         help="override the spline smoothing factor s in model_sweep "
         "(default: auto noise-aware)",
+    )
+    p.add_argument(
+        "--drift-step",
+        type=float,
+        default=None,
+        help="attenuator step for the drift_curve experiment "
+        "(default: config step)",
     )
     p.add_argument(
         "--duration", type=float, default=60.0, help="stability [s]"
