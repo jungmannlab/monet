@@ -1007,9 +1007,14 @@ class ReproducibilityProbe:
                             % (laser, level, exc)
                         )
                         continue
+                # the enable transient (first level) is watched for longer
+                # (--enable-watch) than the later power-change transients
+                watch = self.args.warmup_watch
+                if li == 0 and self.args.enable_watch:
+                    watch = self.args.enable_watch
                 t_change = time.time()
                 watched = 0.0
-                while watched < self.args.warmup_watch:
+                while watched < watch:
                     stop()
                     self._log(
                         "power_warmup",
@@ -1071,14 +1076,20 @@ class ReproducibilityProbe:
                    line has thermalised its power-on heat longer before being
                    enabled -- so comparing the enable transients across lines
                    separates *power-on/standby* warm-up from *emission* warm-up.
-          Phase 2  enable all lines together and loop ``drift_curve`` for
-                   ``--soak-hours`` (or until Ctrl-C) -- the multi-line aging
-                   soak under realistic all-lasing thermal load.
+          Phase 2  enable all lines together and loop ``drift_curve`` until the
+                   ``--max-hours`` total budget (or ``--soak-hours``) is spent,
+                   then shut down -- the multi-line aging soak under realistic
+                   all-lasing thermal load.
 
-        ``manifest.csv`` records each phase's wall-clock span and lasing set so
-        analyze_aging / analyze_warmup can place every curve on the global
-        timeline (and the per-phase since-enable clock = elapsed_s minus the
-        phase's elapsed_start_s)."""
+        Lines named in ``--disable-after-single`` are disabled after their own
+        single-line phase (cooling at standby) and re-enabled for the soak;
+        lines not named stay continuously enabled. Comparing a disabled line to
+        a kept-enabled one shows whether disabling loses the thermalisation (a
+        re-enable transient at soak start). ``manifest.csv`` records each phase's
+        wall-clock span, the lasing set, whether the single line was disabled
+        afterwards, and which lines were re-enabled for the soak -- so the
+        analyzers can place every curve on the global timeline (per-phase
+        since-enable clock = elapsed_s minus the phase's elapsed_start_s)."""
         import csv as _csv
 
         lasers = self.args.lasers or (
@@ -1087,7 +1098,9 @@ class ReproducibilityProbe:
         if not lasers:
             print("  weekend plan needs --lasers; aborting")
             return
+        disable_set = set(self.args.disable_after_single or [])
         saved = self.args.lasers
+        enabled = set()
         manifest = []
 
         def _begin():
@@ -1096,12 +1109,14 @@ class ReproducibilityProbe:
                 round(time.time() - self.t0, 3),
             )
 
-        def _record(phase, lasing, start):
+        def _record(phase, lasing, start, disabled_after="", reenabled=""):
             iso0, el0 = start
             manifest.append(
                 {
                     "phase": phase,
                     "lasing": "+".join(str(x) for x in lasing),
+                    "disabled_after": disabled_after,
+                    "reenabled": reenabled,
                     "iso_start": iso0,
                     "elapsed_start_s": el0,
                     "iso_end": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -1110,14 +1125,9 @@ class ReproducibilityProbe:
             )
 
         single_s = self.args.single_hours * 3600.0
-        soak_s = (
-            self.args.soak_hours * 3600.0
-            if self.args.soak_hours
-            else float("inf")
-        )
         try:
             # ---- Phase 1: staggered single-line warm-up + aging ----
-            for idx, laser in enumerate(lasers):
+            for laser in lasers:
                 self.phase = "single_%s" % laser
                 self.args.lasers = [laser]
                 start = _begin()
@@ -1126,7 +1136,8 @@ class ReproducibilityProbe:
                     % (self.phase, self.args.single_hours)
                 )
                 t_phase = time.time()
-                self.power_warmup(stop)
+                self.power_warmup(stop)  # enables the line
+                enabled.add(laser)
                 remaining = single_s - (time.time() - t_phase)
                 if remaining > 0:
                     self._loop_for(
@@ -1135,22 +1146,59 @@ class ReproducibilityProbe:
                         remaining,
                         self.args.cycle_interval,
                     )
-                _record(self.phase, [laser], start)
-                # keep the first line enabled as a long reference; optionally
-                # disable later lines to limit added bench heating
-                if idx > 0 and self.args.disable_after_single:
+                drop = laser in disable_set
+                if drop:
                     self._select(laser, None, on=False)
+                    enabled.discard(laser)
+                _record(self.phase, [laser], start, disabled_after=str(drop))
             # ---- Phase 2: multi-line soak ----
             self.phase = "multi"
             self.args.lasers = list(lasers)
-            start = _begin()
-            print("[plan] phase multi: enable all lines; aging soak")
+            reenabled = [la for la in lasers if la not in enabled]
+            print(
+                "[plan] phase multi: enable all lines; aging soak "
+                "(re-enabling %s)" % (reenabled or "none")
+            )
             for laser in lasers:  # ensure all are lasing together
                 self._select(laser, None, on=True)
+                enabled.add(laser)
+            # if any line was disabled, watch every line settle on re-enable:
+            # the re-enabled lines show a transient, the continuously-enabled
+            # ones stay flat -- the direct disabled-vs-kept comparison
+            if reenabled:
+                self.phase = "multi_enable"
+                mstart = _begin()
+                print("[plan] phase multi_enable: re-enable transient watch")
+                self.power_warmup(stop)
+                _record(
+                    "multi_enable",
+                    list(lasers),
+                    mstart,
+                    reenabled="+".join(str(x) for x in reenabled),
+                )
+                self.phase = "multi"
+            start = _begin()  # the soak proper starts here (after re-enable)
+            # respect the total --max-hours budget (auto shut-down) and/or
+            # --soak-hours, whichever is smaller
+            soak_s = (
+                self.args.soak_hours * 3600.0
+                if self.args.soak_hours
+                else float("inf")
+            )
+            if self.args.max_hours:
+                left = self.args.max_hours * 3600.0 - (time.time() - self.t0)
+                soak_s = min(soak_s, max(0.0, left))
+            if soak_s == float("inf"):
+                print("  (no --max-hours/--soak-hours: soaking until Ctrl-C)")
             self._loop_for(
                 self.drift_curve, stop, soak_s, self.args.cycle_interval
             )
-            _record("multi", list(lasers), start)
+            _record(
+                "multi",
+                list(lasers),
+                start,
+                reenabled="+".join(str(x) for x in reenabled),
+            )
         finally:
             self.args.lasers = saved
             try:
@@ -1158,6 +1206,8 @@ class ReproducibilityProbe:
                 cols = [
                     "phase",
                     "lasing",
+                    "disabled_after",
+                    "reenabled",
                     "iso_start",
                     "elapsed_start_s",
                     "iso_end",
@@ -1340,6 +1390,14 @@ def main(argv=None):
         "[power_warmup]",
     )
     p.add_argument(
+        "--enable-watch",
+        type=float,
+        default=None,
+        help="seconds to watch the first level (the enable/warm-up transient) "
+        "-- longer than --warmup-watch to catch the slow tail "
+        "(default: same as --warmup-watch) [power_warmup]",
+    )
+    p.add_argument(
         "--warmup-interval",
         type=float,
         default=2.0,
@@ -1363,14 +1421,24 @@ def main(argv=None):
         "--soak-hours",
         type=float,
         default=None,
-        help="hours of the all-lines soak (default: until Ctrl-C) "
-        "[--plan weekend]",
+        help="hours of the all-lines soak (default: fill up to --max-hours, "
+        "else until Ctrl-C) [--plan weekend]",
+    )
+    p.add_argument(
+        "--max-hours",
+        type=float,
+        default=None,
+        help="hard total wall-clock budget: the soak auto-ends and the rig "
+        "shuts down so the whole run stays within this [--plan weekend]",
     )
     p.add_argument(
         "--disable-after-single",
-        action="store_true",
-        help="disable each line (except the first) after its single-line "
-        "phase, to limit bench heating [--plan weekend]",
+        type=lambda s: [int(x) for x in s.split(",") if x.strip()],
+        default=None,
+        help="comma-separated laser lines to disable after their single-line "
+        "phase (cooling at standby, re-enabled for the soak); lines not listed "
+        "stay continuously enabled -- so a listed vs unlisted line shows "
+        "whether disabling loses the warm-up [--plan weekend]",
     )
     p.add_argument(
         "--duration", type=float, default=60.0, help="stability [s]"

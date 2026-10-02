@@ -102,31 +102,44 @@ split across runs). **Precondition:** manually power every laser to **standby**
 (power button + interlock key) but do **not** enable emission yet.
 
 - **Phase 1 — staggered single-line.** For each `--lasers` line in turn:
-  software-enable it, run `power_warmup` (enable + power-setpoint transients),
+  software-enable it, run `power_warmup` (the enable transient, watched for
+  `--enable-watch`, then each power-setpoint change watched for `--warmup-watch`),
   then loop `drift_curve` for `--single-hours`. Because every line was already
   powered at standby, lines enabled *later* sat at standby longer — so comparing
   their enable transients separates **power-on/standby** warm-up from the
-  **emission/enable** transient.
-- **Phase 2 — multi-line soak.** Enable all lines together and loop
-  `drift_curve` for `--soak-hours` (or until Ctrl-C) under realistic all-lasing
-  thermal load.
+  **emission/enable** transient. Lasers listed in `--disable-after-single` are
+  disabled after their phase (cooling at standby); lines not listed stay
+  continuously enabled.
+- **Phase 2 — multi-line soak.** Re-enable all lines. If any line was disabled,
+  a `multi_enable` `power_warmup` pass watches every line settle on re-enable —
+  the re-enabled lines show a transient, the kept-enabled ones stay flat (the
+  direct "does disabling lose the warm-up?" comparison). Then loop `drift_curve`
+  until the `--max-hours` total budget is spent, at which point the run
+  **auto-shuts down** (disables emission, releases the hardware).
 
-Rows are tagged with a `phase` column, and `manifest.csv` records each phase's
-wall-clock span + lasing set, so the analyzers can place every curve on the
-global timeline. `--disable-after-single` disables each line (except the first,
-kept as a long reference) after its single-line phase to limit bench heating.
+Rows are tagged with a `phase` column (`single_<laser>` / `multi_enable` /
+`multi`); `manifest.csv` records each phase's wall-clock span, lasing set,
+whether the single line was `disabled_after`, and which lines were `reenabled`.
+Laser power levels for `power_warmup` default to each line's configured
+`laser_powers` (omit `--warmup-powers`). `--max-hours` is a hard total cap, so
+the whole run finishes and powers down on its own.
 
 ```bash
 python docs/diagnostics/reproducibility_probe.py Skylab --plan weekend \
     --lasers 405,488,560,642 \
-    --single-hours 2 --soak-hours 48 \
+    --single-hours 2 --max-hours 53 --cycle-interval 30 \
     --drift-step 2.5 --settle 0.5 --averaging 20 --switch-time 3 \
-    --warmup-powers 50,200,500 --warmup-watch 300 --warmup-interval 2 \
+    --enable-watch 1800 --warmup-watch 300 --warmup-interval 2 \
+    --disable-after-single 488 \
     --outdir docs/diagnostics/results/weekend_$(date +%Y%m%d_%H%M)
 # then, per run:
 python docs/diagnostics/analyze_warmup.py docs/diagnostics/results/weekend_XXXX
 python docs/diagnostics/analyze_aging.py  docs/diagnostics/results/weekend_XXXX
 ```
+
+The staggered single-line phase measures each line's attenuation curve raw
+(angle → meter reading) and fits calibrations **offline** in `analyze_aging.py`;
+nothing here loads or depends on a previously stored calibration.
 
 ## Calibration aging (is the deviation drift or a systematic bias?)
 
