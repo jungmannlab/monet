@@ -10,6 +10,23 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-10-05
+
+### Fixed
+- **Calibrating a new power level no longer aborts with a bare `KeyError`
+  (GUI "Error: 10").** The `laserpower` setter indexed the per-power analyzer
+  dict while the instrument still counted as calibrated from previously stored
+  rows, so a calibration run that added a power level (or whose stored row was
+  model-incompatible) crashed at the first power set. The setter now degrades
+  to uncalibrated with a warning and restores symmetrically: selecting a power
+  with a loaded calibration makes the instrument calibrated again (rows saved
+  during the current session become visible after the calibration database is
+  reloaded, which a calibration run does on completion). On the degraded path
+  a fresh analyzer is installed so a subsequent 1D calibration cannot refit —
+  and thereby corrupt — another power's stored analyzer in place. The GUI
+  power-set handlers and the CLI shell now report the uncalibrated state
+  instead of plain success, and the GUI refreshes the power-range display.
+
 ## [0.5.1] - 2026-10-05
 
 ### Changed
