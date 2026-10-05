@@ -915,43 +915,35 @@ class IlluminationLaserControl(IlluminationControl):
 
         newpwr = pwr
 
-        if (
-            pwr < ranges.loc[self.curr_laserpower, "min"]
-            or pwr > ranges.loc[self.curr_laserpower, "max"]
-        ):
-            # necessary to change laser output power setting
+        # Always operate as high as possible on an attenuation curve: pick the
+        # LOWEST laser output level that can still reach the target (its
+        # 95%-max exceeds pwr), so a low setpoint is served near the gentle top
+        # of a low-power curve instead of the steep, error-amplifying trough of
+        # a high-power one. (Previously the level only changed when the target
+        # fell outside the *current* level's range, so a small setpoint set
+        # right after a large one stayed on the high level's trough.) Fall back
+        # to the highest level if none reaches the target.
+        reachable = list(ranges.loc[ranges["max"] * 0.95 > pwr].index)
+        laserpwr_best = min(reachable) if reachable else max(ranges.index)
 
-            # find best laserpwoer: minimal laserpower of which 95% of max
-            # is larger than pwr to set
-            laserpwr_best = list(ranges.loc[ranges["max"] * 0.95 > pwr].index)
-            if len(laserpwr_best) > 0:
-                laserpwr_best = min(laserpwr_best)
-            else:
-                laserpwr_best = max(list(ranges.index))
+        if ranges.loc[laserpwr_best, "min"] > pwr:
+            newpwr = ranges.loc[laserpwr_best, "min"]
+            msg = "Power setting {:.2f} is out of range. ".format(
+                pwr
+            ) + "Setting closest power = {:.2f}.".format(newpwr)
+            logger.debug(msg)
+            print(msg)
+            pwr = newpwr
+        elif ranges.loc[laserpwr_best, "max"] < pwr:
+            newpwr = ranges.loc[laserpwr_best, "max"]
+            msg = "Power setting {:.2f} is out of range. ".format(
+                pwr
+            ) + "Setting closest power = {:.2f}.".format(newpwr)
+            logger.debug(msg)
+            print(msg)
+            pwr = newpwr
 
-            if ranges.loc[laserpwr_best, "min"] > pwr:
-                newpwr = ranges.loc[laserpwr_best, "min"]
-                logger.debug(
-                    "Power setting {:.2f} is out of range. ".format(pwr)
-                    + "Setting closest power = {:.2f}.".format(newpwr)
-                )
-                print(
-                    "Power setting {:.2f} is out of range. ".format(pwr)
-                    + "Setting closest power = {:.2f}.".format(newpwr)
-                )
-                pwr = newpwr
-            elif ranges.loc[laserpwr_best, "max"] < pwr:
-                newpwr = ranges.loc[laserpwr_best, "max"]
-                logger.debug(
-                    "Power setting {:.2f} is out of range. ".format(pwr)
-                    + "Setting closest power = {:.2f}.".format(newpwr)
-                )
-                print(
-                    "Power setting {:.2f} is out of range. ".format(pwr)
-                    + "Setting closest power = {:.2f}.".format(newpwr)
-                )
-                pwr = newpwr
-
+        if laserpwr_best != self.curr_laserpower:
             logger.debug(
                 "setting laser power to {:s}".format(str(laserpwr_best))
             )

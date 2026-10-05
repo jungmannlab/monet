@@ -10,6 +10,29 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
+### Changed
+- **Combined-mode set-power picks the lowest adequate laser-power level.** The
+  2-D ``power`` setter now always selects the lowest calibrated level whose
+  (95 %) max reaches the target, instead of only switching level when the
+  target left the *current* level's range. A low set-point requested right
+  after a high one is therefore served near the gentle top of a low-power
+  curve, not on the steep, error-amplifying trough of the high-power one — the
+  main driver of the residual low-power set-power error seen in the pin_check
+  rig test.
+
+### Added
+- **`docs/diagnostics/suggest_levels.py`** — proposes a set of laser-power
+  levels to calibrate (geometric from a ``--floor-frac`` of each laser's
+  ``--laser-max`` up to the max) so common set-points land near a curve's
+  gentle top; reads current levels/sample-tops from the calibration DB, does
+  not move hardware.
+- **Reproducibility probe `pin_check` experiment** — replicates the GUI
+  pin→set→measure and quantifies how much (and where) the one-point pin reduces
+  open-loop set-power deviation, logging deviation as % of target *and* % of
+  full scale, the pinned getter vs the meter, and the laser-power level used
+  per target (so a residual is attributable to trough inflation, a level
+  switch, or a getter gap).
+
 ### Fixed
 - **Pin calibration now applies in every power mode and range** (code review).
   The one-point pin previously only affected combined-mode set/read, so

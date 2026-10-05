@@ -577,6 +577,19 @@ class TestControl(unittest.TestCase):
         with self.assertRaises(ValueError):
             ctrl.power = 50.0
 
+    def test_power_setter_prefers_lowest_adequate_level(self):
+        # 488 levels 50 (max 100) and 100 (max 200). After a high set that put
+        # us on level 100, a subsequent low set must drop back to level 50
+        # (served near its top), not stay on level 100's trough.
+        ctrl = self._build_laser_control()
+        ctrl.power = 150.0  # → level 100
+        self.assertEqual(ctrl.curr_laserpower, 100)
+        ctrl.power = (
+            30.0  # reachable on level 50 (max 100) → should switch down
+        )
+        self.assertEqual(ctrl.curr_laserpower, 50)
+        self.assertAlmostEqual(ctrl.power, 30.0, places=6)
+
     # ── pin_calibration (one-point rescale) ──────────────────────────────
 
     def test_pin_calibration_rescales_get_and_set(self):

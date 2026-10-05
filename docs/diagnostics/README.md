@@ -95,6 +95,25 @@ run finishes, or generate them later:
 python docs/diagnostics/plot_results.py docs/diagnostics/results/run_XXXX
 ```
 
+## Planning laser-power levels
+
+`suggest_levels.py` proposes which laser output-power **levels** to calibrate so
+common set-points sit near a curve's gentle top (accurate) rather than on a
+high-power level's steep trough (where low set-points are inaccurate). It reads
+each laser's current calibrated levels + sample-plane tops from the DB and, given
+the laser maxima, proposes a geometric set from `--floor-frac` of the max up to
+the max. It does not move hardware.
+
+```bash
+python docs/diagnostics/suggest_levels.py Skylab \
+    --laser-max 488:50,560:1000,642:1000 --n-levels 4 --floor-frac 0.10
+```
+
+The floor (`--floor-frac`, default 0.10 — a laser can't go below ~10 % of its
+max) sets the lowest set-point that any level can serve near a gentle top;
+below that, use closed-loop feedback. Pair this with the `pin_check` experiment
+to see the actual set-power error per target before re-calibrating.
+
 ## Weekend plan (staggered warm-up + aging over a whole weekend)
 
 `--plan weekend` runs a single continuous, multi-phase protocol (it must be one
