@@ -675,6 +675,12 @@ class MonetAdjustInteractive(cmd.Cmd):
         else:
             try:
                 self.pc.instrument.laserpower = int(power)
+                if not self.pc.instrument.is_calibrated:
+                    print(
+                        "No calibration for this power; the instrument is "
+                        "uncalibrated until a calibrated power is selected "
+                        "or this power is calibrated."
+                    )
             except ValueError as e:
                 print(str(e))
 
@@ -965,6 +971,12 @@ class MonetSetInteractive(cmd.Cmd):
         else:
             try:
                 self.instrument.laserpower = int(power)
+                if not self.instrument.is_calibrated:
+                    print(
+                        "No calibration for this power; the instrument is "
+                        "uncalibrated until a calibrated power is selected "
+                        "or this power is calibrated."
+                    )
             except ValueError as e:
                 print(str(e))
 

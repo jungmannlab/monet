@@ -2153,12 +2153,26 @@ class AdjustTab(QWidget):
         def _do():
             self._pc.instrument.laserpower = pwr
             self._pc.instrument.record_state()
+            return self._pc.instrument.is_calibrated
 
-        def _done():
-            self._status.setText(f"Laser power set to {pwr} mW.")
-            self._emit_status("Ready", 2000)
+        def _on_result(calibrated):
+            if calibrated:
+                self._status.setText(f"Laser power set to {pwr} mW.")
+                self._emit_status("Ready", 2000)
+            else:
+                msg = (
+                    f"Laser power set to {pwr} mW, but no calibration "
+                    "exists for this power. The instrument is uncalibrated "
+                    "until a calibrated power is selected or this power is "
+                    "calibrated."
+                )
+                self._status.setText(msg)
+                self._emit_status(msg, 5000)
+                QMessageBox.warning(self, "Uncalibrated laser power", msg)
 
-        self._run_hw(_do, f"Setting laser power to {pwr} mW…", on_done=_done)
+        self._run_hw(
+            _do, f"Setting laser power to {pwr} mW…", on_result=_on_result
+        )
 
     def _on_bp_open(self):
         if self._pc is None:
@@ -3933,12 +3947,27 @@ class SetPowerTab(QWidget):
         def _do():
             self._pc.instrument.laserpower = pwr
             self._pc.instrument.record_state()
+            return self._pc.instrument.is_calibrated
 
-        def _done():
-            self._status.setText(f"Laser power set to {pwr} mW.")
-            self._emit_status("Ready", 2000)
+        def _on_result(calibrated):
+            self._update_range_label()
+            if calibrated:
+                self._status.setText(f"Laser power set to {pwr} mW.")
+                self._emit_status("Ready", 2000)
+            else:
+                msg = (
+                    f"Laser power set to {pwr} mW, but no calibration "
+                    "exists for this power. The instrument is uncalibrated "
+                    "until a calibrated power is selected or this power is "
+                    "calibrated."
+                )
+                self._status.setText(msg)
+                self._emit_status(msg, 5000)
+                QMessageBox.warning(self, "Uncalibrated laser power", msg)
 
-        self._run_hw(_do, f"Setting laser power to {pwr} mW…", on_done=_done)
+        self._run_hw(
+            _do, f"Setting laser power to {pwr} mW…", on_result=_on_result
+        )
 
 
 # ---------------------------------------------------------------------------
