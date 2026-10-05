@@ -562,7 +562,24 @@ class IlluminationLaserControl(IlluminationControl):
         self.config["index"][POWER_TAG] = laserpower
         self.lasers[self.curr_laser].power = laserpower
         if self.is_calibrated:
-            self.analyzer = self._analyzers[self.curr_laserpower]
+            analyzer = self._analyzers.get(self.curr_laserpower)
+            if analyzer is None:
+                # No usable calibration for this power — either a new power
+                # level or a stored row skipped as incompatible with the
+                # current analysis model. Fall back to uncalibrated instead
+                # of KeyError'ing: a calibration run must be able to set a
+                # power it is about to calibrate. Re-selecting the laser
+                # restores calibration once compatible rows exist.
+                logger.warning(
+                    "No calibration for laser %s at %s mW; leaving the "
+                    "instrument uncalibrated. Recalibrate this power or "
+                    "select a calibrated one.",
+                    self.curr_laser,
+                    laserpower,
+                )
+                self.is_calibrated = False
+            else:
+                self.analyzer = analyzer
 
     @property
     def laser_enabled(self):

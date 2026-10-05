@@ -543,6 +543,28 @@ class TestControl(unittest.TestCase):
         self.assertEqual(ctrl.curr_laserpower, 100)
         self.assertEqual(ctrl.laserpower, 100)
 
+    def test_laserpower_setter_uncalibrated_power_goes_uncalibrated(self):
+        """Setting a laser power with no stored calibration must not raise.
+
+        Regression: a calibration run setting a new power level (e.g. 10 mW
+        added to the protocol) crashed with a bare ``KeyError: 10`` because
+        the setter indexed ``_analyzers`` while the instrument still counted
+        as calibrated from the old database. It now falls back to
+        uncalibrated so the run can proceed to calibrate that power.
+        """
+        ctrl = self._build_laser_control()
+        self.assertTrue(ctrl.is_calibrated)
+        ctrl.laserpower = 10  # only 50 and 100 mW are calibrated
+        self.assertEqual(ctrl.curr_laserpower, 10)
+        self.assertEqual(ctrl.laserpower, 10)
+        self.assertFalse(ctrl.is_calibrated)
+        # calibrated power setting is locked out until recalibration ...
+        with self.assertRaises(ValueError):
+            ctrl.power = 50.0
+        # ... and re-selecting the laser restores the stored calibration.
+        ctrl.laser = 488
+        self.assertTrue(ctrl.is_calibrated)
+
     def test_laser_enabled_property(self):
         ctrl = self._build_laser_control()
         ctrl.laser_enabled = True
