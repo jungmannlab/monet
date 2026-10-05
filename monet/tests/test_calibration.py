@@ -691,3 +691,81 @@ class TestCalibration(unittest.TestCase):
         )
         pc.instrument.laser = 488
         self.assertTrue(pc.instrument.is_calibrated)
+
+    def _config_2d(self, db, plotdir):
+        """The shared 2D-protocol config over Test* hardware (same shape as
+        the inline dicts in test_06/test_07, which predate this helper)."""
+        return {
+            "database": db,
+            "dest_calibration_plot": plotdir,
+            "index": {"name": "DefaultMicroscope"},
+            "powermeter": {
+                "classpath": "monet.powermeter.TestPowerMeter",
+                "init_kwargs": {
+                    "bkg": 1,
+                    "amp": 50,
+                    "phi": 30,
+                    "start": 10,
+                    "step": 5,
+                    "noise": 1,
+                },
+            },
+            "attenuation": {
+                "classpath": "monet.attenuation.TestAttenuator",
+                "init_kwargs": {
+                    "bkg": 0,
+                    "amp": 50,
+                    "phi": 30,
+                    "start": 10,
+                    "step": 5,
+                },
+            },
+            "analysis": {
+                "classpath": "monet.analysis.SinusAttenuationCurveAnalyzer",
+                "init_kwargs": {"min": 30, "max": 100, "step": 5},
+            },
+            "lasers": {
+                488: {
+                    "classpath": "monet.laser.TestLaser",
+                    "init_kwargs": {"port": "COM4"},
+                },
+            },
+            "beampath": {
+                "shutter01": {
+                    "classpath": "monet.beampath.TestShutter",
+                    "init_kwargs": {"SN": 234},
+                },
+            },
+        }
+
+    def test_08_run_protocol_with_new_power_level(self):
+        """Recalibrating with a power level not yet in the database must run.
+
+        Regression: with calibrations for [100, 200] mW loaded, a protocol
+        whose ``laser_powers`` adds 50 mW aborted at the first
+        ``instrument.laserpower = 50`` with a bare ``KeyError: 50`` (shown as
+        "Error: 50" in the GUI) because the instrument still counted as
+        calibrated from the old rows.
+        """
+        import tempfile
+
+        tmp = tempfile.mkdtemp()
+        db = os.path.join(tmp, "newpower.xlsx")
+        plotdir = os.path.join(tmp, "plots")
+        os.makedirs(plotdir, exist_ok=True)
+        protocol = {
+            "laser_sequence": [488],
+            "laser_powers": {488: [100, 200]},
+            "beampath": {488: {"shutter01": True}},
+        }
+        pc = mca.CalibrationProtocol2D(self._config_2d(db, plotdir), protocol)
+        pc.run_protocol(wait_time=0, switch_time=0)
+        pc.instrument.load_calibration_database()
+        self.assertTrue(pc.instrument.is_calibrated)
+
+        # second run adds an uncalibrated power level; must not KeyError
+        pc.protocol["laser_powers"] = {488: [50, 100]}
+        pc.run_protocol(wait_time=0, switch_time=0)
+        pc.instrument.load_calibration_database()
+        self.assertTrue(pc.instrument.is_calibrated)
+        self.assertIn(50, pc.instrument._analyzers)

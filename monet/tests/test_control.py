@@ -543,6 +543,47 @@ class TestControl(unittest.TestCase):
         self.assertEqual(ctrl.curr_laserpower, 100)
         self.assertEqual(ctrl.laserpower, 100)
 
+    def test_laserpower_setter_uncalibrated_power_goes_uncalibrated(self):
+        """Setting a laser power with no stored calibration must not raise.
+
+        Regression: a calibration run setting a new power level (e.g. 10 mW
+        added to the protocol) crashed with a bare ``KeyError: 10`` because
+        the setter indexed ``_analyzers`` while the instrument still counted
+        as calibrated from the old database. It now degrades to uncalibrated
+        so the run can proceed to calibrate that power, and restores as soon
+        as a calibrated power is selected again (no laser re-select needed).
+        """
+        ctrl = self._build_laser_control()
+        self.assertTrue(ctrl.is_calibrated)
+        ctrl.laserpower = 10  # only 50 and 100 mW are calibrated
+        self.assertEqual(ctrl.curr_laserpower, 10)
+        self.assertEqual(ctrl.laserpower, 10)
+        self.assertFalse(ctrl.is_calibrated)
+        # calibrated power setting is locked out while uncalibrated ...
+        with self.assertRaises(ValueError):
+            ctrl.power = 50.0
+        # ... and selecting a calibrated power restores symmetrically.
+        ctrl.laserpower = 100
+        self.assertTrue(ctrl.is_calibrated)
+        self.assertIs(ctrl.analyzer, ctrl._analyzers[100])
+
+    def test_laserpower_setter_fallback_does_not_alias_analyzer(self):
+        """The uncalibrated fallback must install a fresh analyzer.
+
+        Regression: the fallback left ``self.analyzer`` aliased to the
+        previously selected power's entry in ``_analyzers``; a subsequent 1D
+        calibration refit that shared object in place, silently overwriting
+        the stored calibration of a different power.
+        """
+        ctrl = self._build_laser_control()
+        ctrl.laserpower = 100
+        stored = dict(ctrl._analyzers)
+        ctrl.laserpower = 10  # uncalibrated -> fallback
+        for analyzer in stored.values():
+            self.assertIsNot(ctrl.analyzer, analyzer)
+        # fitting the fallback analyzer must leave the stored ones intact
+        self.assertEqual(ctrl._analyzers, stored)
+
     def test_laser_enabled_property(self):
         ctrl = self._build_laser_control()
         ctrl.laser_enabled = True
