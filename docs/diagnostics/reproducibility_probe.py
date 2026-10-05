@@ -1010,8 +1010,11 @@ class ReproducibilityProbe:
                 # the enable transient (first level) is watched for longer
                 # (--enable-watch) than the later power-change transients
                 watch = self.args.warmup_watch
-                if li == 0 and self.args.enable_watch:
+                if li == 0 and self.args.enable_watch is not None:
                     watch = self.args.enable_watch
+                # floor the sampling interval so --warmup-interval 0 does not
+                # busy-spin and write an unbounded CSV
+                interval = max(self.args.warmup_interval, 1e-3)
                 t_change = time.time()
                 watched = 0.0
                 while watched < watch:
@@ -1027,7 +1030,7 @@ class ReproducibilityProbe:
                             "power": self._read(),
                         },
                     )
-                    time.sleep(self.args.warmup_interval)
+                    time.sleep(interval)
                     watched = time.time() - t_change
 
     # ---- driver -----------------------------------------------------------
@@ -1125,9 +1128,21 @@ class ReproducibilityProbe:
             )
 
         single_s = self.args.single_hours * 3600.0
+        # hard total wall-clock budget (auto-shutdown); enforced in BOTH phases
+        deadline = (
+            self.t0 + self.args.max_hours * 3600.0
+            if self.args.max_hours
+            else float("inf")
+        )
         try:
             # ---- Phase 1: staggered single-line warm-up + aging ----
             for laser in lasers:
+                if time.time() >= deadline:
+                    print(
+                        "[plan] max-hours budget spent; skipping remaining "
+                        "single-line phases"
+                    )
+                    break
                 self.phase = "single_%s" % laser
                 self.args.lasers = [laser]
                 start = _begin()
@@ -1138,7 +1153,9 @@ class ReproducibilityProbe:
                 t_phase = time.time()
                 self.power_warmup(stop)  # enables the line
                 enabled.add(laser)
-                remaining = single_s - (time.time() - t_phase)
+                remaining = min(
+                    single_s - (time.time() - t_phase), deadline - time.time()
+                )
                 if remaining > 0:
                     self._loop_for(
                         self.drift_curve,
@@ -1514,6 +1531,9 @@ def main(argv=None):
 
     if args.plot:
         try:
+            # plot_results lives next to this script; make it importable
+            # regardless of the working directory the probe was launched from
+            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
             import plot_results
 
             plot_results.plot_dir(args.outdir)

@@ -10,6 +10,24 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
+### Fixed
+- **Pin calibration now applies in every power mode and range** (code review).
+  The one-point pin previously only affected combined-mode set/read, so
+  fixed-laser / fixed-attenuator set-power and `predict_power_fixed_attenuator`
+  silently ignored it while the power getter reported corrected values, and
+  `accessible_power_range` / the GUI range label / the combined-mode clamp used
+  the unpinned ranges. The pin factor is now folded into all set-power paths and
+  into the stored `_power_ranges` (reapplied in `_populate_analyzers`), so set,
+  read, predict, and ranges agree. `pin_calibration` also rejects an implausible
+  reading (beam not on the meter / laser off) instead of storing a near-zero
+  factor, restores the attenuator afterwards, and the GUI pins the *selected*
+  laser. The spline inverse now restricts to the dominant monotonic branch
+  rather than silently returning a cross-branch angle.
+- **Diagnostics probe:** `power_warmup` floors `--warmup-interval` (no busy-spin
+  / unbounded CSV at 0) and honors `--enable-watch 0`; `--plan weekend`
+  enforces `--max-hours` during the single-line phases too (not just the soak);
+  `--plot` imports `plot_results` regardless of the working directory.
+
 ### Added
 - **One-point calibration rescale ("Pin calibration").**
   `IlluminationLaserControl.pin_calibration()` measures the current laser's

@@ -3662,7 +3662,11 @@ class SetPowerTab(QWidget):
             )
             return
         laser = self._laser_combo.currentData()
-        if not getattr(inst, "laser_enabled", False):
+        try:
+            sel_enabled = inst.lasers[laser].enabled
+        except Exception:
+            sel_enabled = getattr(inst, "laser_enabled", False)
+        if not sel_enabled:
             QMessageBox.warning(
                 self,
                 "Laser off",
@@ -3684,6 +3688,9 @@ class SetPowerTab(QWidget):
         def _do():
             import time
 
+            # select the laser the user picked (like _on_set_power) so the pin
+            # is measured on and stored for the right line, not curr_laser
+            inst.laser = laser
             moved = False
             if bp_for_laser:
                 try:

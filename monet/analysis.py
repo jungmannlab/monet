@@ -1002,15 +1002,40 @@ class SplineAttenuationCurveAnalyzer(AbstractAttenuationCurveAnalyzer):
         return splev(np.asarray(x, dtype=float), self._tck)
 
     def estimate(self, y):
-        """Inverse: control value for a desired power (monotonic range)."""
+        """Inverse: control value for a desired power.
+
+        A power→angle inverse is only single-valued on a monotonic branch. If
+        the fitted curve is non-monotonic over [min, max] (so a plain argsort
+        would interleave angles from different branches and return a meaningless
+        value), restrict the inversion to the *longest monotonic run* of the
+        sampled curve — the dominant usable branch — and interpolate within it.
+        """
         from scipy.interpolate import splev
 
         lo = self.analysis_parameters.get("min", 0)
         hi = self.analysis_parameters.get("max", 180)
         grid = np.linspace(lo, hi, 2001)
         p = np.asarray(splev(grid, self._tck), dtype=float)
-        order = np.argsort(p)  # monotonic-range assumption
-        return np.interp(y, p[order], grid[order])
+        d = np.diff(p)
+        # longest run of a single slope sign = the principal monotonic branch
+        best_i = best_len = 0
+        i = 0
+        n = len(d)
+        while i < n:
+            j = i
+            sign = np.sign(d[i])
+            while j < n and (np.sign(d[j]) == sign or d[j] == 0.0):
+                j += 1
+            if j - i > best_len:
+                best_len, best_i = j - i, i
+            i = max(j, i + 1)
+        pb = p[best_i : best_i + best_len + 1]
+        gb = grid[best_i : best_i + best_len + 1]
+        if len(pb) < 2:  # degenerate (flat) curve
+            return np.interp(y, np.sort(p), grid[np.argsort(p)])
+        if pb[-1] < pb[0]:  # np.interp needs ascending power
+            pb, gb = pb[::-1], gb[::-1]
+        return np.interp(y, pb, gb)
 
     def get_model(self):
         if self._tck is not None:

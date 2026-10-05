@@ -255,6 +255,22 @@ class TestSplineAnalyzer(unittest.TestCase):
             ang = float(a.estimate(p))
             self.assertLess(abs(float(a.estimate_power(ang)) - p), 0.03 * span)
 
+    def test_inverse_on_non_monotonic_uses_principal_branch(self):
+        # A curve that rises then falls (non-monotonic over the range): the
+        # inverse must restrict to the dominant monotonic branch and return an
+        # angle that round-trips, not a meaningless cross-branch interpolation.
+        a = man.SplineAttenuationCurveAnalyzer(dict(self.ANA))
+        x = np.arange(30.0, 131.0, 5.0)
+        y = -(((x - 80.0) / 30.0) ** 2) + 2.0  # peak near x=80
+        a.fit(x, y)
+        ymax = float(np.max(a.estimate_power(x)))
+        target = 0.5 * (float(a.estimate_power(x)[0]) + ymax)
+        ang = float(a.estimate(target))
+        self.assertGreaterEqual(ang, self.ANA["min"] - 1e-6)
+        self.assertLessEqual(ang, self.ANA["max"] + 1e-6)
+        # the returned angle actually produces ~the requested power
+        self.assertLess(abs(float(a.estimate_power(ang)) - target), 0.2)
+
     def test_model_roundtrips_through_params(self):
         a, _, _ = self._fit()
         pars = a.get_model()

@@ -620,6 +620,55 @@ class TestControl(unittest.TestCase):
         ctrl.load_calibration_database()
         self.assertEqual(ctrl._pin_scales, {})
 
+    def _pin_gain(self, ctrl, gain):
+        ctrl.pin_calibration(
+            lambda: gain
+            * ctrl.analyzer.estimate_power(ctrl.attenuator.curr_pos()),
+            settle=0.0,
+        )
+
+    def test_pin_applies_in_fixed_laser_mode(self):
+        ctrl = self._build_laser_control()
+        ctrl.laser = 488
+        ctrl.laserpower = 50  # linear amp=1.0 → power == angle
+        self._pin_gain(ctrl, 1.1)
+        # request 55 mW: reality = 1.1*model, so model target = 50 → angle 50
+        ctrl.set_power_fixed_laser(55.0)
+        self.assertAlmostEqual(ctrl.attenuator.curr_pos(), 50.0, places=4)
+        self.assertAlmostEqual(ctrl.power, 55.0, places=4)
+
+    def test_pin_applies_in_fixed_attenuator_mode(self):
+        ctrl = self._build_laser_control()
+        ctrl.laser = 488
+        ctrl.laserpower = 50
+        ctrl.attenuator.set(40.0)
+        # predicted output before pin, then 10% hot
+        before = ctrl.predict_power_fixed_attenuator(50.0)
+        ctrl._pin_scales[(488, 50)] = 1.1
+        ctrl._pin_scales[(488, 100)] = 1.1
+        after = ctrl.predict_power_fixed_attenuator(50.0)
+        self.assertAlmostEqual(after, before * 1.1, places=4)
+
+    def test_pin_scales_fixed_laser_range(self):
+        ctrl = self._build_laser_control()
+        ctrl.laser = 488
+        ctrl.laserpower = 50
+        _, hi0 = ctrl.accessible_power_range("fixed_laser")
+        self._pin_gain(ctrl, 1.1)
+        _, hi1 = ctrl.accessible_power_range("fixed_laser")
+        self.assertAlmostEqual(hi1, hi0 * 1.1, places=3)
+
+    def test_pin_rejects_implausible_reading_and_restores(self):
+        ctrl = self._build_laser_control()
+        ctrl.attenuator.set(30.0)
+        entry = ctrl.attenuator.curr_pos()
+        with self.assertRaises(ValueError):
+            ctrl.pin_calibration(lambda: 0.0, settle=0.0)  # dark reading
+        self.assertEqual(ctrl._pin_scales, {})  # nothing stored
+        self.assertAlmostEqual(
+            ctrl.attenuator.curr_pos(), entry, places=4
+        )  # attenuator restored
+
     # ── set_power_fixed_attenuator / fixed_laser / predict ───────────────
 
     def test_set_power_fixed_attenuator(self):
