@@ -1008,6 +1008,10 @@ class IlluminationLaserControl(IlluminationControl):
 
         att_pos = self.attenuator.curr_pos()
 
+        # Each level's model output is scaled by its own pin (1.0 if that level
+        # was never pinned), so a one-point pin corrects the level it was
+        # measured at and leaves other levels as calibrated — this linear fit
+        # across levels therefore reflects only the drift actually measured.
         laser_pwrs = []
         output_pwrs = []
         for lpwr, analyzer in analyzers.items():
@@ -1145,6 +1149,10 @@ class IlluminationLaserControl(IlluminationControl):
         analyzers, _ = self._analyzers_for(laser)
         att_pos = self.attenuator.curr_pos()
 
+        # Each level's model output is scaled by its own pin (1.0 if that level
+        # was never pinned), so a one-point pin corrects the level it was
+        # measured at and leaves other levels as calibrated — this linear fit
+        # across levels therefore reflects only the drift actually measured.
         laser_pwrs = []
         output_pwrs = []
         for lpwr, analyzer in analyzers.items():
