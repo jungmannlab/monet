@@ -10,6 +10,98 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-10-05
+
+### Changed
+- **Combined-mode set-power picks the lowest adequate laser-power level.** The
+  2-D ``power`` setter now always selects the lowest calibrated level whose
+  (95 %) max reaches the target, instead of only switching level when the
+  target left the *current* level's range. A low set-point requested right
+  after a high one is therefore served near the gentle top of a low-power
+  curve, not on the steep, error-amplifying trough of the high-power one — the
+  main driver of the residual low-power set-power error seen in the pin_check
+  rig test.
+
+### Added
+- **`docs/diagnostics/suggest_levels.py`** — proposes a set of laser-power
+  levels to calibrate (geometric from a ``--floor-frac`` of each laser's
+  ``--laser-max`` up to the max) so common set-points land near a curve's
+  gentle top; reads current levels/sample-tops from the calibration DB, does
+  not move hardware.
+- **Reproducibility probe `pin_check` experiment** — replicates the GUI
+  pin→set→measure and quantifies how much (and where) the one-point pin reduces
+  open-loop set-power deviation, logging deviation as % of target *and* % of
+  full scale, the pinned getter vs the meter, and the laser-power level used
+  per target (so a residual is attributable to trough inflation, a level
+  switch, or a getter gap).
+
+### Fixed
+- **Pin calibration now applies in every power mode and range** (code review).
+  The one-point pin previously only affected combined-mode set/read, so
+  fixed-laser / fixed-attenuator set-power and `predict_power_fixed_attenuator`
+  silently ignored it while the power getter reported corrected values, and
+  `accessible_power_range` / the GUI range label / the combined-mode clamp used
+  the unpinned ranges. The pin factor is now folded into all set-power paths and
+  into the stored `_power_ranges` (reapplied in `_populate_analyzers`), so set,
+  read, predict, and ranges agree. `pin_calibration` also rejects an implausible
+  reading (beam not on the meter / laser off) instead of storing a near-zero
+  factor, restores the attenuator afterwards, and the GUI pins the *selected*
+  laser. The spline inverse now restricts to the dominant monotonic branch
+  rather than silently returning a cross-branch angle.
+- **Diagnostics probe:** `power_warmup` floors `--warmup-interval` (no busy-spin
+  / unbounded CSV at 0) and honors `--enable-watch 0`; `--plan weekend`
+  enforces `--max-hours` during the single-line phases too (not just the soak);
+  `--plot` imports `plot_results` regardless of the working directory.
+
+### Added
+- **One-point calibration rescale ("Pin calibration").**
+  `IlluminationLaserControl.pin_calibration()` measures the current laser's
+  power at the calibration's peak angle and stores a per-(laser, power)
+  multiplicative factor, correcting slow laser-power drift between a full
+  calibration and use without re-sweeping. A second check point flags a curve
+  *shape* change (where a one-point rescale isn't enough). Exposed as a "Pin
+  calibration" button in the Set-power tab's normal view. The weekend drift
+  study showed the calibrate-vs-use deviation is (bar a small common thermal
+  phase shift) amplitude drift, which this recovers to ~0.5–0.7 %FS for every
+  laser line when pinned after warm-up. Pins are cleared when a fresh
+  calibration is loaded.
+- **Reproducibility probe `power_warmup` experiment + `--plan weekend`.**
+  `power_warmup` steps the laser output-power setpoint at a fixed angle and
+  watches the meter settle (enable + power-change transients). `--plan weekend`
+  runs a staggered protocol (per-line enable→warmup→aging, then an all-lines
+  soak, with `--enable-watch` / `--max-hours` auto-shutdown and per-line
+  `--disable-after-single`), analysed by `analyze_warmup.py` (warm-up / enable
+  vs standby / disable-vs-keep) and `analyze_aging.py` (calibration-aging:
+  drift vs systematic, and whether a one-point rescale recovers it).
+- **Spline attenuation model (`SplineAttenuationCurveAnalyzer`).** A scipy
+  smoothing-spline analyzer for attenuation curves the sinusoidal / polynomial
+  models don't capture; the smoothing factor rejects measurement noise (good
+  for dim lasers) and it round-trips through the calibration DB via its
+  knots/coefficients. Selectable as `spline` in `analysis.model_spec`, the
+  Calibrate tab's model dropdown, and the probe's model experiments.
+- **Reproducibility probe `model_sweep` experiment.** Calibrates with every
+  candidate model at several step sizes and scores each on *fresh off-grid test
+  angles* (unbiased generalization error — a spline overfits the fit RMS),
+  logging `test_rms_pct` with `n_points` / `acquire_time_s` / `fit_time_s` to
+  find the best model + step vs calibration cost (`--sweep-models`,
+  `--sweep-steps`, `--n-test`; plotted by `plot_results.py`).
+- **Reproducibility probe (`docs/diagnostics/reproducibility_probe.py`).** A
+  stand-alone rig diagnostic that isolates the sources of calibrate-vs-measure
+  irreproducibility — laser stability, meter dark drift, attenuator
+  repeatability, backlash, homing impact, run-to-run fit/model variation, and
+  end-to-end set-power deviation — each to its own timestamped CSV, with a
+  cycle loop for multi-hour unattended runs. The calibration experiment can
+  sweep parameter variants (`--cal-steps`, `--cal-models`) to study
+  sampling-density/model impact. Results default to a timestamped directory
+  under `docs/diagnostics/results/` (committable for later analysis), and
+  `plot_results.py` (or `--plot`) renders a PNG per experiment. Laser-dependent
+  experiments run across multiple `(laser, power)` operating points via
+  `--lasers`/`--laser-powers` or `--full-protocol` (the config's whole
+  line/power grid, with per-laser beam-path routing). A `setpower_breakdown`
+  experiment decomposes the open-loop set-power deviation into its inverse-step,
+  model-vs-reality and raw-vs-sample-plane (transmission-factor) components to
+  localize where it arises. See `docs/diagnostics/README.md`.
+
 ## [0.5.0] - 2026-09-30
 
 ### Fixed

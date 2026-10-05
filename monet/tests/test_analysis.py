@@ -229,6 +229,78 @@ class TestCompareModels(unittest.TestCase):
         self.assertLess(sinus["rms_pct"], 2.0)
 
 
+class TestSplineAnalyzer(unittest.TestCase):
+    """The smoothing-spline attenuation model + its serialization."""
+
+    ANA = {"min": 30.0, "max": 130.0, "step": 5.0}
+
+    def _fit(self):
+        a = man.SplineAttenuationCurveAnalyzer(dict(self.ANA))
+        x = np.arange(30.0, 131.0, 5.0)
+        y = 0.001 * (x - 20) ** 2 + 2.0  # monotonic on [30, 130]
+        a.fit(x, y)
+        return a, x, y
+
+    def test_forward_follows_data(self):
+        a, x, y = self._fit()
+        pred = np.asarray(a.estimate_power(x), dtype=float)
+        rms = np.sqrt(np.mean(((pred - y) / y) ** 2)) * 100.0
+        self.assertLess(rms, 3.0)
+
+    def test_inverse_roundtrips(self):
+        a, x, y = self._fit()
+        span = float(y.max() - y.min())
+        for frac in (0.3, 0.7):
+            p = float(y.min() + frac * span)
+            ang = float(a.estimate(p))
+            self.assertLess(abs(float(a.estimate_power(ang)) - p), 0.03 * span)
+
+    def test_inverse_on_non_monotonic_uses_principal_branch(self):
+        # A curve that rises then falls (non-monotonic over the range): the
+        # inverse must restrict to the dominant monotonic branch and return an
+        # angle that round-trips, not a meaningless cross-branch interpolation.
+        a = man.SplineAttenuationCurveAnalyzer(dict(self.ANA))
+        x = np.arange(30.0, 131.0, 5.0)
+        y = -(((x - 80.0) / 30.0) ** 2) + 2.0  # peak near x=80
+        a.fit(x, y)
+        ymax = float(np.max(a.estimate_power(x)))
+        target = 0.5 * (float(a.estimate_power(x)[0]) + ymax)
+        ang = float(a.estimate(target))
+        self.assertGreaterEqual(ang, self.ANA["min"] - 1e-6)
+        self.assertLessEqual(ang, self.ANA["max"] + 1e-6)
+        # the returned angle actually produces ~the requested power
+        self.assertLess(abs(float(a.estimate_power(ang)) - target), 0.2)
+
+    def test_model_roundtrips_through_params(self):
+        a, _, _ = self._fit()
+        pars = a.get_model()
+        self.assertIn("spl_k", pars)
+        self.assertTrue(any(str(k).startswith("t") for k in pars))
+        b = man.SplineAttenuationCurveAnalyzer(dict(self.ANA))
+        b.load_model(pars)
+        self.assertAlmostEqual(
+            float(b.estimate_power(75.0)),
+            float(a.estimate_power(75.0)),
+            places=4,
+        )
+
+    def test_load_model_rejects_foreign_params(self):
+        b = man.SplineAttenuationCurveAnalyzer(dict(self.ANA))
+        with self.assertRaises(ValueError):
+            b.load_model({"bkg": 1.0, "amp": 40.0, "phi": 15.0})
+
+    def test_model_spec_and_name(self):
+        cp, extra = man.model_spec("spline")
+        self.assertTrue(cp.endswith("SplineAttenuationCurveAnalyzer"))
+        self.assertEqual(extra, {})
+        self.assertEqual(
+            man.model_name_from_config(
+                "monet.analysis.SplineAttenuationCurveAnalyzer"
+            ),
+            "spline",
+        )
+
+
 class TestLinearAnalyzer(unittest.TestCase):
 
     def setUp(self):
