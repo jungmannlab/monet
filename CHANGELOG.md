@@ -10,6 +10,8 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-10-05
+
 ### Fixed
 - **Calibrating a new power level no longer aborts with a bare `KeyError`
   (GUI "Error: 10").** The `laserpower` setter indexed the per-power analyzer
