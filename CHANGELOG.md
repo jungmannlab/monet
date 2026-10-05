@@ -10,6 +10,8 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-10-05
+
 ### Changed
 - **Combined-mode set-power picks the lowest adequate laser-power level.** The
   2-D ``power`` setter now always selects the lowest calibrated level whose
