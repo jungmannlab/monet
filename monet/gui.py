@@ -878,6 +878,7 @@ class CalibrateTab(QWidget):
         ("Polynomial (deg 4)", "poly deg 4"),
         ("Polynomial (deg 5)", "poly deg 5"),
         ("Polynomial (deg 6)", "poly deg 6"),
+        ("Spline (smoothing)", "spline"),
     ]
 
     def _build_ui(self):
@@ -2452,6 +2453,20 @@ class SetPowerTab(QWidget):
         # (laser on, beam path set) so a 0-reading isn't a mystery.
         self._measure_hint = QLabel("")
         measure_row.addWidget(self._measure_hint)
+        # Pin calibration: one-point rescale of the active calibration to the
+        # laser's current output — corrects slow laser-power drift between a
+        # full calibration and use without re-running the whole sweep. Stays in
+        # the normal (non-expert) view.
+        self._btn_pin = QPushButton("Pin calibration")
+        self._btn_pin.setToolTip(
+            "Measure the current laser's power once and rescale the active "
+            "calibration to match it, correcting slow laser-power drift "
+            "without a full recalibration. Run it on a warmed-up laser "
+            "(~30 min) just before a measurement. Warns if it isn't a pure "
+            "rescale (laser still warming up, or a genuine shape change)."
+        )
+        self._btn_pin.clicked.connect(self._on_pin_calibration)
+        measure_row.addWidget(self._btn_pin)
         # Backlash check: re-approach the current attenuator angle from both
         # sides to see if rotation-mount hysteresis explains a calibrate-vs-
         # measure deviation.
@@ -3433,28 +3448,57 @@ class SetPowerTab(QWidget):
         except Exception as exc:
             logger.debug("Could not write set-power MM comment: %s", exc)
 
-    def _on_measure(self):
-        if self._pc is None:
-            return
-        laser = self._laser_combo.currentData()
+    def _meter_routing(self, laser):
+        """Return ``(bp_for_laser, turret_target)`` to route ``laser`` to the
+        power meter.
+
+        ``bp_for_laser`` is the shutter/filter preset for the laser with the
+        nosepiece stripped out (the turret is positioned separately so it can
+        follow the powermeter toggle). ``turret_target`` is ``(nosepiece_id,
+        value)`` for the meter's physical plane (BFP → powermeter position,
+        sample → imaging objective), or ``None``.
+        """
         protocol = getattr(self._pc, "protocol", None) or {}
         bp_dict = protocol.get("beampath") or {}
-
-        # Shutter/filter for this laser, with the turret stripped out (the
-        # turret is positioned separately, following the powermeter toggle).
         bp_for_laser = bp_dict.get(laser)
         nid = self._nosepiece_id()
         if nid is not None and isinstance(bp_for_laser, dict):
             bp_for_laser = {k: v for k, v in bp_for_laser.items() if k != nid}
-
-        # Position the objective turret to match where the meter physically is:
-        # BFP → powermeter position, sample plane → imaging objective.
         pm_pos = self._pm_pos_combo.currentData()
         turret_kind = "powermeter" if pm_pos == POWERMETER_BFP else "objective"
-        turret_target = self._turret_value(turret_kind)  # (id, val) or None
+        return bp_for_laser, self._turret_value(turret_kind)
 
+    def _apply_meter_routing(self, bp_for_laser, turret_target):
+        """Worker-thread side of :meth:`_meter_routing`: move the shutter/filter
+        and turret, then settle. Per-move errors are swallowed (hardware may not
+        have the stage); a 2 s sleep follows any move (no beampath polling API).
+        """
+        import time
+
+        moved = False
+        if bp_for_laser:
+            try:
+                self._pc.instrument.beampath.positions = bp_for_laser
+                moved = True
+            except Exception:
+                pass
+        if turret_target is not None:
+            tnid, tval = turret_target
+            try:
+                self._pc.instrument.beampath.positions = {tnid: tval}
+                moved = True
+            except Exception:
+                pass
+        if moved:
+            time.sleep(2)
+
+    def _on_measure(self):
+        if self._pc is None:
+            return
+        laser = self._laser_combo.currentData()
+        bp_for_laser, turret_target = self._meter_routing(laser)
         mode = self._mode_combo.currentData()
-        pm_is_bfp = pm_pos == POWERMETER_BFP
+        pm_is_bfp = self._pm_pos_combo.currentData() == POWERMETER_BFP
         try:
             factor_available = self._pc.instrument._has_transmission_factor(
                 laser
@@ -3463,27 +3507,7 @@ class SetPowerTab(QWidget):
             factor_available = False
 
         def _do():
-            import time
-
-            moved = False
-            # Open shutter and set filter for this laser
-            if bp_for_laser:
-                try:
-                    self._pc.instrument.beampath.positions = bp_for_laser
-                    moved = True
-                except Exception:
-                    pass
-            # Move the turret to match the powermeter position
-            if turret_target is not None:
-                tnid, tval = turret_target
-                try:
-                    self._pc.instrument.beampath.positions = {tnid: tval}
-                    moved = True
-                except Exception:
-                    pass
-            # Wait for beampath hardware to settle (no polling API available)
-            if moved:
-                time.sleep(2)
+            self._apply_meter_routing(bp_for_laser, turret_target)
             # Project the raw reading to the sample plane. The factor depends on
             # where the meter physically is (the powermeter toggle), not on the
             # stored calibration.
@@ -3628,6 +3652,79 @@ class SetPowerTab(QWidget):
             on_result=_on_val,
         )
 
+    def _on_pin_calibration(self):
+        """One-point rescale ('pin') the active calibration to the laser's
+        current output, routing the beam to the meter exactly like Measure."""
+        if self._pc is None:
+            return
+        inst = self._pc.instrument
+        if not hasattr(inst, "pin_calibration"):
+            self._status.setText(
+                "Pin calibration is not available for this instrument."
+            )
+            return
+        if not getattr(inst, "is_calibrated", False):
+            QMessageBox.warning(
+                self,
+                "Not calibrated",
+                "Calibrate (or load a calibration) before pinning.",
+            )
+            return
+        laser = self._laser_combo.currentData()
+        try:
+            sel_enabled = inst.lasers[laser].enabled
+        except Exception:
+            sel_enabled = getattr(inst, "laser_enabled", False)
+        if not sel_enabled:
+            QMessageBox.warning(
+                self,
+                "Laser off",
+                "Switch the laser on (and let it warm up) before pinning — "
+                "the pin measures its current output.",
+            )
+            return
+
+        bp_for_laser, turret_target = self._meter_routing(laser)
+
+        def _do():
+            # select the laser the user picked (like _on_set_power) so the pin
+            # is measured on and stored for the right line, not curr_laser
+            inst.laser = laser
+            self._apply_meter_routing(bp_for_laser, turret_target)
+            return inst.pin_calibration(read_power=self._pc.powermeter.read)
+
+        def _on_val(res):
+            f = res.get("factor", float("nan"))
+            msg = (
+                "Pinned {} nm calibration ×{:.3f} (measured {:.3g} vs model "
+                "{:.3g} @ {:.1f}°).".format(
+                    laser,
+                    f,
+                    res.get("measured", float("nan")),
+                    res.get("predicted", float("nan")),
+                    res.get("anchor_angle", float("nan")),
+                )
+            )
+            if not res.get("shape_ok", True):
+                msg += (
+                    " ⚠ Not a pure rescale ({:+.1f}%FS at the check point): "
+                    "the laser is probably still warming up, or the curve "
+                    "shape genuinely changed. Let it warm up (~30 min) and "
+                    "retry; if it persists, recalibrate this line.".format(
+                        res.get("check_resid_fs", float("nan"))
+                    )
+                )
+                QMessageBox.warning(self, "Pin check: not a pure rescale", msg)
+            self._status.setText(msg)
+            self._emit_status("Calibration pinned", 6000)
+            self._update_range_label()
+
+        self._run_hw(
+            _do,
+            "Pinning calibration (one-point rescale)…",
+            on_result=_on_val,
+        )
+
     def _toggle_pi_params(self):
         visible = not self._pi_panel.isVisible()
         self._pi_panel.setVisible(visible)
@@ -3653,6 +3750,7 @@ class SetPowerTab(QWidget):
         """Enable or disable powermeter-dependent controls."""
         self._btn_measure.setEnabled(available)
         self._btn_backlash.setEnabled(available)
+        self._btn_pin.setEnabled(available)
         self._update_feedback_enabled()
 
     def _on_all_off(self):
