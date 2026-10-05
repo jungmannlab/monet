@@ -43,8 +43,11 @@ import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 
-# Run from the repo root so ``import monet`` resolves.
+# Run from the repo root so ``import monet`` resolves; the script's own dir is
+# added so the shared diag_util helper imports regardless of cwd.
 sys.path.insert(0, os.getcwd())
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from diag_util import corrections  # noqa: E402
 from monet import analysis as _an  # noqa: E402
 from monet.util import load_class  # noqa: E402
 
@@ -72,35 +75,6 @@ def _angle_for(anlz, target, lo, hi):
     if not np.isfinite(a):
         return np.nan
     return float(min(max(a, lo), hi))
-
-
-def _fs(resid, scale):
-    resid = np.asarray(resid, float)
-    ok = np.isfinite(resid)
-    if not ok.any() or not scale:
-        return np.nan
-    return float(np.sqrt(np.mean(resid[ok] ** 2)) / scale * 100.0)
-
-
-def _curve_corrections(ref_pred, meas, scale):
-    """Residual (% full scale) of a reference curve vs a later measured curve
-    under none / best-scale / affine corrections -- the amplitude-vs-shape test.
-    """
-    ref = np.asarray(ref_pred, float)
-    cur = np.asarray(meas, float)
-    ok = np.isfinite(ref) & np.isfinite(cur)
-    ref, cur = ref[ok], cur[ok]
-    out = {"none": _fs(cur - ref, scale)}
-    denom = float(np.dot(ref, ref))
-    k = float(np.dot(cur, ref) / denom) if denom else 1.0
-    out["scale"] = _fs(cur - k * ref, scale)
-    A = np.vstack([ref, np.ones_like(ref)]).T
-    try:
-        a, b = np.linalg.lstsq(A, cur, rcond=None)[0]
-        out["affine"] = _fs(cur - (a * ref + b), scale)
-    except Exception:
-        out["affine"] = np.nan
-    return out
 
 
 def _setpower_dev(cal, meas, angles, targets, lo, hi, scale, rescale_s=1.0):
@@ -194,7 +168,7 @@ def analyze(outdir, model, ref_cycle, fracs):
                 if cal[j] is not None
                 else np.nan
             )
-            cc = _curve_corrections(
+            cc = corrections(
                 cal[ref_cycle].estimate_power(angles), meas[j], scale
             )
             c_none.append(cc["none"])

@@ -892,15 +892,6 @@ class IlluminationLaserControl(IlluminationControl):
             pass
         return result
 
-    def clear_pin(self, laser=None, laser_power=None):
-        """Drop the pin for a (laser, power) (defaults to the current one),
-        reverting to the stored calibration."""
-        key = (
-            self.curr_laser if laser is None else laser,
-            self.curr_laserpower if laser_power is None else laser_power,
-        )
-        self._pin_scales.pop(key, None)
-
     @power.setter
     def power(self, pwr):
         """Set the power in the sample. If possible with current laser output

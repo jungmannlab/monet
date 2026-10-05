@@ -39,27 +39,23 @@ import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 
-
-def _fs(resid, ref):
-    scale = np.max(np.abs(ref)) or 1.0
-    return float(np.sqrt(np.mean(resid**2)) / scale * 100.0)
+# the script's own dir, so the shared diag_util helper imports regardless of cwd
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from diag_util import corrections, fs  # noqa: E402
 
 
 def _corrections(ref, cur, ref_angle_idx):
-    """Residuals (% full scale) of cur vs ref under the four corrections."""
-    out = {}
-    out["none"] = _fs(cur - ref, ref)
+    """Residuals (% full scale) of cur vs ref under the four corrections:
+    none / best-scale / affine (shared with analyze_aging via diag_util) plus
+    the single-point rescale anchored at ``ref_angle_idx``."""
+    scale = float(np.max(np.abs(ref))) or 1.0
+    out = corrections(ref, cur, scale)  # none / scale / affine
     r1 = (
         cur[ref_angle_idx] / ref[ref_angle_idx]
         if ref[ref_angle_idx]
         else np.nan
     )
-    out["1-point"] = _fs(cur - r1 * ref, ref)
-    k = float(np.dot(cur, ref) / np.dot(ref, ref)) if np.dot(ref, ref) else 1.0
-    out["scale"] = _fs(cur - k * ref, ref)
-    A = np.vstack([ref, np.ones_like(ref)]).T
-    a, b = np.linalg.lstsq(A, cur, rcond=None)[0]
-    out["affine"] = _fs(cur - (a * ref + b), ref)
+    out["1-point"] = fs(cur - r1 * ref, scale)
     out["k_1point"] = r1
     return out
 
