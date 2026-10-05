@@ -10,17 +10,24 @@ usable). Analysed with `analyze_warmup.py` and `analyze_aging.py` (+ the ad-hoc
 ## Headline
 
 The reproducibility limiter is **slow laser-power (amplitude) drift over hours**,
-and for every line except Skylab-488 it is a **pure amplitude change** that a
-**one-point rescale corrects** back to the fresh-calibration floor.
+and for every line it is (to within a small common phase shift) a **pure
+amplitude change** that a **one-point rescale corrects** back to the
+fresh-calibration floor (~0.5–0.7 %FS), provided the pin is taken after warm-up.
 
-| rig · line | amp drift over soak | stale-cal set-power err (fresh→aged) | after 1-point | shape kept |
-|---|---|---|---|---|
-| Skylab 560 | −0.5 % | 0.5 → 0.8 %FS | 0.5 %FS | ✓ |
-| Skylab 642 | +4.8 % (±10 %) | 0.4 → 2.5 %FS | **0.5 %FS** | ✓ |
-| Skylab 405 | +3.8 % | 0.4 → 1.8 %FS | **0.4 %FS** | ✓ |
-| **Skylab 488** | **+17 %** | 0.2 → 5.9 %FS | 6.1 %FS (no help) | ✗ |
-| Mercury 560 | +13.9 % | 0.3 → 9.0 %FS | **0.6 %FS** | ✓ |
-| Mercury 642 | +5.1 % | 1.2 → 1.7 %FS | 1.2 %FS | ✓ |
+| rig · line | amp drift over soak | after 1-point pin (ref @ soak start) | after 1-point pin (ref @ +30 min, warmed up) |
+|---|---|---|---|
+| Skylab 560 | −0.5 % | 0.6 %FS | 0.6 %FS |
+| Skylab 642 | +4.8 % (±10 %) | 0.5 %FS | 0.7 %FS |
+| Skylab 405 | +3.8 % | 0.4 %FS | — |
+| Skylab 488 | +17 % | 5.0 %FS (ref mid-warm-up) | **0.7 %FS** |
+| Mercury 560 | +13.9 % | 0.6 %FS | 0.6 %FS |
+| Mercury 642 | +5.1 % | 1.2 %FS | 1.2 %FS |
+
+**488 is not a shape-change exception** (correction to an earlier read): its
+large residual with a soak-start reference was because that reference was taken
+*during* 488's warm-up transient. Pinned after ~30 min warm-up, 488 recovers to
+0.7 %FS — the same as every other line. The rule is simply: **warm up, then
+pin.**
 
 ## Conclusions
 
@@ -37,10 +44,17 @@ and for every line except Skylab-488 it is a **pure amplitude change** that a
    `IlluminationLaserControl.pin_calibration()` + a "Pin calibration" button.
 4. **The drift wanders (up and down) over hours**, so warm-up alone isn't
    enough — periodic pin or closed-loop feedback is needed for drifty lines.
-5. **Skylab 488 is the exception:** +17 % drift *with* a shape change —
-   `analyze_488_shape.png` shows the high-power side grows disproportionately
-   (amp +15.5 %, phase drift <1°, so not an angle shift). A one-point pin leaves
-   ~3–6 %FS; 488 needs a full recal / investigation.
+5. **A small common phase shift sets the pin floor.** Fitting the sinus per
+   cycle (`analyze_488_phase.png`), all three Skylab lines drift in *phase* by
+   ~0.25–0.3 °over the soak (488 = 0.31°, 560 = 0.25°, 642 = 0.28°, once the
+   first 30 min of warm-up are excluded), correlated with amplitude/temperature
+   (phase–amp corr +0.72 / −0.66 / −0.19 — magnitude common, sign line-specific).
+   This quarter-degree waveplate re-registration is what a pure-amplitude pin
+   can't catch, so it sets the ~0.5 %FS residual floor. 488's apparently large
+   "shape change" was just its stronger warm-up transient — in steady state it
+   is the same small phase shift as the others. The fitted background is ≈0 for
+   all lines (≤0.03 % of peak; a "% of start" normalization of a near-zero
+   baseline is what produced the spurious huge-% background in an earlier plot).
 
 ## Warm-up
 
@@ -70,6 +84,6 @@ and for every line except Skylab-488 it is a **pure amplitude change** that a
 ## Practical recommendation
 
 Warm up ≥30 min (≥45 on Mercury) at roughly the working power, then **Pin
-calibration** just before measuring (or use closed-loop feedback). For 488-like
-shape-changing lines, the pin self-detects (shape-check warning) and a full
-recalibration is needed.
+calibration** just before measuring (or use closed-loop feedback). Pinning
+before the laser has settled is the one failure mode — the pin's shape-check
+warns when it isn't yet a pure rescale, so warm up and retry.

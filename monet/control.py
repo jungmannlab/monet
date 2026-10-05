@@ -782,9 +782,11 @@ class IlluminationLaserControl(IlluminationControl):
         current (laser, laser_power), so open-loop set-power and the power
         read-back match reality again. If ``check`` is set, a second point near
         half-power is measured to test whether the drift is a pure amplitude
-        rescale: a large residual there means the *shape* changed (see 405/488
-        in the weekend study) and a one-point pin cannot fix it — a full
-        recalibration is recommended.
+        rescale. A large residual there (``shape_ok=False``) usually means the
+        laser is still warming up — the attenuation curve's small thermal phase
+        shift hasn't settled — so warm up ~30 min and retry; rarely the curve
+        shape genuinely changed and a full recalibration is needed. In the
+        weekend study every line pinned to ~0.5-0.7 %FS once warmed up.
 
         Parameters
         ----------

@@ -2461,9 +2461,9 @@ class SetPowerTab(QWidget):
         self._btn_pin.setToolTip(
             "Measure the current laser's power once and rescale the active "
             "calibration to match it, correcting slow laser-power drift "
-            "without a full recalibration. Run it on a warmed-up laser just "
-            "before a measurement. Warns if the curve shape has changed (then "
-            "a one-point pin isn't enough — recalibrate)."
+            "without a full recalibration. Run it on a warmed-up laser "
+            "(~30 min) just before a measurement. Warns if it isn't a pure "
+            "rescale (laser still warming up, or a genuine shape change)."
         )
         self._btn_pin.clicked.connect(self._on_pin_calibration)
         measure_row.addWidget(self._btn_pin)
@@ -3716,13 +3716,14 @@ class SetPowerTab(QWidget):
             )
             if not res.get("shape_ok", True):
                 msg += (
-                    " ⚠ Curve shape changed ({:+.1f}%FS at the check point) — "
-                    "a one-point pin can't fully correct this; recalibrate "
-                    "this line.".format(
+                    " ⚠ Not a pure rescale ({:+.1f}%FS at the check point): "
+                    "the laser is probably still warming up, or the curve "
+                    "shape genuinely changed. Let it warm up (~30 min) and "
+                    "retry; if it persists, recalibrate this line.".format(
                         res.get("check_resid_fs", float("nan"))
                     )
                 )
-                QMessageBox.warning(self, "Shape change detected", msg)
+                QMessageBox.warning(self, "Pin check: not a pure rescale", msg)
             self._status.setText(msg)
             self._emit_status("Calibration pinned", 6000)
             self._update_range_label()

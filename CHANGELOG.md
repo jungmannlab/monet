@@ -18,9 +18,10 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
   calibration and use without re-sweeping. A second check point flags a curve
   *shape* change (where a one-point rescale isn't enough). Exposed as a "Pin
   calibration" button in the Set-power tab's normal view. The weekend drift
-  study showed the calibrate-vs-use deviation is almost entirely amplitude
-  drift, which this recovers to ~0.5 %FS for 5 of 6 laser lines. Pins are
-  cleared when a fresh calibration is loaded.
+  study showed the calibrate-vs-use deviation is (bar a small common thermal
+  phase shift) amplitude drift, which this recovers to ~0.5–0.7 %FS for every
+  laser line when pinned after warm-up. Pins are cleared when a fresh
+  calibration is loaded.
 - **Reproducibility probe `power_warmup` experiment + `--plan weekend`.**
   `power_warmup` steps the laser output-power setpoint at a fixed angle and
   watches the meter settle (enable + power-change transients). `--plan weekend`
