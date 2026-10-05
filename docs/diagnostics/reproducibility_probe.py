@@ -127,6 +127,7 @@ ALL_EXPERIMENTS = [
     "calibration",
     "setpower",
     "setpower_breakdown",
+    "pin_check",
     "model_sweep",
     "drift_curve",
     "power_warmup",
@@ -770,6 +771,126 @@ class ReproducibilityProbe:
                             "model_err_pct": pct(sample, commanded),
                         },
                     )
+
+    def pin_check(self, stop):
+        """Quantify how much the one-point "Pin calibration" actually reduces
+        open-loop set-power deviation — replicating the GUI pin→set→measure.
+
+        For each (laser, power) operating point, set each target open-loop
+        (combined mode, ``instrument.power = target``) and measure the deviation
+        BEFORE pinning, then call ``pin_calibration()``, then re-measure the
+        SAME targets AFTER. Each row logs:
+
+          dev_rel_pct      (measured - target) / target        [trough-inflated]
+          dev_fs_pct       (measured - target) / full_scale     [honest metric]
+          calipred_vs_meas the pinned getter vs the meter — isolates "the model
+                           read-back matches reality" from "the set missed the
+                           target" (inverse/shape residual)
+          laser_power_level the level actually used — if a target switches to a
+                           level that was not pinned, the pin (stored per
+                           (laser, level)) does not apply there
+          pin_factor / shape_ok / check_resid_fs from the pin itself
+
+        So the residual can be attributed: a low dev_fs_pct with a high
+        dev_rel_pct is just trough inflation; a large calipred_vs_meas means the
+        getter is wrong; a level switch away from the pinned level means the pin
+        never applied. Warm the laser up before running (pin after warm-up)."""
+        inst = self.instrument
+        if not hasattr(inst, "pin_calibration"):
+            print("  (instrument has no pin_calibration; skipping pin_check)")
+            return
+        if not getattr(inst, "is_calibrated", False):
+            print("  (not calibrated; skipping pin_check)")
+            return
+        if not self.args.targets and not self.args.target_fracs:
+            print("  (no --targets/--target-fracs; skipping pin_check)")
+            return
+
+        def pct(a, b):
+            return (a - b) / b * 100.0 if b else float("nan")
+
+        fields = [
+            "laser",
+            "stage",
+            "target",
+            "laser_power_level",
+            "achieved_angle",
+            "raw",
+            "sample",
+            "cali_pred",
+            "dev_rel_pct",
+            "dev_fs_pct",
+            "calipred_vs_meas_pct",
+            "pin_factor",
+            "shape_ok",
+            "check_resid_fs",
+        ]
+
+        def _measure(stage, targets, fullscale, laser, info):
+            for target in targets:
+                stop()
+                try:
+                    inst.power = target
+                    time.sleep(self.args.settle)
+                    cali_pred = float(inst.power)
+                    angle = float(inst.attenuator.curr_pos())
+                    level = getattr(inst, "curr_laserpower", None)
+                    raw = self._read()
+                    sample = float(inst.to_sample_plane(raw, laser))
+                except Exception as exc:
+                    print(
+                        "  pin_check %s @ %s failed: %s" % (target, laser, exc)
+                    )
+                    continue
+                self._log(
+                    "pin_check",
+                    fields,
+                    {
+                        "laser": laser,
+                        "stage": stage,
+                        "target": round(target, 4),
+                        "laser_power_level": level,
+                        "achieved_angle": angle,
+                        "raw": raw,
+                        "sample": sample,
+                        "cali_pred": cali_pred,
+                        "dev_rel_pct": pct(sample, target),
+                        "dev_fs_pct": (sample - target) / fullscale * 100.0,
+                        "calipred_vs_meas_pct": pct(cali_pred, sample),
+                        "pin_factor": info.get("factor"),
+                        "shape_ok": info.get("shape_ok"),
+                        "check_resid_fs": info.get("check_resid_fs"),
+                    },
+                )
+
+        for laser in self._lasers():
+            self._select(laser, None, on=True)
+            targets = self._targets_for(laser)
+            if not targets:
+                continue
+            try:
+                _, hi = inst.accessible_power_range("combined", laser)
+                fullscale = max(abs(hi), 1e-9)
+            except Exception:
+                fullscale = max(targets)
+            _measure("before", targets, fullscale, laser, {})
+            try:
+                info = inst.pin_calibration(
+                    read_power=self.powermeter.read, settle=self.args.settle
+                )
+            except Exception as exc:
+                print("  pin_calibration failed for %s: %s" % (laser, exc))
+                continue
+            print(
+                "  %s nm pinned x%.3f (shape_ok=%s, check_resid=%.2f%%FS)"
+                % (
+                    laser,
+                    info.get("factor", float("nan")),
+                    info.get("shape_ok"),
+                    info.get("check_resid_fs", float("nan")),
+                )
+            )
+            _measure("after", targets, fullscale, laser, info)
 
     def model_sweep(self, stop):
         """Find the best analysis model + step size by cross-validation.

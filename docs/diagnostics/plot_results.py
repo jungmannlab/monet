@@ -244,6 +244,43 @@ def _plot_model_sweep(df, outdir):
     _save(fig, outdir, "model_sweep")
 
 
+def _plot_pin_check(df, outdir):
+    """Set-power deviation before vs after the one-point pin, per target."""
+    if "stage" not in df.columns or "dev_fs_pct" not in df.columns:
+        return
+    lasers = sorted(df["laser"].unique()) if "laser" in df else [None]
+    fig, axes = plt.subplots(
+        1, len(lasers), figsize=(5 * len(lasers), 4), squeeze=False
+    )
+    for ax, laser in zip(axes[0], lasers):
+        sub = df[df["laser"] == laser] if laser is not None else df
+        for stage, mk in (("before", "o--"), ("after", "o-")):
+            s = sub[sub["stage"] == stage]
+            if not len(s):
+                continue
+            g = s.groupby("target")
+            ax.plot(
+                g["dev_fs_pct"].mean().index,
+                g["dev_fs_pct"].mean().values,
+                mk,
+                label="%s (%% full scale)" % stage,
+            )
+            ax.plot(
+                g["dev_rel_pct"].mean().index,
+                g["dev_rel_pct"].mean().values,
+                mk,
+                alpha=0.4,
+                label="%s (%% of target)" % stage,
+            )
+        ax.axhline(0, color="k", lw=0.8)
+        ax.set_xlabel("target power [mW]")
+        ax.set_ylabel("set-power deviation [%]")
+        ax.set_title("pin before/after — %s nm" % laser)
+        ax.grid(True, alpha=0.3)
+        ax.legend(fontsize=7)
+    _save(fig, outdir, "pin_check")
+
+
 _PLOTTERS = {
     "laser_stability": _plot_laser_stability,
     "meter_dark": _plot_meter_dark,
@@ -252,6 +289,7 @@ _PLOTTERS = {
     "homing": _plot_homing,
     "setpower": _plot_setpower,
     "setpower_breakdown": _plot_setpower_breakdown,
+    "pin_check": _plot_pin_check,
     "model_sweep": _plot_model_sweep,
     "calibration": _plot_calibration,
 }
