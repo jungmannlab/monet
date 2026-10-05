@@ -132,8 +132,18 @@ class IlluminationControl:
         """
         if not self.is_calibrated:
             raise ValueError("No calibration present. Please calibrate first.")
-        ctrlval = self.analyzer.estimate(power)
+        # reality = pin * model(angle); to reach `power` invert the model at
+        # power / pin (pin is 1.0 unless a one-point rescale is active).
+        ctrlval = self.analyzer.estimate(power / self._pin_factor())
         self.set_attenuator(ctrlval)
+
+    def _pin_factor(self):
+        """One-point-rescale factor for the active calibration (1.0 = none).
+
+        Overridden in the 2-D control to return the per-(laser, power) pin set
+        by :meth:`pin_calibration`; the base control is never pinned.
+        """
+        return 1.0
 
     def set_attenuator(self, value):
         """Set the attenuator value."""
@@ -353,6 +363,13 @@ class IlluminationLaserControl(IlluminationControl):
 
         self._factors = {}  # {laser: transmission_objective}; = P_sample/P_bfp
         self._powermeter_type = {}  # {laser: 'sample'/'bfp'}
+
+        # One-point rescale ("pin") factors keyed by (laser, laser_power): a
+        # multiplicative correction applied to the calibration model to track
+        # slow laser-power drift between a full calibration and use. Set via
+        # pin_calibration(); 1.0 (absent) means the stored calibration is used
+        # unchanged. Cleared when a fresh calibration is loaded.
+        self._pin_scales = {}
 
         # Where the power meter is *physically* positioned right now. This is
         # independent of the stored calibration's powermeter type: it drives
@@ -746,8 +763,94 @@ class IlluminationLaserControl(IlluminationControl):
     @property
     def power(self):
         attpos = self.attenuator.curr_pos()
-        raw = self.analyzer.estimate_power(attpos)
+        raw = self.analyzer.estimate_power(attpos) * self._pin_factor()
         return raw * self._bfp_factor()
+
+    def _pin_factor(self):
+        """Active one-point-rescale factor for the current (laser, power)."""
+        return self._pin_scales.get(
+            (self.curr_laser, self.curr_laserpower), 1.0
+        )
+
+    def pin_calibration(self, read_power, settle=0.5, check=True):
+        """One-point rescale ("pin") the active calibration to the laser's
+        *current* output, correcting slow laser-power drift without a full
+        recalibration.
+
+        Measures the actual power at the calibration's highest-power angle and
+        stores a multiplicative factor (measured / model-predicted) for the
+        current (laser, laser_power), so open-loop set-power and the power
+        read-back match reality again. If ``check`` is set, a second point near
+        half-power is measured to test whether the drift is a pure amplitude
+        rescale: a large residual there means the *shape* changed (see 405/488
+        in the weekend study) and a one-point pin cannot fix it — a full
+        recalibration is recommended.
+
+        Parameters
+        ----------
+        read_power : callable
+            Zero-arg callable returning a power-meter reading in the *same
+            plane as the calibration model* (the raw meter reading, i.e. not
+            projected to the sample plane).
+        settle : float
+            Seconds to wait after each attenuator move before reading.
+        check : bool
+            Whether to measure the second (shape-check) point.
+
+        Returns
+        -------
+        dict
+            ``factor``, ``anchor_angle``, ``measured``, ``predicted``; and when
+            ``check``: ``check_angle``, ``check_resid_fs`` (% full scale) and
+            ``shape_ok`` (False → recommend a full recalibration).
+        """
+        import time
+
+        if not self.is_calibrated:
+            raise ValueError("Not calibrated. Cannot pin.")
+        analyzer = self.analyzer
+        lo = float(analyzer.analysis_parameters["min"])
+        hi = float(analyzer.analysis_parameters["max"])
+        grid = np.linspace(lo, hi, 181)
+        pmodel = np.asarray(analyzer.estimate_power(grid), dtype=float)
+        anchor = float(grid[int(np.nanargmax(pmodel))])
+
+        self.set_attenuator(anchor)
+        time.sleep(settle)
+        measured = float(read_power())
+        predicted = float(analyzer.estimate_power(anchor))
+        factor = measured / predicted if predicted else 1.0
+        result = {
+            "factor": factor,
+            "anchor_angle": anchor,
+            "measured": measured,
+            "predicted": predicted,
+        }
+
+        if check:
+            half = 0.5 * float(np.nanmax(pmodel))
+            a_chk = float(grid[int(np.nanargmin(np.abs(pmodel - half)))])
+            self.set_attenuator(a_chk)
+            time.sleep(settle)
+            meas2 = float(read_power())
+            pred2 = float(analyzer.estimate_power(a_chk))
+            fs = factor * float(np.nanmax(pmodel)) or 1.0
+            resid = (meas2 - factor * pred2) / fs * 100.0
+            result["check_angle"] = a_chk
+            result["check_resid_fs"] = resid
+            result["shape_ok"] = abs(resid) < 3.0
+
+        self._pin_scales[(self.curr_laser, self.curr_laserpower)] = factor
+        return result
+
+    def clear_pin(self, laser=None, laser_power=None):
+        """Drop the pin for a (laser, power) (defaults to the current one),
+        reverting to the stored calibration."""
+        key = (
+            self.curr_laser if laser is None else laser,
+            self.curr_laserpower if laser_power is None else laser_power,
+        )
+        self._pin_scales.pop(key, None)
 
     @power.setter
     def power(self, pwr):
@@ -1098,6 +1201,8 @@ class IlluminationLaserControl(IlluminationControl):
             ]
         )
         self.is_calibrated = True
+        # a fresh calibration supersedes any one-point pins
+        self._pin_scales = {}
 
         # Load powermeter types and correction factors
         self._powermeter_type = {}

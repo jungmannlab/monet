@@ -577,6 +577,49 @@ class TestControl(unittest.TestCase):
         with self.assertRaises(ValueError):
             ctrl.power = 50.0
 
+    # ── pin_calibration (one-point rescale) ──────────────────────────────
+
+    def test_pin_calibration_rescales_get_and_set(self):
+        ctrl = self._build_laser_control()
+        # simulate the laser running 10% hotter than the stored calibration
+        gain = 1.1
+
+        def read_power():
+            pos = ctrl.attenuator.curr_pos()
+            return gain * ctrl.analyzer.estimate_power(pos)
+
+        res = ctrl.pin_calibration(read_power, settle=0.0)
+        self.assertAlmostEqual(res["factor"], gain, places=6)
+        self.assertTrue(res["shape_ok"])
+        self.assertAlmostEqual(ctrl._pin_factor(), gain, places=6)
+        # getter now reports the pinned (true) power
+        ctrl.attenuator.set(40.0)
+        self.assertAlmostEqual(ctrl.power, gain * 40.0, places=6)
+        # setter hits the true target: to get 55 mW the model is inverted at
+        # 55/1.1 = 50 → angle 50
+        ctrl.power = 55.0
+        self.assertAlmostEqual(ctrl.attenuator.curr_pos(), 50.0, places=6)
+        self.assertAlmostEqual(ctrl.power, 55.0, places=6)
+
+    def test_pin_calibration_flags_shape_change(self):
+        ctrl = self._build_laser_control()
+
+        # amplitude up 10% at the anchor but a distorted mid-curve → not a
+        # pure rescale; shape_ok must be False.
+        def read_power():
+            pos = ctrl.attenuator.curr_pos()
+            base = ctrl.analyzer.estimate_power(pos)
+            return 1.1 * base + (20.0 if pos < 80.0 else 0.0)
+
+        res = ctrl.pin_calibration(read_power, settle=0.0)
+        self.assertFalse(res["shape_ok"])
+
+    def test_pin_scales_cleared_on_reload(self):
+        ctrl = self._build_laser_control()
+        ctrl._pin_scales[(ctrl.curr_laser, ctrl.curr_laserpower)] = 1.2
+        ctrl.load_calibration_database()
+        self.assertEqual(ctrl._pin_scales, {})
+
     # ── set_power_fixed_attenuator / fixed_laser / predict ───────────────
 
     def test_set_power_fixed_attenuator(self):

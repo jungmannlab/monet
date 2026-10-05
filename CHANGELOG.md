@@ -11,6 +11,24 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 ## [Unreleased]
 
 ### Added
+- **One-point calibration rescale ("Pin calibration").**
+  `IlluminationLaserControl.pin_calibration()` measures the current laser's
+  power at the calibration's peak angle and stores a per-(laser, power)
+  multiplicative factor, correcting slow laser-power drift between a full
+  calibration and use without re-sweeping. A second check point flags a curve
+  *shape* change (where a one-point rescale isn't enough). Exposed as a "Pin
+  calibration" button in the Set-power tab's normal view. The weekend drift
+  study showed the calibrate-vs-use deviation is almost entirely amplitude
+  drift, which this recovers to ~0.5 %FS for 5 of 6 laser lines. Pins are
+  cleared when a fresh calibration is loaded.
+- **Reproducibility probe `power_warmup` experiment + `--plan weekend`.**
+  `power_warmup` steps the laser output-power setpoint at a fixed angle and
+  watches the meter settle (enable + power-change transients). `--plan weekend`
+  runs a staggered protocol (per-line enable→warmup→aging, then an all-lines
+  soak, with `--enable-watch` / `--max-hours` auto-shutdown and per-line
+  `--disable-after-single`), analysed by `analyze_warmup.py` (warm-up / enable
+  vs standby / disable-vs-keep) and `analyze_aging.py` (calibration-aging:
+  drift vs systematic, and whether a one-point rescale recovers it).
 - **Spline attenuation model (`SplineAttenuationCurveAnalyzer`).** A scipy
   smoothing-spline analyzer for attenuation curves the sinusoidal / polynomial
   models don't capture; the smoothing factor rejects measurement noise (good
