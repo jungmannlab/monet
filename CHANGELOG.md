@@ -10,6 +10,9 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
+### Changed
+- Python baseline raised 3.10 → 3.11 (`requires-python`, black `target-version`, classifier, CI matrix).
+
 ## [0.5.2] - 2026-10-05
 
 ### Fixed
