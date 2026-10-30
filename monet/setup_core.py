@@ -692,8 +692,11 @@ class MMConfig:
 def parse_mm_config(path):
     """Parse a Micro-Manager ``.cfg`` into an :class:`MMConfig`.
 
-    The ``.cfg`` is a flat comma-separated text file, so this needs neither
-    Micro-Manager running nor ``pycromanager`` — it reads the file directly.
+    The ``.cfg`` is a flat comma-separated text file **without quoting** — that
+    is Micro-Manager's own format, and MM forbids commas in group / preset /
+    property / value fields (its own loader is a plain comma split too), so the
+    naive ``split(",")`` here is correct, not a CSV shortcut to "fix". Needs
+    neither Micro-Manager running nor ``pycromanager``; reads the file directly.
     Unknown/irrelevant lines are ignored. Raises the usual ``OSError`` if the
     file cannot be read.
     """
@@ -732,6 +735,56 @@ def parse_mm_config(path):
 # Beam-path drivers whose protocol value is a boolean (open/close) rather than a
 # Micro-Manager preset string. Shared by the CLI and GUI protocol authoring.
 SHUTTER_BEAMPATH_CLASSES = {"TestShutter", "NikonShutter"}
+
+
+def groups_with_presets(cfg):
+    """MM config-group names that actually have presets (skip empty groups).
+
+    Shared by the CLI and GUI so the "which group drives this object" choice
+    never offers a group whose preset list is empty.
+    """
+    if cfg is None:
+        return []
+    return [g for g, presets in cfg.groups.items() if presets]
+
+
+def is_shutter_beampath(spec):
+    """True if a beam-path object's protocol value is a bool (a shutter)."""
+    return spec.get("class") in SHUTTER_BEAMPATH_CLASSES
+
+
+def assemble_protocol_beampath(
+    bp_objs, laser_sequence, preset_for, shutter_open_for=None
+):
+    """Build a protocol ``beampath`` dict (per laser + ``end``) from callbacks.
+
+    One place owns the structure — iterate each step (every wavelength, then the
+    special ``end`` park/close step) × each beam-path object, routing shutter
+    objects to a bool and the rest to a Micro-Manager preset — so the CLI and
+    GUI only supply *how* a value is obtained, not the loop:
+
+    * ``preset_for(step, obj)`` → the preset string for a filter/nosepiece
+      object at ``step`` (a wavelength or ``"end"``);
+    * ``shutter_open_for(step, obj)`` → the bool for a shutter object; defaults
+      to open for a laser step and closed at ``end``.
+    """
+
+    def _shutter(step, obj):
+        if shutter_open_for is not None:
+            return shutter_open_for(step, obj)
+        return step != "end"
+
+    beampath = {}
+    for step in list(laser_sequence) + ["end"]:
+        beampath[step] = {
+            obj: (
+                _shutter(step, obj)
+                if is_shutter_beampath(spec)
+                else preset_for(step, obj)
+            )
+            for obj, spec in bp_objs.items()
+        }
+    return beampath
 
 
 def parse_number_list(raw):

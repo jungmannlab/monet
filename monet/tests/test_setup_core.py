@@ -300,6 +300,43 @@ class TestBuildProtocol(unittest.TestCase):
         self.assertNotIn("beampath", proto)
 
 
+class TestBeampathHelpers(unittest.TestCase):
+    def test_groups_with_presets(self):
+        self.assertEqual(sc.groups_with_presets(None), [])
+        cfg = sc.MMConfig(
+            path="x",
+            groups={"Filter": ["a", "b"], "Empty": []},
+            core_shutter=None,
+            serial_ports=[],
+        )
+        self.assertEqual(sc.groups_with_presets(cfg), ["Filter"])
+
+    def test_is_shutter_beampath(self):
+        self.assertTrue(sc.is_shutter_beampath({"class": "NikonShutter"}))
+        self.assertTrue(sc.is_shutter_beampath({"class": "TestShutter"}))
+        self.assertFalse(sc.is_shutter_beampath({"class": "NikonFilterWheel"}))
+
+    def test_assemble_protocol_beampath(self):
+        bp_objs = {
+            "DC": {"class": "NikonFilterWheel"},
+            "shutter": {"class": "NikonShutter"},
+        }
+        presets = {
+            (488, "DC"): "Ti488",
+            (561, "DC"): "Ti561",
+            ("end", "DC"): "Ti488",
+        }
+        bp = sc.assemble_protocol_beampath(
+            bp_objs,
+            [488, 561],
+            preset_for=lambda step, obj: presets[(step, obj)],
+        )
+        self.assertEqual(bp[488], {"DC": "Ti488", "shutter": True})
+        self.assertEqual(bp[561], {"DC": "Ti561", "shutter": True})
+        # default shutter rule: closed at the end step
+        self.assertEqual(bp["end"], {"DC": "Ti488", "shutter": False})
+
+
 class TestConnectionCheck(unittest.TestCase):
     def test_test_microscope_sim_all_ok(self):
         entry = sc.build_microscope_entry(_sim_answers())

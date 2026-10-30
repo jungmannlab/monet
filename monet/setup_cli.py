@@ -329,46 +329,37 @@ def _author_protocol_beampath(answers, laser_sequence):
             )
 
     # For each preset-driven object (filter/nosepiece), pick which scraped MM
-    # group drives it once, then choose presets per laser from that group. Only
-    # offer groups that actually have presets (an empty group would make the
-    # preset pick-list — and _choose — degenerate).
-    usable = [g for g in (cfg.groups if cfg else {}) if cfg.groups[g]]
+    # group drives it once; only groups that actually have presets are offered.
+    usable = sc.groups_with_presets(cfg)
     obj_group = {}
     if usable:
         for obj, spec in bp_objs.items():
-            if spec["class"] in _SHUTTER_CLASSES:
+            if sc.is_shutter_beampath(spec):
                 continue
             obj_group[obj] = _choose(
                 "  which MM config group drives '{}'?".format(obj),
                 [(g, g) for g in usable],
             )
 
-    def _value_for(obj, spec, label):
-        if spec["class"] in _SHUTTER_CLASSES:
-            return _ask_bool("    {}: open '{}'?".format(label, obj), True)
+    def _label(step):
+        return "end" if step == "end" else "{} nm".format(step)
+
+    def preset_for(step, obj):
         if obj in obj_group:
             return _choose(
-                "    {}: preset for '{}'".format(label, obj),
+                "    {}: preset for '{}'".format(_label(step), obj),
                 [(p, p) for p in cfg.groups[obj_group[obj]]],
             )
-        return _ask("    {}: preset for '{}'".format(label, obj), "")
+        return _ask("    {}: preset for '{}'".format(_label(step), obj), "")
 
-    beampath = {}
-    for wl in laser_sequence:
-        beampath[wl] = {
-            obj: _value_for(obj, spec, "{} nm".format(wl))
-            for obj, spec in bp_objs.items()
-        }
-    # Park + close at the end of the run.
-    beampath["end"] = {
-        obj: (
-            False
-            if spec["class"] in _SHUTTER_CLASSES
-            else _value_for(obj, spec, "end")
-        )
-        for obj, spec in bp_objs.items()
-    }
-    return beampath
+    def shutter_open_for(step, obj):
+        if step == "end":
+            return False  # park + close at the end of the run
+        return _ask_bool("    {} nm: open '{}'?".format(step, obj), True)
+
+    return sc.assemble_protocol_beampath(
+        bp_objs, laser_sequence, preset_for, shutter_open_for
+    )
 
 
 def _pick_entry_name(prompt, path):

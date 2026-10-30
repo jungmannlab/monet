@@ -77,6 +77,12 @@ class _SshInstallWorker(QThread):
 class _DriverForm(QWidget):
     """A combo of the drivers in ``category`` + a form for the chosen one."""
 
+    # Device enumeration (pyvisa/nidaqmx/serial scans) is slow and runs on the
+    # UI thread, and there is one _DriverForm per section AND per laser/beam-path
+    # row — so cache results across all forms (per wizard run; SetupWizard clears
+    # it on open) rather than re-scanning in every row.
+    _ENUM_CACHE = {}
+
     def __init__(self, category, parent=None):
         super().__init__(parent)
         self.category = category
@@ -90,17 +96,13 @@ class _DriverForm(QWidget):
         self._form = QFormLayout(self._form_host)
         lay.addWidget(self._form_host)
         self._widgets = {}
-        # Cache device enumeration per tag for this form's lifetime: a scan can
-        # hit pyvisa/nidaqmx (slow, hardware I/O on the UI thread), and the
-        # combo rebuilds on every driver switch.
-        self._enum_cache = {}
         self.combo.currentIndexChanged.connect(self._rebuild)
         self._rebuild()
 
     def _choices(self, tag):
-        if tag not in self._enum_cache:
-            self._enum_cache[tag] = sc.enumerate_choices(tag)
-        return self._enum_cache[tag]
+        if tag not in _DriverForm._ENUM_CACHE:
+            _DriverForm._ENUM_CACHE[tag] = sc.enumerate_choices(tag)
+        return _DriverForm._ENUM_CACHE[tag]
 
     def current_name(self):
         return self.combo.currentData()
@@ -786,9 +788,9 @@ class _ProtocolPage(QWizardPage):
         # One "which MM group drives this object" picker per preset-driven
         # object. Only groups that actually have presets are offered (an empty
         # group would yield an empty preset combo).
-        usable = [g for g in self._cfg.groups if self._cfg.groups[g]]
+        usable = sc.groups_with_presets(self._cfg)
         for obj, spec in bp_objs.items():
-            if spec["class"] in sc.SHUTTER_BEAMPATH_CLASSES:
+            if sc.is_shutter_beampath(spec):
                 continue
             holder = QWidget()
             row = QHBoxLayout(holder)
@@ -809,7 +811,7 @@ class _ProtocolPage(QWizardPage):
             box = QGroupBox(label)
             form = QFormLayout(box)
             for obj, spec in bp_objs.items():
-                if spec["class"] in sc.SHUTTER_BEAMPATH_CLASSES:
+                if sc.is_shutter_beampath(spec):
                     cb = QCheckBox()
                     cb.setChecked(key != "end")
                     if key == "end":
@@ -843,17 +845,18 @@ class _ProtocolPage(QWizardPage):
         bp_objs = self._bp_objs()
         if not bp_objs or not self._cfg or not self._bp_widgets:
             return None
-        beampath = {}
-        for key in list(self._lasers()) + ["end"]:
-            mapping = {}
-            for obj in bp_objs:
-                w = self._bp_widgets.get((key, obj))
-                if isinstance(w, QCheckBox):
-                    mapping[obj] = w.isChecked()
-                elif isinstance(w, QComboBox):
-                    mapping[obj] = w.currentText()
-            beampath[key] = mapping
-        return beampath
+        # Read each step's widgets; the per-step × per-object structure (and the
+        # shutter-vs-preset routing) is owned by setup_core so it matches the CLI.
+        return sc.assemble_protocol_beampath(
+            bp_objs,
+            self._lasers(),
+            preset_for=lambda step, obj: self._bp_widgets[
+                (step, obj)
+            ].currentText(),
+            shutter_open_for=lambda step, obj: self._bp_widgets[
+                (step, obj)
+            ].isChecked(),
+        )
 
     def validatePage(self):
         wiz = self.wizard()
@@ -928,6 +931,9 @@ class SetupWizard(QWizard):
         self.microscope_answers = None
         self.protocol_name = None
         self.protocol_entry = None
+
+        # Fresh device scan once per wizard run (then shared across all forms).
+        _DriverForm._ENUM_CACHE.clear()
 
         state = sc.detect_state(probe_server=False)
         self.addPage(_IntroPage(state))
