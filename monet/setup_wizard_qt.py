@@ -185,20 +185,26 @@ class _ServerPage(QWizardPage):
         lay = QVBoxLayout(self)
 
         self.rb_existing = QRadioButton("Connect to an existing server")
-        self.rb_new = QRadioButton("Set up a new server")
+        self.rb_local = QRadioButton(
+            "Single computer — local database file (no server)"
+        )
+        self.rb_new = QRadioButton("Set up a new server (another machine)")
         self.rb_existing.setChecked(True)
         group = QButtonGroup(self)
         group.addButton(self.rb_existing, 0)
-        group.addButton(self.rb_new, 1)
+        group.addButton(self.rb_local, 1)
+        group.addButton(self.rb_new, 2)
         lay.addWidget(self.rb_existing)
+        lay.addWidget(self.rb_local)
         lay.addWidget(self.rb_new)
 
         self.stack = QStackedWidget()
         self.stack.addWidget(self._build_existing())
+        self.stack.addWidget(self._build_local())
         self.stack.addWidget(self._build_new())
         lay.addWidget(self.stack)
-        self.rb_existing.toggled.connect(
-            lambda on: self.stack.setCurrentIndex(0 if on else 1)
+        group.idToggled.connect(
+            lambda i, on: self.stack.setCurrentIndex(i) if on else None
         )
 
         self.status = QLabel("")
@@ -217,6 +223,18 @@ class _ServerPage(QWizardPage):
         btn = QPushButton("Test connection")
         btn.clicked.connect(self._test_existing)
         form.addRow("", btn)
+        return w
+
+    def _build_local(self):
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        msg = QLabel(
+            "This machine will use a local database file (an .xlsx on this "
+            "computer) — no server, no token, no network. You'll set the file "
+            "on the Microscope page. Pick this for a single-computer lab."
+        )
+        msg.setWordWrap(True)
+        lay.addWidget(msg)
         return w
 
     def _build_new(self):
@@ -330,6 +348,10 @@ class _ServerPage(QWizardPage):
 
     def validatePage(self):
         wiz = self.wizard()
+        if self.rb_local.isChecked():
+            # Single computer: no server — the microscope uses a local file.
+            wiz.server_url = ""
+            return True
         if self.rb_existing.isChecked():
             url = self.url_edit.text().strip().rstrip("/")
             token = self.token_edit.text().strip()
@@ -552,7 +574,8 @@ class _MicroscopePage(QWizardPage):
     def initializePage(self):
         if not self.db_edit.text().strip():
             url = getattr(self.wizard(), "server_url", "") or ""
-            self.db_edit.setText(url)
+            # No server (single-computer) -> default to a local database file.
+            self.db_edit.setText(url or "./power_database.xlsx")
 
     def _answers(self):
         answers = {

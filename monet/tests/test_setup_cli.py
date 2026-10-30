@@ -36,7 +36,7 @@ class TestConnectExistingAndAuthor(unittest.TestCase):
 
     def test_full_connect_and_author_sim(self):
         answers = [
-            "y",  # server already exists?
+            "1",  # database target -> connect to existing server
             "http://localhost:8000",  # server URL
             self.folder,  # central folder
             "",  # copy templates? -> default no
@@ -107,7 +107,7 @@ class TestNewServerGuidedFallback(unittest.TestCase):
 
     def test_guided_fallback_collects_token(self):
         answers = [
-            "n",  # server already exists? -> no (new server)
+            "3",  # database target -> set up a new server
             "srv.lab",  # hostname
             "",  # port -> 8000
             "",  # rig label -> default
@@ -124,6 +124,17 @@ class TestNewServerGuidedFallback(unittest.TestCase):
         self.assertEqual(url, "http://srv.lab:8000")
         self.assertEqual(updates[sc.ENV_CLIENT_TOKEN], "tok-abc")
         self.assertEqual(updates[sc.ENV_AUTH], "on")
+
+    def test_local_no_server_returns_none(self):
+        updates = {}
+        with (
+            mock.patch("builtins.input", side_effect=["2"]),
+            redirect_stdout(_io.StringIO()),
+        ):
+            url = setup_cli._step_server(updates)
+        self.assertIsNone(url)  # single computer -> local file, no server
+        self.assertNotIn(sc.ENV_CLIENT_TOKEN, updates)
+        self.assertNotIn(sc.ENV_AUTH, updates)
 
 
 class TestAuthorProtocolWithCfg(unittest.TestCase):

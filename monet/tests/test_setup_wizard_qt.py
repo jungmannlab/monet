@@ -113,6 +113,14 @@ class TestSetupWizard(unittest.TestCase):
         self.assertTrue(page.validatePage())
         self.assertEqual(wiz.server_url, "http://host:8000")
 
+    def test_server_page_local_no_server(self):
+        wiz = swq.SetupWizard(env_file=self.env_file)
+        page = wiz.page(1)  # _ServerPage
+        page.rb_local.setChecked(True)
+        self.assertTrue(page.validatePage())
+        self.assertEqual(wiz.server_url, "")
+        self.assertNotIn(sc.ENV_CLIENT_TOKEN, wiz.updates)
+
     def test_protocol_page_authors_from_cfg(self):
         cfg_path = os.path.join(self.tmp, "scope.cfg")
         with open(cfg_path, "w") as f:

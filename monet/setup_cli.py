@@ -121,11 +121,29 @@ def _parse_numbers(raw):
 # Wizard steps
 # ──────────────────────────────────────────────────────────────────────────
 def _step_server(updates):
-    """Resolve a server URL + token into ``updates``; return the URL or None."""
-    if not _ask_bool(
-        "Is there already a monet calibration server to connect to?",
-        default=True,
-    ):
+    """Resolve the calibration database target into ``updates``.
+
+    Returns the server URL to use as the microscope's ``database`` default, or
+    ``None`` for the single-computer (local file, no server) case.
+    """
+    choice = _choose(
+        "How will this machine reach its calibration database?",
+        [
+            (
+                "existing",
+                "Connect to an existing monet server (other machine)",
+            ),
+            ("local", "Single computer — local database file, no server"),
+            ("new", "Set up a NEW monet server on another machine"),
+        ],
+    )
+    if choice == "local":
+        print(
+            "  Single-computer mode: the microscope will use a local database "
+            "file on this machine (no server, no token)."
+        )
+        return None
+    if choice == "new":
         return _step_new_server(updates)
 
     while True:

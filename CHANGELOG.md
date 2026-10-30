@@ -36,6 +36,13 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
   from what Micro-Manager actually has instead of typed free-hand — closing the
   `Position '…' not available` footgun. The GUI microscope page also gained
   laser / beam-path authoring to feed the protocol.
+- **Single-computer (no-server) mode + collision-safe config append.** The
+  server step now offers a third option — *single computer: a local database
+  file, no server* — which points the microscope's `database` at a local
+  `.xlsx` (no server/token/port). Onboarding another rig into a shared
+  `configs.yaml` / `protocols.yaml` already appended; the wizard now also shows
+  what the file already holds and confirms before overwriting a same-named
+  entry (`setup_core.existing_entry_names`).
 - **Standalone Windows GUI installer + release pipeline.** A PyInstaller build
   (`packaging/monet-gui.spec` + `packaging/monet_gui.py`) produces a single
   `monet-gui.exe` so a lab Windows acquisition PC can run the GUI (and the
