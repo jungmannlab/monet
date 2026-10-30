@@ -126,16 +126,27 @@ def main():
         help="Port to bind the server to (serve mode only).",
     )
     parser.add_argument(
+        "--source",
+        type=str,
+        default=None,
+        help="Path to the source Excel database (migrate mode only).",
+    )
+    # serve always uses --db-path; migrate uses exactly one of --db-path /
+    # --url, so make them mutually exclusive to catch an ambiguous invocation.
+    db_target = parser.add_mutually_exclusive_group()
+    db_target.add_argument(
         "--db-path",
         type=str,
         default="calibrations.db",
         help="Path to the SQLite database file (serve/migrate mode).",
     )
-    parser.add_argument(
-        "--source",
+    db_target.add_argument(
+        "--url",
         type=str,
         default=None,
-        help="Path to the source Excel database (migrate mode only).",
+        help="migrate mode: upload to a monet server over HTTP (preserving "
+        "dates/times) instead of writing a local SQLite file. Mutually "
+        "exclusive with --db-path.",
     )
 
     # Parse
@@ -193,11 +204,16 @@ def main():
 
         uvicorn.run(app, host=args.host, port=args.port)
     elif args.mode == "migrate":
-        from monet.migrate import migrate_excel_to_sqlite
-
         if args.source is None:
             parser.error("migrate mode requires --source argument")
-        migrate_excel_to_sqlite(args.source, args.db_path)
+        if args.url:
+            from monet.migrate import migrate_excel_to_server
+
+            migrate_excel_to_server(args.source, args.url)
+        else:
+            from monet.migrate import migrate_excel_to_sqlite
+
+            migrate_excel_to_sqlite(args.source, args.db_path)
     elif args.mode == "calibrate":
         MonetCalibrateInteractive(
             args.name, args.configs_file, args.protocol_file

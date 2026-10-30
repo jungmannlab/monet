@@ -337,6 +337,68 @@ class TestBeampathHelpers(unittest.TestCase):
         self.assertEqual(bp["end"], {"DC": "Ti488", "shutter": False})
 
 
+class TestUpgradeHelpers(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_is_server_database(self):
+        self.assertTrue(sc.is_server_database("http://h:8000"))
+        self.assertTrue(sc.is_server_database("https://h"))
+        self.assertFalse(sc.is_server_database("./x.xlsx"))
+        self.assertFalse(sc.is_server_database(None))
+
+    def test_local_db_microscopes(self):
+        configs = {
+            "A": {"database": "./a.xlsx"},
+            "B": {"database": "http://srv:8000"},
+            "C": {"database": "/abs/c.xlsx"},
+        }
+        with (
+            mock.patch.object(sc.monet, "CONFIGS", configs),
+            mock.patch.object(sc.monet, "CONFIGS_PATH", "/cfg/configs.yaml"),
+        ):
+            self.assertEqual(set(sc.local_db_microscopes()), {"A", "C"})
+
+    def test_local_db_microscopes_empty_on_builtins(self):
+        with mock.patch.object(sc.monet, "CONFIGS_PATH", ""):
+            self.assertEqual(sc.local_db_microscopes(), {})
+
+    def test_resolve_local_db_path(self):
+        cfgdir = os.path.join(self.tmp, "cfg")
+        os.makedirs(cfgdir)
+        dbfile = os.path.join(cfgdir, "power.xlsx")
+        open(dbfile, "w").close()
+        configs_path = os.path.join(cfgdir, "configs.yaml")
+        self.assertEqual(
+            sc.resolve_local_db_path("./power.xlsx", configs_path), dbfile
+        )
+        self.assertIsNone(sc.resolve_local_db_path("http://h", configs_path))
+        self.assertIsNone(
+            sc.resolve_local_db_path("./missing.xlsx", configs_path)
+        )
+
+    def test_repoint_microscope_to_server(self):
+        import yaml
+
+        path = os.path.join(self.tmp, "configs.yaml")
+        configs = {
+            "A": {"database": "./a.xlsx", "index": {"name": "A"}},
+            "B": {"database": "./b.xlsx"},
+        }
+        with open(path, "w") as f:
+            yaml.dump(configs, f)
+        with mock.patch.object(sc.monet, "CONFIGS", configs):
+            sc.repoint_microscope_to_server("A", "http://srv:8000", path)
+        with open(path) as f:
+            data = yaml.full_load(f)
+        self.assertEqual(data["A"]["database"], "http://srv:8000")
+        self.assertEqual(data["A"]["index"]["name"], "A")  # preserved
+        self.assertEqual(data["B"]["database"], "./b.xlsx")  # untouched
+
+
 class TestConnectionCheck(unittest.TestCase):
     def test_test_microscope_sim_all_ok(self):
         entry = sc.build_microscope_entry(_sim_answers())

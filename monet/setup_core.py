@@ -636,6 +636,90 @@ def write_protocol_entry(name, protocol, protocols_path):
     return protocols_path
 
 
+# ──────────────────────────────────────────────────────────────────────────
+# Upgrade a single-computer lab (local database files) to a server
+# ──────────────────────────────────────────────────────────────────────────
+def is_server_database(database):
+    """True if a config's ``database`` is a server URL (vs a local file).
+
+    A type-guarded wrapper over :func:`monet.io._is_server_url` (which assumes a
+    str); the wizard passes raw config values that may be ``None``/non-str.
+    """
+    from monet.io import _is_server_url
+
+    return isinstance(database, str) and _is_server_url(database)
+
+
+def local_db_microscopes():
+    """Loaded microscopes whose ``database`` is a local file, not a server URL.
+
+    Empty unless an external ``configs.yaml`` is loaded (the built-in test
+    configs are ignored). This is what the wizard offers to migrate to a server
+    when a single-computer lab grows. Returns ``{name: config_dict}``.
+    """
+    if not (getattr(monet, "CONFIGS_PATH", "") or ""):
+        return {}
+    out = {}
+    for name, cfg in (getattr(monet, "CONFIGS", {}) or {}).items():
+        if isinstance(cfg, dict):
+            db = cfg.get("database")
+            if isinstance(db, str) and db and not is_server_database(db):
+                out[name] = cfg
+    return out
+
+
+def resolve_local_db_path(database, configs_path=None):
+    """Resolve a config ``database`` file reference to an existing path.
+
+    Tries it as given (absolute), then relative to the configs file's directory,
+    then relative to the current working directory (monet opens the DB relative
+    to the CWD at runtime). Returns the first path that exists, else ``None``.
+    """
+    if not database or is_server_database(database):
+        return None
+    candidates = []
+    if os.path.isabs(database):
+        candidates.append(database)
+    else:
+        if configs_path:
+            candidates.append(
+                os.path.join(
+                    os.path.dirname(os.path.abspath(configs_path)), database
+                )
+            )
+        candidates.append(os.path.abspath(database))
+    for path in candidates:
+        path = os.path.normpath(path)
+        if os.path.isfile(path):
+            return path
+    return None
+
+
+def migrate_local_db_to_server(xlsx_path, server_url):
+    """Upload a local Excel calibration DB to a server (preserving history).
+
+    Thin wrapper over :func:`monet.migrate.migrate_excel_to_server` so the CLI
+    and GUI import one module. Returns ``(inserted, skipped)``.
+    """
+    from monet.migrate import migrate_excel_to_server
+
+    return migrate_excel_to_server(xlsx_path, server_url)
+
+
+def repoint_microscope_to_server(name, server_url, configs_path):
+    """Set an existing microscope's ``database`` to ``server_url`` and persist.
+
+    Loads the entry from the in-memory config, swaps only its ``database``, and
+    rewrites ``configs_path`` (backed up, other entries preserved). Returns the
+    path written, or ``None`` if the microscope is unknown.
+    """
+    cfg = dict((getattr(monet, "CONFIGS", {}) or {}).get(name, {}))
+    if not cfg:
+        return None
+    cfg["database"] = server_url
+    return write_microscope_config(name, cfg, configs_path)
+
+
 def scaffold_central_folder(folder):
     """Copy the shipped example configs/protocols into an empty ``folder``.
 

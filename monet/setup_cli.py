@@ -437,6 +437,76 @@ def _step_author_microscope(configs_path, protocols_path, server_url):
 
 
 # ──────────────────────────────────────────────────────────────────────────
+# Upgrade: move a single-computer lab's local database(s) to a server
+# ──────────────────────────────────────────────────────────────────────────
+def _migrate_scope_to_server(name, cfg, server_url, configs_path):
+    """Migrate one microscope's local DB to ``server_url`` and re-point it.
+
+    Returns a human-readable status line. Does **not** re-point when the local
+    database can't be found or the migration fails — that would strand the rig's
+    calibration history behind an empty server. No interactive I/O, so a future
+    GUI upgrade route can reuse it.
+    """
+    db = cfg.get("database")
+    xlsx = sc.resolve_local_db_path(db, configs_path)
+    if not xlsx:
+        return (
+            "{}: local database {!r} not found — left as-is (not migrated or "
+            "re-pointed). Fix the path and re-run `monet setup`.".format(
+                name, db
+            )
+        )
+    try:
+        inserted, skipped = sc.migrate_local_db_to_server(xlsx, server_url)
+    except Exception as exc:
+        return (
+            "{}: migration FAILED ({}); left on the local file, not "
+            "re-pointed.".format(name, exc)
+        )
+    sc.repoint_microscope_to_server(name, server_url, configs_path)
+    return "{}: migrated {} record(s) ({} already present) -> {}".format(
+        name, inserted, skipped, server_url
+    )
+
+
+def _run_upgrade(local_scopes, env_file):
+    """Move existing local-file microscopes to a server (migrate + re-point)."""
+    import monet
+
+    configs_path = getattr(monet, "CONFIGS_PATH", "") or ""
+    print(
+        "\nUpgrading {} microscope(s) from a local database file to a "
+        "server:".format(len(local_scopes))
+    )
+    updates = {}
+    server_url = _step_server(updates)
+    if not server_url:
+        print("  No server configured — upgrade aborted; nothing changed.")
+        return 1
+
+    for name, cfg in local_scopes.items():
+        print(
+            "  "
+            + _migrate_scope_to_server(name, cfg, server_url, configs_path)
+        )
+
+    sc.write_env(updates, env_path=env_file)
+    print(
+        "\nUpgrade complete. Restart monet so the new config + .env take "
+        "effect."
+    )
+
+    if _ask_bool(
+        "\nSet up the new (additional) microscope now?", default=True
+    ):
+        protocols_path = getattr(monet, "PROTOCOLS_PATH", "") or os.path.join(
+            os.path.dirname(configs_path or "."), "protocols.yaml"
+        )
+        _step_author_microscope(configs_path, protocols_path, server_url)
+    return 0
+
+
+# ──────────────────────────────────────────────────────────────────────────
 # Entry point
 # ──────────────────────────────────────────────────────────────────────────
 def run(env_file=None):
@@ -451,6 +521,15 @@ def run(env_file=None):
             "update it.".format(state.configs_path or env_file)
         )
     print()
+
+    # Upgrade path: a single-computer lab (local DB files) growing to a server.
+    local_scopes = sc.local_db_microscopes()
+    if local_scopes and _ask_bool(
+        "Detected microscope(s) on a local database file ({}). Move them to a "
+        "server now?".format(", ".join(local_scopes)),
+        default=False,
+    ):
+        return _run_upgrade(local_scopes, env_file)
 
     updates = {}
     server_url = _step_server(updates)
