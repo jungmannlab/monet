@@ -448,6 +448,25 @@ python -m monet migrate --source power_database.xlsx --db-path /shared/calibrati
 Preserves historical calibration dates/times. Point the server's `--db-path`
 at the resulting file.
 
+If the server is already running on another machine and you can't reach its
+SQLite file, migrate **over HTTP** instead (preserves dates/times; honours
+`PAINT_MONET_TOKEN`; re-running skips records already present):
+
+```bash
+python -m monet migrate --source power_database.xlsx --url http://host:8000
+```
+
+### 6.3.1 Upgrading a single-computer lab to a server
+
+When a one-computer lab (microscopes on local `.xlsx` files) gets a second
+microscope, `monet setup` offers a guided upgrade: on launch it detects the
+microscopes using a local database file and asks whether to move them to a
+server. If you accept, it connects to (or stands up) the server, migrates each
+local database to it over HTTP (history preserved), re-points each microscope's
+`database` to the server URL, and then lets you add the new microscope — no
+calibration data is lost. (You can also do these steps by hand with the two
+`migrate` commands above plus re-running `monet setup`.)
+
 ### 6.4 HTTP API (reference)
 
 | Method | Endpoint | Purpose |

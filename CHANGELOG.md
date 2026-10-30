@@ -11,6 +11,16 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 ## [Unreleased]
 
 ### Added
+- **Upgrade a single-computer lab to a server (migrate database over HTTP).**
+  `monet migrate --source x.xlsx --url http://host:8000` uploads a local Excel
+  calibration database to a running server over the HTTP API — preserving every
+  record's original date/time (the `POST /calibrations` schema gained optional
+  `calibration_date`/`calibration_time`) and skipping records already present so
+  it is safe to re-run — for the case where the server's SQLite file isn't on
+  the local filesystem. On top of it, `monet setup` detects microscopes still on
+  a local database file and offers a guided upgrade: connect to / stand up a
+  server, migrate each local database to it, re-point each microscope's
+  `database` to the server URL, then add the new microscope — no history lost.
 - **Guided onboarding wizard (`monet setup`) + GUI first-run wizard.** A new
   headless engine (`monet/setup_core.py`) orchestrates the existing primitives
   so onboarding an acquisition machine is a single guided flow instead of a

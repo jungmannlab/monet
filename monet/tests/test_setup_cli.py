@@ -198,5 +198,52 @@ class TestAuthorProtocolWithCfg(unittest.TestCase):
         )
 
 
+class TestCliUpgrade(unittest.TestCase):
+    def test_run_upgrade_migrates_and_repoints(self):
+        import yaml
+
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, True)
+        configs_path = os.path.join(tmp, "configs.yaml")
+        dbfile = os.path.join(tmp, "a.xlsx")
+        open(dbfile, "w").close()
+        configs = {"A": {"database": dbfile, "index": {"name": "A"}}}
+        with open(configs_path, "w") as f:
+            yaml.dump(configs, f)
+        env_file = os.path.join(tmp, ".env")
+        migrated = []
+
+        def _fake_migrate(path, url):
+            migrated.append((path, url))
+            return (3, 0)
+
+        with (
+            mock.patch.object(setup_cli.sc.monet, "CONFIGS", configs),
+            mock.patch.object(
+                setup_cli.sc.monet, "CONFIGS_PATH", configs_path
+            ),
+            mock.patch.object(setup_cli.sc.monet, "PROTOCOLS_PATH", ""),
+            mock.patch.object(
+                setup_cli, "_step_server", return_value="http://srv:8000"
+            ),
+            mock.patch.object(
+                setup_cli.sc,
+                "migrate_local_db_to_server",
+                side_effect=_fake_migrate,
+            ),
+            mock.patch(
+                "builtins.input", side_effect=["n"]  # don't author a new scope
+            ),
+            redirect_stdout(_io.StringIO()),
+        ):
+            rc = setup_cli._run_upgrade({"A": configs["A"]}, env_file)
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(migrated, [(dbfile, "http://srv:8000")])
+        with open(configs_path) as f:
+            data = yaml.full_load(f)
+        self.assertEqual(data["A"]["database"], "http://srv:8000")
+
+
 if __name__ == "__main__":
     unittest.main()
