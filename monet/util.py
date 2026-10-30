@@ -10,9 +10,35 @@ Utility functions for the monet package
 """
 
 import logging
+import os
 from importlib import import_module
 
 logger = logging.getLogger(__name__)
+
+
+def ensure_private_file(path):
+    """Create ``path`` owner-only (0600) if missing, else harden it to 0600.
+
+    A secret (a bearer token) must never land in a world-readable file. 0o600
+    has no group/other bits, so ``os.open`` with a umask reliably yields 0o600;
+    an existing file is chmod-ed down. Shared by the token admin
+    (:func:`monet.tokens._write_map`) and the setup wizard
+    (:func:`monet.setup_core.write_env`) so the hardening logic lives once.
+    Returns ``path``.
+    """
+    parent = os.path.dirname(os.path.abspath(path))
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    if not os.path.exists(path):
+        os.close(os.open(path, os.O_CREAT | os.O_WRONLY, 0o600))
+    else:
+        try:
+            os.chmod(path, 0o600)
+        except OSError as exc:
+            logger.warning(
+                "could not restrict permissions on %s: %s", path, exc
+            )
+    return path
 
 
 def release_hardware(obj, _seen=None):

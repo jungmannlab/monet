@@ -9,6 +9,12 @@ analogous to the picasso-registry service). For the **instrument** server
 
 A committed unit template lives at [`deploy/monet.service`](../deploy/monet.service).
 
+> **From an acquisition machine instead?** `monet setup` (the onboarding wizard,
+> see [`ONBOARDING.md`](ONBOARDING.md)) can run this install for you over SSH and
+> mint the rig's token — install the `[setup]` extra (`paramiko`) there. It runs
+> the same `deploy/setup-server.sh` described below; use this runbook when you
+> are on the server box itself, or want to understand/customise the steps.
+
 ## Quick start (scripted)
 
 [`deploy/setup-server.sh`](../deploy/setup-server.sh) does the whole

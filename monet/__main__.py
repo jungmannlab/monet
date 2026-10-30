@@ -59,6 +59,11 @@ def main():
 
         sys.exit(auth_cli(sys.argv[2:]))
 
+    if len(sys.argv) > 1 and sys.argv[1] == "setup":
+        from monet.setup_cli import setup_cli
+
+        sys.exit(setup_cli(sys.argv[2:]))
+
     # os.chdir(os.path.split(CONFIGS_PATH)[0])
 
     # Main parser
@@ -68,7 +73,7 @@ def main():
         type=str,
         help=(
             'mode. One of "set", "adjust", "caliaotf", "calibrate", '
-            '"serve", "migrate", "gui", "token", or "auth".'
+            '"serve", "migrate", "gui", "setup", "token", or "auth".'
         ),
     )
     parser.add_argument(
@@ -220,8 +225,9 @@ def main():
         sys.exit(app.exec())
     else:
         raise KeyError(
-            'monet mode has to be one of "set", "calibrate", "serve", '
-            '"migrate", or "gui".'
+            'monet mode has to be one of "set", "adjust", "caliaotf", '
+            '"calibrate", "serve", "migrate", "gui", "setup", "token", or '
+            '"auth".'
         )
 
 

@@ -1,0 +1,80 @@
+name: Release — Windows GUI installer
+
+# Builds the standalone Windows GUI executable (monet-gui.exe) and attaches it
+# to the GitHub Release for the pushed tag. Fires on a vX.Y.Z tag push — the
+# same action that already cuts a monet release (setuptools-scm derives the
+# version from the tag). The lint + unit-test gates run on branches/PRs; this
+# only runs post-merge, on the tag.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  # Manual trigger so the Windows build can be smoke-tested without cutting a
+  # real release (the Release-asset upload below is gated to tag runs only).
+  workflow_dispatch:
+
+permissions:
+  contents: write   # create/update the Release and upload the exe asset
+
+jobs:
+  windows-exe:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # setuptools-scm needs history + the tag for the version
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install monet (GUI extra) + PyInstaller
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install ".[gui]" pyinstaller
+
+      - name: Confirm the bundled version matches the tag
+        shell: bash
+        run: |
+          ver=$(python -c "import monet; print(monet.__version__)")
+          echo "monet version: $ver"
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            tag="${GITHUB_REF_NAME#v}"
+            echo "release tag: $tag"
+            if [ "$ver" != "$tag" ]; then
+              echo "::error::bundled version ($ver) != tag ($tag) — setuptools-scm/tag mismatch (is fetch-depth:0 and the tag present?)"
+              exit 1
+            fi
+          fi
+
+      - name: Build monet-gui.exe
+        run: pyinstaller --clean --noconfirm packaging/monet-gui.spec
+
+      - name: Smoke-check the artifact (bundle contains monet + drivers)
+        shell: bash
+        run: |
+          test -f dist/monet-gui.exe
+          # Headless import check: fails the release if a dynamically-loaded
+          # driver module didn't make it into the frozen bundle.
+          ./dist/monet-gui.exe --selfcheck
+
+      - name: Upload exe as a build artifact (always)
+        uses: actions/upload-artifact@v4
+        with:
+          name: monet-gui-exe
+          path: dist/monet-gui.exe
+          if-no-files-found: error
+
+      - name: Attach exe to the GitHub Release (tag runs only)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          # Attaches to the Release for this tag, creating it if it does not
+          # exist yet and updating it (without clobbering notes) if it does.
+          files: dist/monet-gui.exe
+          fail_on_unmatched_files: true

@@ -8,6 +8,7 @@ A Python-based laser power calibration and control suite for microscopy systems.
 - Sinusoidal, linear, and polynomial curve fitting for attenuation mapping
 - Three power-setting modes — combined (laser + attenuator), fixed-laser (adjust attenuator only), fixed-attenuator (adjust laser only)
 - **Closed-loop power setting** with a PI controller against a power meter, with configurable tolerance and gains
+- **Guided onboarding wizard** (`monet setup` + GUI first-run wizard) that connects a new machine to the server, authors its config, and verifies the hardware
 - Interactive CLI for calibration, adjustment, and power setting
 - **PyQt6 GUI** with a Calibrate / Set Power / Database tab set, including a live feedback-convergence plot
 - **Embeddable widget API** (`monet.qt`) — the GUI can be dropped into any other Qt application
@@ -49,10 +50,41 @@ pip install -e ".[gui]"       # PyQt6 GUI (python -m monet gui)
 pip install -e ".[server]"    # FastAPI calibration server (python -m monet serve)
 pip install -e ".[hardware]"  # real-instrument SDKs (pyvisa, nidaqmx, ...)
 pip install -e ".[dev]"       # test / development tooling
+pip install -e ".[setup]"     # paramiko, for the wizard's SSH server install
 pip install -e ".[all]"       # everything above
 ```
 
+### Standalone Windows GUI (`monet-gui.exe`)
+
+For a lab acquisition PC that shouldn't need a Python/conda setup, each tagged
+release ships a single-file **`monet-gui.exe`** on its
+[GitHub Release](https://github.com/jungmannlab/monet/releases): download it and
+double-click to launch the GUI — the first-run setup wizard then connects the
+machine to the calibration server. The exe is built by CI
+(`.github/workflows/release-windows.yml`) from `packaging/monet-gui.spec`.
+Real-instrument SDKs (NI-DAQ, Thorlabs TLPM/Kinesis, pyvisa, …) still require
+their vendor drivers installed on the machine; the bundled GUI drives whatever
+is present.
+
 ## Quick Start
+
+### First-time setup wizard (`monet setup`)
+
+On a freshly installed acquisition machine, the fastest path is the guided
+wizard — it connects you to the lab's calibration server (or stands a new one
+up), points monet at your `configs.yaml` / `protocols.yaml`, authors a
+microscope entry, verifies the hardware, and writes the per-machine `.env`:
+
+```bash
+python -m monet setup          # interactive terminal wizard
+```
+
+The PyQt6 GUI opens the same wizard **automatically on first launch** (when the
+machine is not configured yet), and you can re-open it anytime from its
+**Setup → Setup Wizard…** menu. To let the wizard install the server on a Linux
+box over SSH, add the optional extra: `pip install -e ".[setup]"` (otherwise it
+prints the manual steps to run there). See
+[`docs/ONBOARDING.md`](docs/ONBOARDING.md) for the full walkthrough.
 
 ### Single-microscope setup (Excel database)
 
