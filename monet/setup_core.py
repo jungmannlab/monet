@@ -658,6 +658,111 @@ def scaffold_central_folder(folder):
 
 
 # ──────────────────────────────────────────────────────────────────────────
+# Micro-Manager config scraping — preset names for protocol beam-path authoring
+# ──────────────────────────────────────────────────────────────────────────
+@dataclass
+class MMConfig:
+    """What the wizard needs from a Micro-Manager ``.cfg`` (parsed statically).
+
+    ``groups`` maps each config-group name to its ordered, de-duplicated preset
+    names — the exact strings a protocol's ``beampath`` must reference (mismatch
+    = a runtime ``Position '…' not available``). ``core_shutter`` is the MM Core
+    shutter device (confirms ``NikonShutter`` will work); ``serial_ports`` are
+    the COM ports MM assigns (hints only — monet often drives lasers on its own
+    ports).
+    """
+
+    path: str
+    groups: dict
+    core_shutter: Optional[str]
+    serial_ports: list
+
+
+def parse_mm_config(path):
+    """Parse a Micro-Manager ``.cfg`` into an :class:`MMConfig`.
+
+    The ``.cfg`` is a flat comma-separated text file, so this needs neither
+    Micro-Manager running nor ``pycromanager`` — it reads the file directly.
+    Unknown/irrelevant lines are ignored. Raises the usual ``OSError`` if the
+    file cannot be read.
+    """
+    groups = {}
+    core_shutter = None
+    ports = []
+    with open(path, "r") as f:
+        for raw in f:
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = [p.strip() for p in line.split(",")]
+            key = parts[0]
+            if key == "ConfigGroup" and len(parts) >= 2:
+                presets = groups.setdefault(parts[1], [])
+                # parts[2] is the preset; a group may be declared with no preset
+                # (len == 2), or span many lines (one per device/property).
+                if len(parts) >= 3 and parts[2] and parts[2] not in presets:
+                    presets.append(parts[2])
+            elif key == "Property" and len(parts) >= 4:
+                if parts[1] == "Core" and parts[2] == "Shutter":
+                    core_shutter = parts[3] or None
+                elif parts[2] == "Port" and parts[3] and parts[3] not in ports:
+                    ports.append(parts[3])
+    return MMConfig(
+        path=path,
+        groups=groups,
+        core_shutter=core_shutter,
+        serial_ports=ports,
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Build a protocols.yaml entry (multi-laser calibration sweep)
+# ──────────────────────────────────────────────────────────────────────────
+# Beam-path drivers whose protocol value is a boolean (open/close) rather than a
+# Micro-Manager preset string. Shared by the CLI and GUI protocol authoring.
+SHUTTER_BEAMPATH_CLASSES = {"TestShutter", "NikonShutter"}
+
+
+def parse_number_list(raw):
+    """Parse a comma-separated string into a list of ints (or floats).
+
+    Shared by the CLI and GUI power-set-point fields. Raises ``ValueError`` on a
+    non-numeric token so callers can re-prompt.
+    """
+    out = []
+    for tok in str(raw).split(","):
+        tok = tok.strip()
+        if not tok:
+            continue
+        val = float(tok)
+        out.append(int(val) if val.is_integer() else val)
+    return out
+
+
+def build_protocol_entry(answers):
+    """Assemble a ``protocols.yaml`` sweep from wizard answers.
+
+    ``answers`` keys: ``laser_sequence`` (list of wavelengths), ``laser_powers``
+    ({wavelength: [mW, ...]}), and optional ``beampath`` ({wavelength: {obj:
+    value}, plus an ``end`` key} — ``value`` is a preset string (from the MM
+    ``.cfg``) for filter/nosepiece objects or a bool for shutters). Returns the
+    protocol dict in the schema ``calibrate``/the 2D GUI expect.
+    """
+    entry = {
+        "laser_sequence": list(answers["laser_sequence"]),
+        "laser_powers": {
+            wl: list(powers)
+            for wl, powers in answers.get("laser_powers", {}).items()
+        },
+    }
+    if answers.get("beampath"):
+        entry["beampath"] = {
+            key: dict(mapping) for key, mapping in answers["beampath"].items()
+        }
+    return entry
+
+
+# ──────────────────────────────────────────────────────────────────────────
 # Connection check for a just-authored config (no power actuation)
 # ──────────────────────────────────────────────────────────────────────────
 @dataclass

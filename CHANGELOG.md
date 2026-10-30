@@ -27,6 +27,15 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
   PyQt6 `QWizard` (`monet/setup_wizard_qt.py`) that `python -m monet gui`
   auto-opens on first run (no `.env` and only built-in configs) and re-opens via
   the new **Setup** menu.
+- **Wizard authors `protocols.yaml`, with Micro-Manager `.cfg` preset
+  pick-lists.** The wizard now also builds a multi-laser calibration sweep
+  (laser sequence / power set-points / beam-path) in both surfaces. A
+  dependency-free `.cfg` parser (`setup_core.parse_mm_config`, needs neither
+  Micro-Manager running nor `pycromanager`) scrapes config groups → preset
+  names and the Core shutter, so the protocol's `beampath` presets are chosen
+  from what Micro-Manager actually has instead of typed free-hand — closing the
+  `Position '…' not available` footgun. The GUI microscope page also gained
+  laser / beam-path authoring to feed the protocol.
 - **Standalone Windows GUI installer + release pipeline.** A PyInstaller build
   (`packaging/monet-gui.spec` + `packaging/monet_gui.py`) produces a single
   `monet-gui.exe` so a lab Windows acquisition PC can run the GUI (and the

@@ -113,6 +113,68 @@ class TestSetupWizard(unittest.TestCase):
         self.assertTrue(page.validatePage())
         self.assertEqual(wiz.server_url, "http://host:8000")
 
+    def test_protocol_page_authors_from_cfg(self):
+        cfg_path = os.path.join(self.tmp, "scope.cfg")
+        with open(cfg_path, "w") as f:
+            f.write(
+                "ConfigGroup,Filter turret,Ti488setting,FW,Label,1\n"
+                "ConfigGroup,Filter turret,Ti561setting,FW,Label,2\n"
+                "Property,Core,Shutter,MyShutter\n"
+            )
+        protocols_path = os.path.join(self.tmp, "protocols.yaml")
+        configs_path = os.path.join(self.tmp, "configs.yaml")
+
+        wiz = swq.SetupWizard(env_file=self.env_file)
+        answers = {
+            "name": "rig",
+            "database": "./x.xlsx",
+            "wavelength": 488,
+            "laser_power": 100,
+            "powermeter": {"class": "TestPowerMeter", "init_kwargs": {}},
+            "attenuation": {"class": "TestAttenuator", "init_kwargs": {}},
+            "analysis": {
+                "class": "SinusAttenuationCurveAnalyzer",
+                "init_kwargs": {"min": 0, "max": 180, "step": 5},
+            },
+            "lasers": {
+                488: {"class": "TestLaser", "init_kwargs": {}},
+                561: {"class": "TestLaser", "init_kwargs": {}},
+            },
+            "beampath": {
+                "DC": {"class": "NikonFilterWheel", "init_kwargs": {}},
+                "shutter": {"class": "NikonShutter", "init_kwargs": {}},
+            },
+        }
+        wiz.microscope_name = "rig"
+        wiz.microscope_answers = answers
+        wiz.microscope_entry = sc.build_microscope_entry(answers)
+        wiz.configs_path = configs_path
+        wiz.protocols_path = protocols_path
+        wiz.updates = {}
+
+        page = wiz.page(4)  # _ProtocolPage
+        page.initializePage()
+        page._power_edits[488].setText("50,100")
+        page._power_edits[561].setText("100,200")
+        page.cfg_edit.setText(cfg_path)
+        page._load_cfg()
+        page._bp_widgets[(488, "DC")].setCurrentText("Ti488setting")
+        page._bp_widgets[(561, "DC")].setCurrentText("Ti561setting")
+        page._bp_widgets[("end", "DC")].setCurrentText("Ti488setting")
+        self.assertTrue(page.validatePage())
+
+        wiz.commit(self.env_file)
+        with open(protocols_path) as f:
+            proto = yaml.full_load(f)["rig"]
+        self.assertEqual(proto["laser_sequence"], [488, 561])
+        self.assertEqual(proto["laser_powers"][561], [100, 200])
+        self.assertEqual(
+            proto["beampath"][488], {"DC": "Ti488setting", "shutter": True}
+        )
+        self.assertEqual(
+            proto["beampath"]["end"], {"DC": "Ti488setting", "shutter": False}
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

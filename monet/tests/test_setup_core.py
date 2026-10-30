@@ -206,6 +206,77 @@ class TestBuildAndPersist(unittest.TestCase):
                 sc.scaffold_central_folder(folder)
 
 
+class TestMMConfigParsing(unittest.TestCase):
+    def _cfg_path(self):
+        return os.path.join(sc.examples_dir(), "microscope.cfg")
+
+    def test_parses_groups_presets_and_shutter(self):
+        cfg = sc.parse_mm_config(self._cfg_path())
+        # The example cfg's filter group is literally "Filter".
+        self.assertIn("Filter", cfg.groups)
+        presets = cfg.groups["Filter"]
+        self.assertIn("2-TIRF 560", presets)
+        self.assertIn("1-TIRF 488", presets)
+        # presets are de-duplicated (defined across many ConfigGroup lines)
+        self.assertEqual(len(presets), len(set(presets)))
+        self.assertIn("Nosepiece", cfg.groups)
+        self.assertEqual(cfg.core_shutter, "Turret1Shutter")
+
+    def test_parse_from_written_cfg(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, True)
+        path = os.path.join(tmp, "m.cfg")
+        with open(path, "w") as f:
+            f.write(
+                "# a comment\n"
+                "ConfigGroup,Filter turret,Ti488setting,FW,Label,1\n"
+                "ConfigGroup,Filter turret,Ti561setting,FW,Label,2\n"
+                "ConfigGroup,Filter turret,Ti488setting,Shutter,State,1\n"
+                "Property,Core,Shutter,MyShutter\n"
+                "Property,Laser,Port,COM9\n"
+            )
+        cfg = sc.parse_mm_config(path)
+        self.assertEqual(
+            cfg.groups["Filter turret"], ["Ti488setting", "Ti561setting"]
+        )
+        self.assertEqual(cfg.core_shutter, "MyShutter")
+        self.assertIn("COM9", cfg.serial_ports)
+
+    def test_empty_group_declaration(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, True)
+        path = os.path.join(tmp, "m.cfg")
+        with open(path, "w") as f:
+            f.write("ConfigGroup,EmptyGroup\n")
+        cfg = sc.parse_mm_config(path)
+        self.assertEqual(cfg.groups["EmptyGroup"], [])
+
+
+class TestBuildProtocol(unittest.TestCase):
+    def test_build_protocol_entry(self):
+        proto = sc.build_protocol_entry(
+            {
+                "laser_sequence": [488, 561],
+                "laser_powers": {488: [50, 100], 561: [100, 200]},
+                "beampath": {
+                    488: {"DC": "Ti488setting", "shutter": True},
+                    561: {"DC": "Ti561setting", "shutter": True},
+                    "end": {"DC": "Ti488setting", "shutter": False},
+                },
+            }
+        )
+        self.assertEqual(proto["laser_sequence"], [488, 561])
+        self.assertEqual(proto["laser_powers"][488], [50, 100])
+        self.assertEqual(proto["beampath"][488]["DC"], "Ti488setting")
+        self.assertFalse(proto["beampath"]["end"]["shutter"])
+
+    def test_build_protocol_without_beampath(self):
+        proto = sc.build_protocol_entry(
+            {"laser_sequence": [488], "laser_powers": {488: [100]}}
+        )
+        self.assertNotIn("beampath", proto)
+
+
 class TestConnectionCheck(unittest.TestCase):
     def test_test_microscope_sim_all_ok(self):
         entry = sc.build_microscope_entry(_sim_answers())

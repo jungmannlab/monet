@@ -337,6 +337,13 @@ group in Micro-Manager. Those preset strings come from your **protocol's
 preset called `Ti488setting`**, or monet raises
 `Position 'Ti488setting' not available … Options: [...]`.
 
+> **Let the wizard match them for you.** When authoring a protocol, `monet setup`
+> (and the GUI wizard) can read your Micro-Manager `.cfg` directly — no MM
+> running, no `pycromanager` needed — and offer its **config groups and preset
+> names as pick-lists**, so the protocol's `beampath` values can't drift from
+> what MM actually has. Point it at the `.cfg` when prompted; it also reports the
+> Core shutter it found. The manual checklist below is what that automates.
+
 Checklist to match them:
 
 1. In Micro-Manager, create config groups named `Filter turret` and (if used)

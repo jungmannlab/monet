@@ -107,6 +107,16 @@ def _author_section(category, text):
     return {"class": name, "init_kwargs": kwargs}
 
 
+# Beam-path drivers whose protocol value is a boolean (open/close) rather than a
+# Micro-Manager preset string.
+_SHUTTER_CLASSES = sc.SHUTTER_BEAMPATH_CLASSES
+
+
+def _parse_numbers(raw):
+    """Parse a comma-separated list of numbers into ints (or floats)."""
+    return sc.parse_number_list(raw)
+
+
 # ──────────────────────────────────────────────────────────────────────────
 # Wizard steps
 # ──────────────────────────────────────────────────────────────────────────
@@ -204,7 +214,7 @@ def _step_new_server(updates):
 
 
 def _step_central_folder(updates):
-    """Resolve config/protocol file paths into ``updates``; return configs."""
+    """Resolve paths into ``updates``; return (configs_path, protocols_path)."""
     folder = _ask_required(
         "Folder for configs.yaml / protocols.yaml (central share or local)"
     )
@@ -224,10 +234,118 @@ def _step_central_folder(updates):
             )
     updates[sc.ENV_CONFIG_PATHS] = sc.paths_to_env([configs_path])
     updates[sc.ENV_PROTOCOL_PATHS] = sc.paths_to_env([protocols_path])
-    return configs_path
+    return configs_path, protocols_path
 
 
-def _step_author_microscope(configs_path, server_url):
+def _author_protocol(name, answers, protocols_path):
+    """Author a multi-laser calibration sweep (protocols.yaml) for ``name``.
+
+    Uses the lasers/beam-path objects just authored; if a Micro-Manager ``.cfg``
+    is supplied, beam-path presets are chosen from its scraped config groups so
+    they can't drift from what Micro-Manager actually has.
+    """
+    lasers = answers.get("lasers") or {}
+    if not lasers:
+        return
+    if not _ask_bool(
+        "\nAuthor a calibration protocol (multi-laser sweep) now?",
+        default=True,
+    ):
+        return
+
+    laser_sequence = sorted(lasers)
+    laser_powers = {}
+    for wl in laser_sequence:
+        while True:
+            raw = _ask(
+                "  {} nm power set-points [mW], comma-separated".format(wl),
+                "100,200,500,1000",
+            )
+            try:
+                laser_powers[wl] = _parse_numbers(raw)
+                break
+            except ValueError:
+                print("  enter numbers separated by commas")
+
+    beampath = _author_protocol_beampath(answers, laser_sequence)
+    proto = sc.build_protocol_entry(
+        {
+            "laser_sequence": laser_sequence,
+            "laser_powers": laser_powers,
+            "beampath": beampath,
+        }
+    )
+    sc.write_protocol_entry(name, proto, protocols_path)
+    print("  wrote protocol for {} to {}".format(name, protocols_path))
+
+
+def _author_protocol_beampath(answers, laser_sequence):
+    """Build the protocol ``beampath`` block (per laser + ``end``), or None."""
+    bp_objs = answers.get("beampath") or {}
+    if not bp_objs:
+        return None
+
+    cfg = None
+    cfg_path = _ask(
+        "  Micro-Manager .cfg path (optional — enables preset pick-lists)", ""
+    )
+    if cfg_path:
+        try:
+            cfg = sc.parse_mm_config(os.path.expanduser(cfg_path))
+            print("    found config groups: {}".format(", ".join(cfg.groups)))
+            if cfg.core_shutter:
+                print("    core shutter: {}".format(cfg.core_shutter))
+        except OSError as exc:
+            print(
+                "    could not read .cfg ({}); entering presets by hand".format(
+                    exc
+                )
+            )
+
+    # For each preset-driven object (filter/nosepiece), pick which scraped MM
+    # group drives it once, then choose presets per laser from that group. Only
+    # offer groups that actually have presets (an empty group would make the
+    # preset pick-list — and _choose — degenerate).
+    usable = [g for g in (cfg.groups if cfg else {}) if cfg.groups[g]]
+    obj_group = {}
+    if usable:
+        for obj, spec in bp_objs.items():
+            if spec["class"] in _SHUTTER_CLASSES:
+                continue
+            obj_group[obj] = _choose(
+                "  which MM config group drives '{}'?".format(obj),
+                [(g, g) for g in usable],
+            )
+
+    def _value_for(obj, spec, label):
+        if spec["class"] in _SHUTTER_CLASSES:
+            return _ask_bool("    {}: open '{}'?".format(label, obj), True)
+        if obj in obj_group:
+            return _choose(
+                "    {}: preset for '{}'".format(label, obj),
+                [(p, p) for p in cfg.groups[obj_group[obj]]],
+            )
+        return _ask("    {}: preset for '{}'".format(label, obj), "")
+
+    beampath = {}
+    for wl in laser_sequence:
+        beampath[wl] = {
+            obj: _value_for(obj, spec, "{} nm".format(wl))
+            for obj, spec in bp_objs.items()
+        }
+    # Park + close at the end of the run.
+    beampath["end"] = {
+        obj: (
+            False
+            if spec["class"] in _SHUTTER_CLASSES
+            else _value_for(obj, spec, "end")
+        )
+        for obj, spec in bp_objs.items()
+    }
+    return beampath
+
+
+def _step_author_microscope(configs_path, protocols_path, server_url):
     """Author + verify + persist a microscope entry. Returns its name or None."""
     if not _ask_bool("Author a microscope entry now?", default=True):
         return None
@@ -279,6 +397,8 @@ def _step_author_microscope(configs_path, server_url):
 
     sc.write_microscope_config(name, entry, configs_path)
     print("  wrote {} to {}".format(name, configs_path))
+
+    _author_protocol(name, answers, protocols_path)
     return name
 
 
@@ -300,11 +420,11 @@ def run(env_file=None):
 
     updates = {}
     server_url = _step_server(updates)
-    configs_path = _step_central_folder(updates)
+    configs_path, protocols_path = _step_central_folder(updates)
     sc.write_env(updates, env_path=env_file)
     print("\nSaved server/path settings to {}".format(env_file))
 
-    name = _step_author_microscope(configs_path, server_url)
+    name = _step_author_microscope(configs_path, protocols_path, server_url)
 
     print("\nSetup complete.")
     if name:

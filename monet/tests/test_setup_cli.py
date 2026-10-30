@@ -126,5 +126,66 @@ class TestNewServerGuidedFallback(unittest.TestCase):
         self.assertEqual(updates[sc.ENV_AUTH], "on")
 
 
+class TestAuthorProtocolWithCfg(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_protocol_presets_from_mm_cfg(self):
+        cfg_path = os.path.join(self.tmp, "scope.cfg")
+        with open(cfg_path, "w") as f:
+            f.write(
+                "ConfigGroup,Filter turret,Ti488setting,FW,Label,1\n"
+                "ConfigGroup,Filter turret,Ti561setting,FW,Label,2\n"
+                "Property,Core,Shutter,MyShutter\n"
+            )
+        protocols_path = os.path.join(self.tmp, "protocols.yaml")
+        answers = {
+            "lasers": {
+                488: {"class": "TestLaser", "init_kwargs": {}},
+                561: {"class": "TestLaser", "init_kwargs": {}},
+            },
+            "beampath": {
+                "DC": {"class": "NikonFilterWheel", "init_kwargs": {}},
+                "shutter": {"class": "NikonShutter", "init_kwargs": {}},
+            },
+        }
+        answers_in = [
+            "",  # author protocol? -> yes
+            "50,100",  # 488 powers
+            "100,200",  # 561 powers
+            cfg_path,  # MM .cfg path
+            "1",  # group driving DC -> "Filter turret"
+            "1",  # 488 DC preset -> Ti488setting
+            "",  # 488 shutter open? -> yes
+            "2",  # 561 DC preset -> Ti561setting
+            "",  # 561 shutter open? -> yes
+            "1",  # end DC preset -> Ti488setting
+        ]
+        with (
+            mock.patch("builtins.input", side_effect=answers_in),
+            redirect_stdout(_io.StringIO()),
+        ):
+            setup_cli._author_protocol("rig", answers, protocols_path)
+
+        with open(protocols_path) as f:
+            proto = yaml.full_load(f)["rig"]
+        self.assertEqual(proto["laser_sequence"], [488, 561])
+        self.assertEqual(
+            proto["laser_powers"], {488: [50, 100], 561: [100, 200]}
+        )
+        self.assertEqual(
+            proto["beampath"][488], {"DC": "Ti488setting", "shutter": True}
+        )
+        self.assertEqual(
+            proto["beampath"][561], {"DC": "Ti561setting", "shutter": True}
+        )
+        self.assertEqual(
+            proto["beampath"]["end"], {"DC": "Ti488setting", "shutter": False}
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

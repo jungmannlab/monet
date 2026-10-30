@@ -402,22 +402,66 @@ class _CentralFolderPage(QWizardPage):
                 protocols_path = paths["protocols"]
         wiz = self.wizard()
         wiz.configs_path = configs_path
+        wiz.protocols_path = protocols_path
         wiz.updates[sc.ENV_CONFIG_PATHS] = sc.paths_to_env([configs_path])
         wiz.updates[sc.ENV_PROTOCOL_PATHS] = sc.paths_to_env([protocols_path])
         return True
+
+
+class _LaserRow(QWidget):
+    """One laser: wavelength + a driver picker (reuses _DriverForm)."""
+
+    def __init__(self, on_remove, parent=None):
+        super().__init__(parent)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        self.wl = QSpinBox()
+        self.wl.setRange(1, 10000)
+        self.wl.setValue(488)
+        self.form = _DriverForm("laser")
+        btn = QPushButton("✕")
+        btn.setFixedWidth(28)
+        btn.clicked.connect(lambda: on_remove(self))
+        lay.addWidget(QLabel("λ [nm]"))
+        lay.addWidget(self.wl)
+        lay.addWidget(self.form, 1)
+        lay.addWidget(btn)
+
+
+class _BeamPathRow(QWidget):
+    """One beam-path device: object id + a driver picker."""
+
+    def __init__(self, on_remove, parent=None):
+        super().__init__(parent)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        self.obj = QLineEdit()
+        self.obj.setPlaceholderText("id, e.g. DC")
+        self.obj.setFixedWidth(100)
+        self.form = _DriverForm("beampath")
+        btn = QPushButton("✕")
+        btn.setFixedWidth(28)
+        btn.clicked.connect(lambda: on_remove(self))
+        lay.addWidget(self.obj)
+        lay.addWidget(self.form, 1)
+        lay.addWidget(btn)
 
 
 class _MicroscopePage(QWizardPage):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setTitle("Microscope")
+        self._laser_rows = []
+        self._bp_rows = []
         lay = QVBoxLayout(self)
         self.author_cb = QCheckBox("Author a microscope entry now")
         self.author_cb.setChecked(True)
         lay.addWidget(self.author_cb)
 
         self.body = QWidget()
-        form = QFormLayout(self.body)
+        body_lay = QVBoxLayout(self.body)
+        body_lay.setContentsMargins(0, 0, 0, 0)
+        form = QFormLayout()
         self.name_edit = QLineEdit()
         form.addRow("Name", self.name_edit)
         self.db_edit = QLineEdit()
@@ -430,13 +474,35 @@ class _MicroscopePage(QWizardPage):
         self.lp_spin.setRange(0, 100000)
         self.lp_spin.setValue(100)
         form.addRow("Index laser_power [mW]", self.lp_spin)
-
         self.pm_form = _DriverForm("powermeter")
         self.at_form = _DriverForm("attenuation")
         self.an_form = _DriverForm("analysis")
         form.addRow("Power meter", self.pm_form)
         form.addRow("Attenuator", self.at_form)
         form.addRow("Curve model", self.an_form)
+        body_lay.addLayout(form)
+
+        # Lasers (optional; needed for multi-laser protocols)
+        laser_box = QGroupBox(
+            "Lasers (optional — enables a calibration protocol)"
+        )
+        lb = QVBoxLayout(laser_box)
+        self._laser_host = QVBoxLayout()
+        lb.addLayout(self._laser_host)
+        add_laser = QPushButton("Add laser")
+        add_laser.clicked.connect(self._add_laser)
+        lb.addWidget(add_laser)
+        body_lay.addWidget(laser_box)
+
+        # Beam-path devices (optional; Micro-Manager)
+        bp_box = QGroupBox("Beam-path devices (optional — Micro-Manager)")
+        bb = QVBoxLayout(bp_box)
+        self._bp_host = QVBoxLayout()
+        bb.addLayout(self._bp_host)
+        add_bp = QPushButton("Add beam-path device")
+        add_bp.clicked.connect(self._add_bp)
+        bb.addWidget(add_bp)
+        body_lay.addWidget(bp_box)
 
         row = QHBoxLayout()
         btn_test = QPushButton("Test connection")
@@ -445,34 +511,57 @@ class _MicroscopePage(QWizardPage):
         self.test_label = QLabel("")
         self.test_label.setWordWrap(True)
         row.addWidget(self.test_label, 1)
-        form.addRow(row)
-        form.addRow(
-            QLabel(
-                "Lasers / beam-path: add them in configs.yaml afterwards, or "
-                "use `monet setup` on the CLI."
-            )
-        )
+        body_lay.addLayout(row)
+
         lay.addWidget(self.body)
         self.author_cb.toggled.connect(self.body.setEnabled)
+
+    def _add_laser(self):
+        row = _LaserRow(self._remove_row)
+        self._laser_rows.append(row)
+        self._laser_host.addWidget(row)
+
+    def _add_bp(self):
+        row = _BeamPathRow(self._remove_row)
+        self._bp_rows.append(row)
+        self._bp_host.addWidget(row)
+
+    def _remove_row(self, row):
+        for lst in (self._laser_rows, self._bp_rows):
+            if row in lst:
+                lst.remove(row)
+        row.setParent(None)
+        row.deleteLater()
 
     def initializePage(self):
         if not self.db_edit.text().strip():
             url = getattr(self.wizard(), "server_url", "") or ""
             self.db_edit.setText(url)
 
+    def _answers(self):
+        answers = {
+            "name": self.name_edit.text().strip() or "microscope",
+            "database": self.db_edit.text().strip() or "./power_database.xlsx",
+            "wavelength": self.wl_spin.value(),
+            "laser_power": self.lp_spin.value(),
+            "powermeter": self.pm_form.section(),
+            "attenuation": self.at_form.section(),
+            "analysis": self.an_form.section(),
+        }
+        lasers = {r.wl.value(): r.form.section() for r in self._laser_rows}
+        if lasers:
+            answers["lasers"] = lasers
+        beampath = {
+            r.obj.text().strip(): r.form.section()
+            for r in self._bp_rows
+            if r.obj.text().strip()
+        }
+        if beampath:
+            answers["beampath"] = beampath
+        return answers
+
     def _build_entry(self):
-        return sc.build_microscope_entry(
-            {
-                "name": self.name_edit.text().strip() or "microscope",
-                "database": self.db_edit.text().strip()
-                or "./power_database.xlsx",
-                "wavelength": self.wl_spin.value(),
-                "laser_power": self.lp_spin.value(),
-                "powermeter": self.pm_form.section(),
-                "attenuation": self.at_form.section(),
-                "analysis": self.an_form.section(),
-            }
-        )
+        return sc.build_microscope_entry(self._answers())
 
     def _test(self):
         try:
@@ -494,6 +583,7 @@ class _MicroscopePage(QWizardPage):
         if not self.author_cb.isChecked():
             wiz.microscope_name = None
             wiz.microscope_entry = None
+            wiz.microscope_answers = None
             return True
         if not self.name_edit.text().strip():
             self.test_label.setText("A microscope name is required.")
@@ -503,13 +593,244 @@ class _MicroscopePage(QWizardPage):
             + self.at_form.missing_required()
             + self.an_form.missing_required()
         )
+        for r in self._laser_rows:
+            missing += r.form.missing_required()
         if missing:
             self.test_label.setText(
                 "Fill required fields: {}".format(", ".join(missing))
             )
             return False
+        answers = self._answers()
         wiz.microscope_name = self.name_edit.text().strip()
-        wiz.microscope_entry = self._build_entry()
+        wiz.microscope_answers = answers
+        wiz.microscope_entry = sc.build_microscope_entry(answers)
+        return True
+
+
+class _ProtocolPage(QWizardPage):
+    """Author a multi-laser calibration sweep, with MM-.cfg preset pick-lists."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setTitle("Calibration protocol")
+        self._cfg = None
+        self._power_edits = {}
+        self._group_combos = {}  # obj -> QComboBox (which MM group drives it)
+        self._bp_widgets = {}  # (laser|'end', obj) -> QComboBox | QCheckBox
+        lay = QVBoxLayout(self)
+        self.author_cb = QCheckBox(
+            "Author a calibration protocol (multi-laser sweep) now"
+        )
+        self.author_cb.setChecked(True)
+        lay.addWidget(self.author_cb)
+        self.info = QLabel("")
+        self.info.setWordWrap(True)
+        lay.addWidget(self.info)
+
+        self.body = QWidget()
+        body_lay = QVBoxLayout(self.body)
+        body_lay.setContentsMargins(0, 0, 0, 0)
+        body_lay.addWidget(
+            QLabel("Power set-points [mW] per laser (comma-separated):")
+        )
+        self._powers_host = QWidget()
+        self._powers_form = QFormLayout(self._powers_host)
+        body_lay.addWidget(self._powers_host)
+
+        cfg_row = QHBoxLayout()
+        self.cfg_edit = QLineEdit()
+        self.cfg_edit.setPlaceholderText(
+            "Micro-Manager .cfg (optional — enables preset pick-lists)"
+        )
+        btn_browse = QPushButton("Browse…")
+        btn_browse.clicked.connect(self._browse)
+        btn_load = QPushButton("Load presets")
+        btn_load.clicked.connect(self._load_cfg)
+        cfg_row.addWidget(self.cfg_edit)
+        cfg_row.addWidget(btn_browse)
+        cfg_row.addWidget(btn_load)
+        body_lay.addLayout(cfg_row)
+        self.cfg_status = QLabel("")
+        self.cfg_status.setWordWrap(True)
+        body_lay.addWidget(self.cfg_status)
+
+        self._bp_host = QWidget()
+        self._bp_layout = QVBoxLayout(self._bp_host)
+        self._bp_layout.setContentsMargins(0, 0, 0, 0)
+        body_lay.addWidget(self._bp_host)
+
+        lay.addWidget(self.body)
+        self.author_cb.toggled.connect(self.body.setEnabled)
+
+    def _lasers(self):
+        answers = getattr(self.wizard(), "microscope_answers", None) or {}
+        return sorted(answers.get("lasers") or {})
+
+    def _bp_objs(self):
+        answers = getattr(self.wizard(), "microscope_answers", None) or {}
+        return answers.get("beampath") or {}
+
+    def initializePage(self):
+        while self._powers_form.rowCount():
+            self._powers_form.removeRow(0)
+        self._power_edits = {}
+        self._clear_bp_grid()
+        lasers = self._lasers()
+        if not lasers:
+            self.author_cb.setChecked(False)
+            self.author_cb.setEnabled(False)
+            self.body.setEnabled(False)
+            self.info.setText(
+                "No lasers configured on the previous page — nothing to "
+                "author here. Click Next."
+            )
+            return
+        self.author_cb.setEnabled(True)
+        self.body.setEnabled(self.author_cb.isChecked())
+        self.info.setText("")
+        for wl in lasers:
+            edit = QLineEdit("100,200,500,1000")
+            self._powers_form.addRow("{} nm".format(wl), edit)
+            self._power_edits[wl] = edit
+        if self._bp_objs():
+            self.cfg_status.setText(
+                "Load a .cfg to pick beam-path presets (optional)."
+            )
+
+    def _browse(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select Micro-Manager .cfg", "", "MM config (*.cfg);;All (*)"
+        )
+        if path:
+            self.cfg_edit.setText(path)
+
+    def _clear_bp_grid(self):
+        while self._bp_layout.count():
+            item = self._bp_layout.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+        self._group_combos = {}
+        self._bp_widgets = {}
+
+    def _load_cfg(self):
+        path = self.cfg_edit.text().strip()
+        if not path:
+            self.cfg_status.setText("Enter a .cfg path first.")
+            return
+        try:
+            self._cfg = sc.parse_mm_config(os.path.expanduser(path))
+        except OSError as exc:
+            self.cfg_status.setText("Could not read .cfg: {}".format(exc))
+            return
+        self.cfg_status.setText(
+            "Groups: {} | core shutter: {}".format(
+                ", ".join(self._cfg.groups) or "(none)",
+                self._cfg.core_shutter or "(none)",
+            )
+        )
+        self._build_bp_grid()
+
+    def _build_bp_grid(self):
+        self._clear_bp_grid()
+        bp_objs = self._bp_objs()
+        if not bp_objs or not self._cfg:
+            return
+        # One "which MM group drives this object" picker per preset-driven
+        # object. Only groups that actually have presets are offered (an empty
+        # group would yield an empty preset combo).
+        usable = [g for g in self._cfg.groups if self._cfg.groups[g]]
+        for obj, spec in bp_objs.items():
+            if spec["class"] in sc.SHUTTER_BEAMPATH_CLASSES:
+                continue
+            holder = QWidget()
+            row = QHBoxLayout(holder)
+            row.setContentsMargins(0, 0, 0, 0)
+            combo = QComboBox()
+            for g in usable:
+                combo.addItem(g)
+            combo.currentTextChanged.connect(self._refill_presets)
+            self._group_combos[obj] = combo
+            row.addWidget(QLabel("MM group for '{}'".format(obj)))
+            row.addWidget(combo, 1)
+            self._bp_layout.addWidget(holder)
+        # A preset combo / shutter checkbox per (laser|end, object).
+        for key in list(self._lasers()) + ["end"]:
+            label = (
+                "end (park / close)" if key == "end" else "{} nm".format(key)
+            )
+            box = QGroupBox(label)
+            form = QFormLayout(box)
+            for obj, spec in bp_objs.items():
+                if spec["class"] in sc.SHUTTER_BEAMPATH_CLASSES:
+                    cb = QCheckBox()
+                    cb.setChecked(key != "end")
+                    if key == "end":
+                        cb.setEnabled(False)
+                    self._bp_widgets[(key, obj)] = cb
+                    form.addRow("{} (shutter)".format(obj), cb)
+                else:
+                    combo = QComboBox()
+                    self._bp_widgets[(key, obj)] = combo
+                    form.addRow("{} (preset)".format(obj), combo)
+            self._bp_layout.addWidget(box)
+        self._refill_presets()
+
+    def _refill_presets(self, *args):
+        if not self._cfg:
+            return
+        for (key, obj), w in self._bp_widgets.items():
+            if not isinstance(w, QComboBox):
+                continue
+            group = self._group_combos.get(obj)
+            presets = (
+                self._cfg.groups.get(group.currentText(), []) if group else []
+            )
+            current = w.currentText()
+            w.clear()
+            w.addItems(presets)
+            if current in presets:
+                w.setCurrentText(current)
+
+    def _beampath_answers(self):
+        bp_objs = self._bp_objs()
+        if not bp_objs or not self._cfg or not self._bp_widgets:
+            return None
+        beampath = {}
+        for key in list(self._lasers()) + ["end"]:
+            mapping = {}
+            for obj in bp_objs:
+                w = self._bp_widgets.get((key, obj))
+                if isinstance(w, QCheckBox):
+                    mapping[obj] = w.isChecked()
+                elif isinstance(w, QComboBox):
+                    mapping[obj] = w.currentText()
+            beampath[key] = mapping
+        return beampath
+
+    def validatePage(self):
+        wiz = self.wizard()
+        if not self.author_cb.isChecked() or not self._lasers():
+            wiz.protocol_entry = None
+            return True
+        try:
+            laser_powers = {
+                wl: sc.parse_number_list(e.text())
+                for wl, e in self._power_edits.items()
+            }
+        except ValueError:
+            self.info.setText(
+                "Power set-points must be comma-separated numbers."
+            )
+            return False
+        wiz.protocol_name = wiz.microscope_name
+        wiz.protocol_entry = sc.build_protocol_entry(
+            {
+                "laser_sequence": self._lasers(),
+                "laser_powers": laser_powers,
+                "beampath": self._beampath_answers(),
+            }
+        )
         return True
 
 
@@ -545,14 +866,19 @@ class SetupWizard(QWizard):
         self.updates = {}
         self.server_url = ""
         self.configs_path = ""
+        self.protocols_path = ""
         self.microscope_name = None
         self.microscope_entry = None
+        self.microscope_answers = None
+        self.protocol_name = None
+        self.protocol_entry = None
 
         state = sc.detect_state(probe_server=False)
         self.addPage(_IntroPage(state))
         self.addPage(_ServerPage())
         self.addPage(_CentralFolderPage())
         self.addPage(_MicroscopePage())
+        self.addPage(_ProtocolPage())
         self.addPage(_SummaryPage(self.env_file))
 
     def commit(self, env_file):
@@ -572,6 +898,15 @@ class SetupWizard(QWizard):
             lines.append(
                 "Add a microscope entry to {} (ONBOARDING Part 3).".format(
                     self.configs_path
+                )
+            )
+        if self.protocol_entry is not None and self.protocols_path:
+            sc.write_protocol_entry(
+                self.protocol_name, self.protocol_entry, self.protocols_path
+            )
+            lines.append(
+                "Wrote protocol '{}' to {}".format(
+                    self.protocol_name, self.protocols_path
                 )
             )
         # The config monet loaded at import does not change live, so the new
