@@ -7,7 +7,7 @@ name = "monet"
 dynamic = ["version"]
 description = "A Python based software suite to calibrate laser power for microscopy systems."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = { file = "LICENSE.md" }
 authors = [
     { name = "Heinrich Grabmayr", email = "hgrabmayr@biochem.mpg.de" },
@@ -17,7 +17,6 @@ classifiers = [
     "Development Status :: 3 - Alpha",
     "License :: OSI Approved :: BSD License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Operating System :: OS Independent",
@@ -171,7 +170,7 @@ source = ["monet"]
 omit = ["monet/tests/*"]
 
 [tool.black]
-target-version = ["py310"]
+target-version = ["py311"]
 line-length = 79
 # Vendored Thorlabs wrapper and the setuptools-scm generated version file are
 # not our code / are machine-written — keep black off them.
