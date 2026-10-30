@@ -587,6 +587,17 @@ def _load_yaml(path):
     return {}
 
 
+def existing_entry_names(path):
+    """Return the top-level keys already in a YAML config/protocol file.
+
+    ``[]`` when the file does not exist. Lets the wizard show what a shared
+    ``configs.yaml`` / ``protocols.yaml`` already holds and warn before a
+    same-named entry would overwrite another rig's.
+    """
+    data = _load_yaml(path)
+    return sorted(data) if isinstance(data, dict) else []
+
+
 def _dump_yaml(data, path):
     """Dump ``data`` to ``path``, backing an existing file up to ``.bak``.
 

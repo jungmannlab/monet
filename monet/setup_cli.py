@@ -275,6 +275,14 @@ def _author_protocol(name, answers, protocols_path):
             "beampath": beampath,
         }
     )
+    if name in sc.existing_entry_names(protocols_path) and not _ask_bool(
+        "  protocol '{}' already exists in {} — overwrite it?".format(
+            name, protocols_path
+        ),
+        default=False,
+    ):
+        print("  kept the existing protocol; not overwritten.")
+        return
     sc.write_protocol_entry(name, proto, protocols_path)
     print("  wrote protocol for {} to {}".format(name, protocols_path))
 
@@ -345,11 +353,28 @@ def _author_protocol_beampath(answers, laser_sequence):
     return beampath
 
 
+def _pick_entry_name(prompt, path):
+    """Prompt for an entry name, showing what's already in ``path`` and
+    confirming before an existing same-named entry would be overwritten."""
+    existing = sc.existing_entry_names(path)
+    if existing:
+        print("  {} already has: {}".format(path, ", ".join(existing)))
+    while True:
+        name = _ask_required(prompt)
+        if name in existing and not _ask_bool(
+            "  '{}' already exists — overwrite it?".format(name), default=False
+        ):
+            continue
+        return name
+
+
 def _step_author_microscope(configs_path, protocols_path, server_url):
     """Author + verify + persist a microscope entry. Returns its name or None."""
     if not _ask_bool("Author a microscope entry now?", default=True):
         return None
-    name = _ask_required("Microscope name (the <Name> you pass on the CLI)")
+    name = _pick_entry_name(
+        "Microscope name (the <Name> you pass on the CLI)", configs_path
+    )
     db_default = server_url or "./{}_power_database.xlsx".format(name)
     database = _ask(
         "Calibration database (server URL or .xlsx path)", db_default

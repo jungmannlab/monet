@@ -174,6 +174,29 @@ class TestBuildAndPersist(unittest.TestCase):
         self.assertEqual(set(data), {"wiz_sim", "wiz_two"})
         self.assertTrue(os.path.exists(path + ".bak"))
 
+    def test_write_appends_to_existing_file(self):
+        import yaml
+
+        path = os.path.join(self.tmp, "configs.yaml")
+        with open(path, "w") as f:
+            yaml.dump({"Existing": {"database": "./x.xlsx"}}, f)
+        entry = sc.build_microscope_entry(_sim_answers(name="NewRig"))
+        sc.write_microscope_config("NewRig", entry, path)
+        with open(path) as f:
+            data = yaml.full_load(f)
+        # the pre-existing entry is preserved, the new one appended
+        self.assertEqual(set(data), {"Existing", "NewRig"})
+        self.assertEqual(data["Existing"]["database"], "./x.xlsx")
+
+    def test_existing_entry_names(self):
+        import yaml
+
+        self.assertEqual(sc.existing_entry_names("/no/such/file.yaml"), [])
+        path = os.path.join(self.tmp, "p.yaml")
+        with open(path, "w") as f:
+            yaml.dump({"B": 1, "A": 2}, f)
+        self.assertEqual(sc.existing_entry_names(path), ["A", "B"])
+
     def test_write_protocol_entry(self):
         import yaml
 

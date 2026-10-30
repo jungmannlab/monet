@@ -29,6 +29,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QRadioButton,
     QSpinBox,
@@ -408,6 +409,21 @@ class _CentralFolderPage(QWizardPage):
         return True
 
 
+def _confirm_overwrite(parent, name, path, kind):
+    """True if it's safe to write ``name`` into ``path`` (no collision, or the
+    user confirms overwriting an existing same-named entry)."""
+    if not name or name not in sc.existing_entry_names(path):
+        return True
+    reply = QMessageBox.question(
+        parent,
+        "Overwrite?",
+        "A {} named '{}' already exists in\n{}\n\nOverwrite it?".format(
+            kind, name, path
+        ),
+    )
+    return reply == QMessageBox.StandardButton.Yes
+
+
 class _LaserRow(QWidget):
     """One laser: wavelength + a driver picker (reuses _DriverForm)."""
 
@@ -600,8 +616,16 @@ class _MicroscopePage(QWizardPage):
                 "Fill required fields: {}".format(", ".join(missing))
             )
             return False
+        name = self.name_edit.text().strip()
+        if not _confirm_overwrite(self, name, wiz.configs_path, "microscope"):
+            self.test_label.setText(
+                "Choose a different name to avoid overwriting '{}'.".format(
+                    name
+                )
+            )
+            return False
         answers = self._answers()
-        wiz.microscope_name = self.name_edit.text().strip()
+        wiz.microscope_name = name
         wiz.microscope_answers = answers
         wiz.microscope_entry = sc.build_microscope_entry(answers)
         return True
@@ -821,6 +845,15 @@ class _ProtocolPage(QWizardPage):
         except ValueError:
             self.info.setText(
                 "Power set-points must be comma-separated numbers."
+            )
+            return False
+        if not _confirm_overwrite(
+            self, wiz.microscope_name, wiz.protocols_path, "protocol"
+        ):
+            self.info.setText(
+                "A protocol named '{}' already exists; not overwriting.".format(
+                    wiz.microscope_name
+                )
             )
             return False
         wiz.protocol_name = wiz.microscope_name
