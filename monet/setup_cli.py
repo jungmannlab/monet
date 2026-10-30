@@ -439,6 +439,36 @@ def _step_author_microscope(configs_path, protocols_path, server_url):
 # ──────────────────────────────────────────────────────────────────────────
 # Upgrade: move a single-computer lab's local database(s) to a server
 # ──────────────────────────────────────────────────────────────────────────
+def _migrate_scope_to_server(name, cfg, server_url, configs_path):
+    """Migrate one microscope's local DB to ``server_url`` and re-point it.
+
+    Returns a human-readable status line. Does **not** re-point when the local
+    database can't be found or the migration fails — that would strand the rig's
+    calibration history behind an empty server. No interactive I/O, so a future
+    GUI upgrade route can reuse it.
+    """
+    db = cfg.get("database")
+    xlsx = sc.resolve_local_db_path(db, configs_path)
+    if not xlsx:
+        return (
+            "{}: local database {!r} not found — left as-is (not migrated or "
+            "re-pointed). Fix the path and re-run `monet setup`.".format(
+                name, db
+            )
+        )
+    try:
+        inserted, skipped = sc.migrate_local_db_to_server(xlsx, server_url)
+    except Exception as exc:
+        return (
+            "{}: migration FAILED ({}); left on the local file, not "
+            "re-pointed.".format(name, exc)
+        )
+    sc.repoint_microscope_to_server(name, server_url, configs_path)
+    return "{}: migrated {} record(s) ({} already present) -> {}".format(
+        name, inserted, skipped, server_url
+    )
+
+
 def _run_upgrade(local_scopes, env_file):
     """Move existing local-file microscopes to a server (migrate + re-point)."""
     import monet
@@ -455,38 +485,10 @@ def _run_upgrade(local_scopes, env_file):
         return 1
 
     for name, cfg in local_scopes.items():
-        db = cfg.get("database")
-        xlsx = sc.resolve_local_db_path(db, configs_path)
-        if xlsx:
-            try:
-                inserted, skipped = sc.migrate_local_db_to_server(
-                    xlsx, server_url
-                )
-                print(
-                    "  {}: migrated {} record(s) ({} already present)".format(
-                        name, inserted, skipped
-                    )
-                )
-            except Exception as exc:
-                print(
-                    "  {}: migration FAILED ({}); leaving it on the local "
-                    "file, not re-pointing.".format(name, exc)
-                )
-                continue
-        else:
-            # Don't silently re-point a rig whose history we couldn't migrate —
-            # that would leave its config pointing at an empty server with the
-            # old calibrations stranded in an unreferenced file.
-            print(
-                "  {}: local database {!r} not found — leaving it as-is (not "
-                "migrated or re-pointed). Fix the path and re-run `monet "
-                "setup`, or re-point it by hand once migrated.".format(
-                    name, db
-                )
-            )
-            continue
-        sc.repoint_microscope_to_server(name, server_url, configs_path)
-        print("  {}: database -> {}".format(name, server_url))
+        print(
+            "  "
+            + _migrate_scope_to_server(name, cfg, server_url, configs_path)
+        )
 
     sc.write_env(updates, env_path=env_file)
     print(

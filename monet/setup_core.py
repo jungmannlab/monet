@@ -640,7 +640,11 @@ def write_protocol_entry(name, protocol, protocols_path):
 # Upgrade a single-computer lab (local database files) to a server
 # ──────────────────────────────────────────────────────────────────────────
 def is_server_database(database):
-    """True if a config's ``database`` is a server URL (vs a local file)."""
+    """True if a config's ``database`` is a server URL (vs a local file).
+
+    A type-guarded wrapper over :func:`monet.io._is_server_url` (which assumes a
+    str); the wizard passes raw config values that may be ``None``/non-str.
+    """
     from monet.io import _is_server_url
 
     return isinstance(database, str) and _is_server_url(database)
