@@ -137,6 +137,14 @@ def main():
         default=None,
         help="Path to the source Excel database (migrate mode only).",
     )
+    parser.add_argument(
+        "--url",
+        type=str,
+        default=None,
+        help="migrate mode: upload to a monet server over HTTP (preserving "
+        "dates/times) instead of writing a local SQLite file. Mutually "
+        "exclusive with --db-path.",
+    )
 
     # Parse
     args = parser.parse_args()
@@ -193,11 +201,16 @@ def main():
 
         uvicorn.run(app, host=args.host, port=args.port)
     elif args.mode == "migrate":
-        from monet.migrate import migrate_excel_to_sqlite
-
         if args.source is None:
             parser.error("migrate mode requires --source argument")
-        migrate_excel_to_sqlite(args.source, args.db_path)
+        if args.url:
+            from monet.migrate import migrate_excel_to_server
+
+            migrate_excel_to_server(args.source, args.url)
+        else:
+            from monet.migrate import migrate_excel_to_sqlite
+
+            migrate_excel_to_sqlite(args.source, args.db_path)
     elif args.mode == "calibrate":
         MonetCalibrateInteractive(
             args.name, args.configs_file, args.protocol_file

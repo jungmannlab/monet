@@ -236,15 +236,19 @@ def create_app(
         dependencies=_WRITE,
     )
     def save_calibration(data: CalibrationCreate):
-        """Save a calibration record. Date/time are auto-generated."""
+        """Save a calibration record.
+
+        Date/time are stamped "now" unless the request supplies them (a
+        database migration over HTTP preserves the original timestamps).
+        """
         now = datetime.now()
         index = data.index
         row = Calibration(
             device_name=str(index.get("name", "")),
             wavelength_nm=float(index.get("wavelength [nm]", 0)),
             laser_power_mw=float(index.get("laser_power [mW]", 0)),
-            calibration_date=now.strftime("%Y-%m-%d"),
-            calibration_time=now.strftime("%H:%M"),
+            calibration_date=data.calibration_date or now.strftime("%Y-%m-%d"),
+            calibration_time=data.calibration_time or now.strftime("%H:%M"),
             parameters_json=json.dumps(data.parameters),
         )
         with _get_session() as session:

@@ -16,6 +16,10 @@ from pydantic import BaseModel
 class CalibrationCreate(BaseModel):
     index: dict
     parameters: dict
+    # Optional: preserve original timestamps when migrating an existing database
+    # over HTTP. Omitted on a normal save, where the server stamps "now".
+    calibration_date: Optional[str] = None
+    calibration_time: Optional[str] = None
 
 
 class CalibrationQuery(BaseModel):
