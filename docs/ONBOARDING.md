@@ -8,6 +8,26 @@ This guide is task-ordered. If you just want to get one microscope running
 against an Excel file, do Parts 1–4. Add Micro-Manager (Part 5) and the
 server (Part 6) as needed.
 
+> **Shortcut — the setup wizard.** After installing monet (Part 1), you can run
+> the guided wizard instead of hand-editing `.env` / `configs.yaml`:
+>
+> ```bash
+> python -m monet setup
+> ```
+>
+> It connects this machine to an existing calibration server (or stands a new
+> one up — automatically over SSH with `pip install -e ".[setup]"`, or by
+> printing the manual steps), wires up the central config/protocol folder,
+> authors a microscope entry, verifies the hardware, and writes the `.env`. The
+> PyQt6 GUI opens the same wizard automatically the first time you launch it on
+> an unconfigured machine (and from its **Setup** menu afterwards). The parts
+> below explain, by hand, everything the wizard automates.
+>
+> On a Windows acquisition PC with no Python/conda, you can skip Part 1 entirely
+> and download the single-file **`monet-gui.exe`** from the
+> [GitHub Release](https://github.com/jungmannlab/monet/releases) — double-click
+> it and the first-run wizard takes over (see the README).
+
 > Terminology: a **microscope config** is one named entry in `configs.yaml`.
 > A **protocol** (in `protocols.yaml`) describes a multi-laser/multi-power
 > calibration sweep. `<Name>` throughout is the config's top-level key

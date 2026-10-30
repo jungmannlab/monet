@@ -10,6 +10,33 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
+### Added
+- **Guided onboarding wizard (`monet setup`) + GUI first-run wizard.** A new
+  headless engine (`monet/setup_core.py`) orchestrates the existing primitives
+  so onboarding an acquisition machine is a single guided flow instead of a
+  hand-edited `.env` + `configs.yaml`. It connects to an existing calibration
+  server (URL + token, verified via `io.check_server_auth`) or stands up a new
+  one — automatically over SSH (`remote_install_server`, needs the new optional
+  `[setup]` extra = `paramiko`) with a guided-manual fallback
+  (`guided_server_instructions`) — wires up the central config/protocol folder
+  (optionally scaffolding the `docs/examples` templates), interactively authors
+  a microscope `configs.yaml` entry from a driver registry (`DRIVERS`, with
+  best-effort device enumeration), verifies the hardware without actuating power
+  (`test_microscope`), and writes the per-machine `.env` at `0600`. Two
+  surfaces share the engine: the `monet setup` CLI (`monet/setup_cli.py`) and a
+  PyQt6 `QWizard` (`monet/setup_wizard_qt.py`) that `python -m monet gui`
+  auto-opens on first run (no `.env` and only built-in configs) and re-opens via
+  the new **Setup** menu.
+- **Standalone Windows GUI installer + release pipeline.** A PyInstaller build
+  (`packaging/monet-gui.spec` + `packaging/monet_gui.py`) produces a single
+  `monet-gui.exe` so a lab Windows acquisition PC can run the GUI (and the
+  first-run setup wizard) without a Python/conda install. A new tag-triggered
+  CI workflow (`.github/workflows/release-windows.yml`) builds the exe on every
+  `v*` tag, runs a headless `--selfcheck` to verify the bundle is complete, and
+  attaches it to that tag's GitHub Release. The frozen build persists its
+  `.env`/logs under a per-user dir (`setup_core.user_config_dir`,
+  `MONET_HOME`/`MONET_LOG_DIR`) instead of the ephemeral PyInstaller temp dir.
+
 ## [0.5.2] - 2026-10-05
 
 ### Fixed

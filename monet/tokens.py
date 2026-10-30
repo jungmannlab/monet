@@ -64,26 +64,12 @@ def _write_map(env_file, tokens):
         "{}:{}:{}".format(tok, info.scope, info.label)
         for tok, info in tokens.items()
     )
-    # The token must never touch a world-readable file. Create the file 0600
-    # *before* set_key writes the secret into it (set_key edits in place), and
-    # harden an existing file too. A umask can only remove bits, and 0o600 has no
-    # group/other bits, so os.open reliably yields 0o600. If we can't lock an
-    # existing file down, warn loudly rather than silently write a secret to it.
-    parent = os.path.dirname(os.path.abspath(env_file))
-    if parent:
-        os.makedirs(parent, exist_ok=True)
-    if not os.path.exists(env_file):
-        os.close(os.open(env_file, os.O_CREAT | os.O_WRONLY, 0o600))
-    else:
-        try:
-            os.chmod(env_file, 0o600)
-        except OSError as exc:
-            print(
-                "warning: could not restrict permissions on {}: {}".format(
-                    env_file, exc
-                ),
-                file=sys.stderr,
-            )
+    # The token must never touch a world-readable file. Create/harden it to 0600
+    # *before* set_key writes the secret into it (set_key edits in place). Shared
+    # with the setup wizard via util.ensure_private_file.
+    from monet.util import ensure_private_file
+
+    ensure_private_file(env_file)
     set_key(env_file, _TOKENS_KEY, serialized, quote_mode="never")
     # Reflect into this process too (a running server still needs a restart).
     os.environ[_TOKENS_KEY] = serialized

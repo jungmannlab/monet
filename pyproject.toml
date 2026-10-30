@@ -77,6 +77,14 @@ server = [
     "picasso-registry[auth] @ git+https://github.com/jungmannlab/picasso-registry.git@v0.1.0",
 ]
 
+# Automated remote server install for the `monet setup` wizard. paramiko is
+# imported lazily (monet/setup_core.remote_install_server) and is optional: the
+# wizard works without it via the guided-manual fallback. Only install this on a
+# machine that will SSH into a Linux box to stand up the calibration server.
+setup = [
+    "paramiko>=3",
+]
+
 # Real-hardware SDKs. All imported lazily, so they are only required on the
 # machines that actually drive the instruments. msl-equipment and pycobolt have
 # no PyPI release and are pulled directly from their published artifacts.
@@ -121,6 +129,7 @@ all = [
     "monet[gui]",
     "monet[server]",
     "monet[hardware]",
+    "monet[setup]",
     "monet[dev]",
 ]
 

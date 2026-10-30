@@ -15,7 +15,7 @@ import logging
 import numpy as np
 
 from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
-from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QAction, QFont
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -5250,6 +5250,29 @@ class MonetMainWindow(QMainWindow):
         self._widget.status_changed.connect(self.statusBar().showMessage)
         self._widget.connected.connect(self._on_connected_title)
         self.statusBar().showMessage("Not connected")
+        self._build_menu()
+        # Offer the onboarding wizard on a fresh, unconfigured machine. Deferred
+        # to the event loop so the main window is up first; a no-op otherwise.
+        QTimer.singleShot(0, self._maybe_run_setup)
+
+    def _build_menu(self):
+        setup_menu = self.menuBar().addMenu("&Setup")
+        action = QAction("Setup Wizard…", self)
+        action.triggered.connect(self._run_setup_wizard)
+        setup_menu.addAction(action)
+
+    def _maybe_run_setup(self):
+        try:
+            from monet.setup_wizard_qt import maybe_run_setup
+
+            maybe_run_setup(self)
+        except Exception:
+            logger.debug("setup wizard auto-launch skipped", exc_info=True)
+
+    def _run_setup_wizard(self):
+        from monet.setup_wizard_qt import maybe_run_setup
+
+        maybe_run_setup(self, force=True)
 
     def set_status(self, msg, timeout_ms=0):
         """Back-compat shim: forward to the status bar."""
