@@ -244,6 +244,44 @@ class TestCliUpgrade(unittest.TestCase):
             data = yaml.full_load(f)
         self.assertEqual(data["A"]["database"], "http://srv:8000")
 
+    def test_run_upgrade_missing_db_is_not_repointed(self):
+        # If the local DB can't be found, the rig must NOT be re-pointed (its
+        # history would be stranded behind an empty server).
+        import yaml
+
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, True)
+        configs_path = os.path.join(tmp, "configs.yaml")
+        missing_db = os.path.join(tmp, "nope.xlsx")  # never created
+        configs = {"A": {"database": missing_db, "index": {"name": "A"}}}
+        with open(configs_path, "w") as f:
+            yaml.dump(configs, f)
+
+        with (
+            mock.patch.object(setup_cli.sc.monet, "CONFIGS", configs),
+            mock.patch.object(
+                setup_cli.sc.monet, "CONFIGS_PATH", configs_path
+            ),
+            mock.patch.object(setup_cli.sc.monet, "PROTOCOLS_PATH", ""),
+            mock.patch.object(
+                setup_cli, "_step_server", return_value="http://srv:8000"
+            ),
+            mock.patch.object(
+                setup_cli.sc, "migrate_local_db_to_server"
+            ) as mig,
+            mock.patch("builtins.input", side_effect=["n"]),
+            redirect_stdout(_io.StringIO()),
+        ):
+            rc = setup_cli._run_upgrade(
+                {"A": configs["A"]}, os.path.join(tmp, ".env")
+            )
+
+        self.assertEqual(rc, 0)
+        mig.assert_not_called()  # nothing to migrate
+        with open(configs_path) as f:
+            data = yaml.full_load(f)
+        self.assertEqual(data["A"]["database"], missing_db)  # unchanged
+
 
 if __name__ == "__main__":
     unittest.main()

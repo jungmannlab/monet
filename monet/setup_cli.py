@@ -474,10 +474,17 @@ def _run_upgrade(local_scopes, env_file):
                 )
                 continue
         else:
+            # Don't silently re-point a rig whose history we couldn't migrate —
+            # that would leave its config pointing at an empty server with the
+            # old calibrations stranded in an unreferenced file.
             print(
-                "  {}: local database {!r} not found — re-pointing without "
-                "migrating past calibrations.".format(name, db)
+                "  {}: local database {!r} not found — leaving it as-is (not "
+                "migrated or re-pointed). Fix the path and re-run `monet "
+                "setup`, or re-point it by hand once migrated.".format(
+                    name, db
+                )
             )
+            continue
         sc.repoint_microscope_to_server(name, server_url, configs_path)
         print("  {}: database -> {}".format(name, server_url))
 

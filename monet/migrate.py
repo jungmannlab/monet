@@ -25,6 +25,27 @@ def _py(value):
     return value.item() if hasattr(value, "item") else value
 
 
+def _unpack_excel_index(idx):
+    """Unpack a row's ``DATABASE_INDEXLEVELS`` index into the identity fields.
+
+    Returns ``(name, wavelength, power, date, time)`` with the same coercions
+    both migration paths use, so the SQLite and HTTP targets stay consistent.
+    Note: ``date``/``time`` are stringified as stored in the Excel file (monet's
+    own databases keep them as ``YYYY-MM-DD`` / ``HH:MM`` strings); a hand-made
+    Excel with true date-typed cells would stringify differently — but
+    identically for both targets.
+    """
+    if not isinstance(idx, tuple):
+        idx = (idx,)
+    if len(idx) < len(DATABASE_INDEXLEVELS):
+        raise ValueError(
+            "expected {} index levels ({}), got {}".format(
+                len(DATABASE_INDEXLEVELS), DATABASE_INDEXLEVELS, len(idx)
+            )
+        )
+    return str(idx[0]), float(idx[1]), float(idx[2]), str(idx[3]), str(idx[4])
+
+
 def migrate_excel_to_sqlite(excel_path, db_path):
     """Read an existing Excel database and insert all records into SQLite.
 
@@ -45,18 +66,15 @@ def migrate_excel_to_sqlite(excel_path, db_path):
 
     with Session(engine) as session:
         for idx, row in df.iterrows():
-            # idx is a tuple matching DATABASE_INDEXLEVELS
-            if not isinstance(idx, tuple):
-                idx = (idx,)
-
+            name, wavelength, power, date, time = _unpack_excel_index(idx)
             params = {col: row[col] for col in row.index if pd.notna(row[col])}
 
             cal = Calibration(
-                device_name=str(idx[0]),
-                wavelength_nm=float(idx[1]),
-                laser_power_mw=float(idx[2]),
-                calibration_date=str(idx[3]),
-                calibration_time=str(idx[4]),
+                device_name=name,
+                wavelength_nm=wavelength,
+                laser_power_mw=power,
+                calibration_date=date,
+                calibration_time=time,
                 parameters_json=json.dumps(params),
             )
             session.add(cal)
@@ -78,10 +96,16 @@ def migrate_excel_to_server(excel_path, server_url, skip_existing=True):
 
     Appending is idempotent when ``skip_existing`` (default): the server's
     current records are fetched once and any row already present (same name,
-    wavelength, power, date and time) is skipped, so re-running is safe.
+    wavelength, power, date and time) is skipped, so re-running is safe. If that
+    fetch fails, it warns (to stderr too) that re-running may duplicate.
+
+    Records are POSTed one per request — fine for a one-time migration of a
+    typical calibration database; a very large DB over a high-latency link will
+    be correspondingly slow.
 
     Returns ``(inserted, skipped)``.
     """
+    import sys
     import requests
 
     from monet.io import _auth_headers
@@ -117,17 +141,16 @@ def migrate_excel_to_server(excel_path, server_url, skip_existing=True):
                 server_url,
                 exc_info=True,
             )
+            print(
+                "  warning: could not check the server for existing records — "
+                "importing all rows; re-running may create duplicates.",
+                file=sys.stderr,
+            )
 
     inserted = 0
     skipped = 0
     for idx, row in df.iterrows():
-        if not isinstance(idx, tuple):
-            idx = (idx,)
-        name = str(idx[0])
-        wavelength = float(idx[1])
-        power = float(idx[2])
-        date = str(idx[3])
-        time = str(idx[4])
+        name, wavelength, power, date, time = _unpack_excel_index(idx)
         if (name, wavelength, power, date, time) in existing:
             skipped += 1
             continue

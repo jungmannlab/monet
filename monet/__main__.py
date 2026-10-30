@@ -126,18 +126,21 @@ def main():
         help="Port to bind the server to (serve mode only).",
     )
     parser.add_argument(
-        "--db-path",
-        type=str,
-        default="calibrations.db",
-        help="Path to the SQLite database file (serve/migrate mode).",
-    )
-    parser.add_argument(
         "--source",
         type=str,
         default=None,
         help="Path to the source Excel database (migrate mode only).",
     )
-    parser.add_argument(
+    # serve always uses --db-path; migrate uses exactly one of --db-path /
+    # --url, so make them mutually exclusive to catch an ambiguous invocation.
+    db_target = parser.add_mutually_exclusive_group()
+    db_target.add_argument(
+        "--db-path",
+        type=str,
+        default="calibrations.db",
+        help="Path to the SQLite database file (serve/migrate mode).",
+    )
+    db_target.add_argument(
         "--url",
         type=str,
         default=None,
