@@ -63,6 +63,17 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
   `.env`/logs under a per-user dir (`setup_core.user_config_dir`,
   `MONET_HOME`/`MONET_LOG_DIR`) instead of the ephemeral PyInstaller temp dir.
 
+### Fixed
+- **Log rotation on Windows no longer crashes with `PermissionError: [WinError
+  32] … used by another process` (`monet.log` → `monet.log.1`).** Running
+  `python -m monet …` opened two `RotatingFileHandler`s on the same `monet.log`
+  — one at package import (`monet/__init__.py`) and a second, redundant one from
+  `monet/__main__.py`. With both handles held open, the rollover `os.rename`
+  failed on Windows (POSIX tolerates renaming an open file). `config_logger()`
+  is now idempotent — it skips attaching a second rotating handler for a path
+  already configured — and `__main__` delegates to it instead of opening its own
+  handle. The same guard was applied to the test logger (`calipower.log`).
+
 ### Changed
 - Python baseline raised 3.10 → 3.11 (`requires-python`, black `target-version`, classifier, CI matrix).
 
