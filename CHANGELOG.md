@@ -23,6 +23,14 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
   hardware when a calibration run finishes, so it no longer keeps showing the
   selected laser as "on" after a run has switched every laser off.
 
+### Changed
+- CI: bumped the GitHub Actions to their Node-24 majors (`actions/checkout@v5`,
+  `actions/setup-python@v6`, `actions/upload-artifact@v6`,
+  `softprops/action-gh-release@v3`), clearing the Node 20 deprecation warnings.
+  The hosted unit-test matrix now also exercises Python 3.13 and 3.14 (with
+  `fail-fast: false` so a new-CPython leg can't cancel the supported 3.11/3.12
+  legs); these two legs are exploratory and not yet required status checks.
+
 ## [0.6.0] - 2026-11-02
 
 ### Added
