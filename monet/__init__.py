@@ -36,6 +36,20 @@ def config_logger():
     log_file = os.environ.get("MONET_LOG_FILE") or os.path.join(
         os.environ.get("MONET_LOG_DIR", ""), "monet.log"
     )
+    # Idempotent: if a rotating handler for this same file is already attached
+    # (config_logger() re-run after import, or a second entry point — e.g.
+    # `python -m monet` — calling it again), don't open a *second* OS handle on
+    # the file. On Windows two open handles make log rotation fail with
+    # "WinError 32 ... used by another process" when one handler renames the
+    # file the other still holds open.
+    resolved = os.path.abspath(log_file)
+    for existing in logger.handlers:
+        if isinstance(
+            existing, handlers.RotatingFileHandler
+        ) and os.path.abspath(getattr(existing, "baseFilename", "")) == (
+            resolved
+        ):
+            return
     try:
         file_handler = handlers.RotatingFileHandler(
             log_file, maxBytes=int(1e6), backupCount=5

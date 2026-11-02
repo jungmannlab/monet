@@ -15,7 +15,6 @@ import pprint
 import traceback
 from contextlib import redirect_stdout
 from io import StringIO
-from logging import handlers
 
 import yaml as _yaml
 
@@ -23,23 +22,15 @@ import monet.io as io
 from monet import CONFIGS, CONFIGS_PATH, PROTOCOLS, PROTOCOLS_PATH
 
 
-# configure logger and log that this shouldn't be done here
+# configure logger
 def config_logger():
-    logger = logging.getLogger(__name__)
-    logger.setLevel(logging.DEBUG)
-    formatter = logging.Formatter(
-        "%(asctime)s | %(name)s | %(levelname)s -> %(message)s"
-    )
-    file_handler = handlers.RotatingFileHandler(
-        "monet.log", maxBytes=1e6, backupCount=5
-    )
-    file_handler.setFormatter(formatter)
-    file_handler.setLevel(logging.DEBUG)
-    stream_handler = logging.StreamHandler()
-    stream_handler.setFormatter(formatter)
-    stream_handler.setLevel(logging.WARNING)
-    logger.addHandler(file_handler)
-    # logger.addHandler(stream_handler)
+    # Delegate to the package's idempotent setup (monet/__init__.py) rather than
+    # opening a *second* RotatingFileHandler on the same monet.log: on Windows
+    # two open handles make log rotation fail with "WinError 32 ... used by
+    # another process" when one handler renames the file the other holds open.
+    import monet
+
+    monet.config_logger()
 
 
 def main():

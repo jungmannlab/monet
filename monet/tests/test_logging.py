@@ -8,6 +8,7 @@ under ProtectSystem=strict).
 """
 
 import logging
+import logging.handlers
 import os
 import tempfile
 import unittest
@@ -41,6 +42,24 @@ class TestConfigLogger(unittest.TestCase):
             with mock.patch.dict(os.environ, env, clear=False):
                 monet.config_logger()
             self.assertTrue(os.path.exists(path))
+
+    def test_idempotent_same_file_no_duplicate_handler(self):
+        # Re-running config_logger() for the same log file must not attach a
+        # second RotatingFileHandler: two open OS handles on one file make log
+        # rotation fail on Windows (WinError 32).
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "monet.log")
+            env = {"MONET_LOG_FILE": path}
+            with mock.patch.dict(os.environ, env, clear=False):
+                monet.config_logger()
+                monet.config_logger()
+            rotating = [
+                h
+                for h in logging.getLogger("monet").handlers
+                if isinstance(h, logging.handlers.RotatingFileHandler)
+                and os.path.abspath(h.baseFilename) == os.path.abspath(path)
+            ]
+            self.assertEqual(len(rotating), 1)
 
     def test_unwritable_path_does_not_raise(self):
         bad = "/this/dir/does/not/exist/monet.log"
