@@ -29,23 +29,27 @@ on:
 jobs:
   unit-tests:
     runs-on: ubuntu-latest
-    # Test the declared-supported Python range, not just the floor (3.11). Both
-    # matrix legs report their own status check ("unit-tests (3.11)" /
-    # "unit-tests (3.12)") -- add both to the required-checks list.
+    # Test the declared-supported Python range, not just the floor (3.11). Each
+    # matrix leg reports its own status check ("unit-tests (3.11)" ...
+    # "unit-tests (3.14)") -- add the ones that should gate merges to the
+    # required-checks list. 3.13/3.14 are exploratory (a brand-new CPython can
+    # outrun wheels for numpy/PyQt6/etc.); fail-fast is off so a red new-Python
+    # leg doesn't cancel the supported 3.11/3.12 legs.
     strategy:
+      fail-fast: false
       matrix:
-        python-version: ['3.11', '3.12']
+        python-version: ['3.11', '3.12', '3.13', '3.14']
     env:
       QT_QPA_PLATFORM: offscreen
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0   # setuptools-scm needs full history for the version
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
