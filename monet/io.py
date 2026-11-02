@@ -57,6 +57,199 @@ def _is_server_url(fname):
     return fname.startswith("http://") or fname.startswith("https://")
 
 
+FIT_QUALITY_LOG_FIELDS = [
+    "datetime",
+    "device",
+    "laser",
+    "laser_power",
+    "model",
+    "rms_pct",
+    "max_pct",
+    "max_at",
+    "drift_pct",
+    "n_points",
+]
+
+
+def append_fit_quality_log(folder, record):
+    """Append one calibration's fit-quality record to ``fit_quality_log.csv``.
+
+    An append-only CSV in ``folder`` for tracking RMS / max residual and
+    within-sweep drift across runs and days (so a degradation trend is
+    visible). Best-effort: never raises, returns the path written or None.
+    """
+    if not folder:
+        return None
+    try:
+        import csv
+
+        os.makedirs(folder, exist_ok=True)
+        path = os.path.join(folder, "fit_quality_log.csv")
+        new_file = not os.path.exists(path)
+        with open(path, "a", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=FIT_QUALITY_LOG_FIELDS)
+            if new_file:
+                writer.writeheader()
+            writer.writerow({k: record.get(k) for k in FIT_QUALITY_LOG_FIELDS})
+        return path
+    except Exception:
+        logger.debug("could not append fit-quality log", exc_info=True)
+        return None
+
+
+# Bearer token for a monet calibration server that enforces auth (i.e. one
+# started with PAINT_MONET_TOKENS set). io.py both reads and writes the DB, so
+# this should be a WRITE-scoped token (write is a superset of read). When the
+# variable is unset no Authorization header is sent, so a loopback / auth-off
+# server keeps working unchanged. See README "Authentication".
+MONET_CLIENT_TOKEN_ENV = "PAINT_MONET_TOKEN"
+
+
+def _auth_headers():
+    """Authorization header for the monet server, or {} if no token is sent.
+
+    Honours the PAINT_MONET_AUTH toggle: ``off`` sends no token (talking to an
+    auth-off server); ``on``/``auto`` send the bearer token when one is set.
+    """
+    from monet import auth_mode
+
+    if auth_mode() == "off":
+        return {}
+    token = os.environ.get(MONET_CLIENT_TOKEN_ENV)
+    return {"Authorization": f"Bearer {token}"} if token else {}
+
+
+def check_server_auth(server_url, timeout=10):
+    """Probe a monet server's reachability + authentication from the client.
+
+    Uses the same ``PAINT_MONET_TOKEN`` / ``PAINT_MONET_AUTH`` logic as the DB
+    client (:func:`_auth_headers`), so it tests exactly what ``calibrate`` /
+    ``set`` / the GUI would send. Hits ``GET /health`` (reachability) then
+    ``GET /auth/whoami`` (auth + the token's server-side ``(scope, label)``).
+
+    Returns a dict with: ``server_url``, ``reachable``, ``health_status``,
+    ``token_present``, ``whoami_status``, ``authenticated``, ``auth_enabled``,
+    ``label``, ``scope``, ``ok`` (the accept verdict — authenticated, or auth
+    disabled), and a human-readable ``detail``. Never raises on a network or
+    HTTP error — the failure is reported in the dict.
+    """
+    server_url = server_url.rstrip("/")
+    result = {
+        "server_url": server_url,
+        "token_present": bool(os.environ.get(MONET_CLIENT_TOKEN_ENV)),
+        "reachable": False,
+        "health_status": None,
+        "whoami_status": None,
+        "authenticated": False,
+        "auth_enabled": None,
+        "label": None,
+        "scope": None,
+        "ok": False,
+        "detail": "",
+    }
+
+    def _finish():
+        # Single source of truth for the accept verdict: a valid token, or a
+        # server that isn't enforcing auth at all.
+        result["ok"] = (
+            result["authenticated"] or result["auth_enabled"] is False
+        )
+        return result
+
+    try:
+        h = requests.get(f"{server_url}/health", timeout=timeout)
+        result["reachable"] = True
+        result["health_status"] = h.status_code
+    except requests.exceptions.RequestException as exc:
+        result["detail"] = f"server unreachable: {exc}"
+        return _finish()
+
+    try:
+        w = requests.get(
+            f"{server_url}/auth/whoami",
+            headers=_auth_headers(),
+            timeout=timeout,
+        )
+    except requests.exceptions.RequestException as exc:
+        result["detail"] = f"could not reach /auth/whoami: {exc}"
+        return _finish()
+
+    result["whoami_status"] = w.status_code
+    if w.status_code == 200:
+        try:
+            body = w.json()
+        except ValueError:
+            result["detail"] = (
+                "200 from /auth/whoami but the body was not JSON — is a proxy "
+                "or a different service answering on this URL?"
+            )
+            return _finish()
+        result["authenticated"] = bool(body.get("authenticated"))
+        result["auth_enabled"] = body.get("auth_enabled")
+        result["label"] = body.get("label")
+        result["scope"] = body.get("scope")
+        if result["authenticated"]:
+            result["detail"] = "authenticated as {!r} (scope: {})".format(
+                result["label"], result["scope"]
+            )
+        else:
+            result["detail"] = (
+                "server auth is disabled — no token required (loopback dev)"
+            )
+    elif w.status_code == 401:
+        result["auth_enabled"] = True
+        result["detail"] = (
+            "401 — token missing or invalid (or the server is refusing an "
+            "off-box unauthenticated request). Set PAINT_MONET_TOKEN to a "
+            "token the server accepts."
+        )
+    elif w.status_code == 403:
+        result["auth_enabled"] = True
+        result["detail"] = "403 — token is valid but lacks the required scope"
+    elif w.status_code == 404:
+        # Older server without /auth/whoami: fall back to a scoped route so we
+        # can still say whether the token is accepted (label stays unknown).
+        accepted, detail = _auth_test_fallback(server_url, timeout)
+        result["detail"] = detail
+        if accepted is not None:
+            result["auth_enabled"] = True
+            result["authenticated"] = accepted
+    else:
+        result["detail"] = "unexpected status {} from /auth/whoami".format(
+            w.status_code
+        )
+    return _finish()
+
+
+def _auth_test_fallback(server_url, timeout):
+    """For a server too old to have /auth/whoami: probe a read-scoped route.
+
+    ``GET /power`` is read-scoped, so 401/403 mean the token was rejected,
+    while a status only the route handler produces (200/409/422/503) means
+    auth passed. A 404 or 5xx does not imply the auth dependency ran (the
+    route may be missing / it may not be a monet server), so it is reported as
+    indeterminate. Returns ``(accepted, detail)`` where ``accepted`` is
+    True / False / None (None = indeterminate).
+    """
+    try:
+        r = requests.get(
+            f"{server_url}/power?laser=0",
+            headers=_auth_headers(),
+            timeout=timeout,
+        )
+    except requests.exceptions.RequestException as exc:
+        return None, f"could not reach the fallback probe route: {exc}"
+    note = "server has no /auth/whoami (upgrade it to see the token label); "
+    if r.status_code in (401, 403):
+        return False, note + "token was REJECTED ({})".format(r.status_code)
+    if r.status_code in (200, 409, 422, 503):
+        return True, note + "token ACCEPTED (status {})".format(r.status_code)
+    return None, note + (
+        "could not determine auth (status {} — the probe route may be "
+        "missing on this server)".format(r.status_code)
+    )
+
+
 def _flush_outbox(server_url: str) -> None:
     """Replay any queued outbox entries against the server.
 
@@ -85,7 +278,10 @@ def _flush_outbox(server_url: str) -> None:
     for entry_id, endpoint, payload, local_key in pending:
         try:
             resp = requests.post(
-                f"{server_url}{endpoint}", json=payload, timeout=10
+                f"{server_url}{endpoint}",
+                json=payload,
+                timeout=10,
+                headers=_auth_headers(),
             )
             resp.raise_for_status()
 
@@ -202,6 +398,7 @@ def _save_calibration_http(server_url, index, cali_pars):
             f"{server_url}/calibrations",
             json={"index": index, "parameters": cali_pars},
             timeout=10,
+            headers=_auth_headers(),
         )
         resp.raise_for_status()
         record = resp.json()
@@ -386,6 +583,7 @@ def _load_database_http(server_url, index, time_idx):
             f"{server_url}/calibrations/query",
             json={"index": json_index, "time_idx": time_idx},
             timeout=10,
+            headers=_auth_headers(),
         )
         resp.raise_for_status()
         records = resp.json()["records"]
@@ -485,7 +683,11 @@ def restart_database(db_fname):
 
 def _restart_database_http(server_url):
     """Restart database via HTTP server."""
-    resp = requests.post(f"{server_url}/database/restart", timeout=30)
+    resp = requests.post(
+        f"{server_url}/database/restart",
+        timeout=30,
+        headers=_auth_headers(),
+    )
     resp.raise_for_status()
     data = resp.json()
     return data["backup_path"]
@@ -548,7 +750,10 @@ def _delete_calibration_http(server_url, index):
     cache = _get_cache(server_url)
     try:
         resp = requests.post(
-            f"{server_url}/calibrations/delete", json=payload, timeout=10
+            f"{server_url}/calibrations/delete",
+            json=payload,
+            timeout=10,
+            headers=_auth_headers(),
         )
         resp.raise_for_status()
         count = resp.json()["deleted_count"]
@@ -705,8 +910,8 @@ def plot_device_amplitude_history(db_fname, device, plot_dir, analyzer):
                 datetime.strptime(f"{date};{time}", "%Y-%m-%d;%H:%M")
                 for date, time in zip(dates, times)
             ]
-            minpower = np.zeros(len(dates))
-            maxpower = np.zeros(len(dates))
+            minpower = np.full(len(dates), np.nan)
+            maxpower = np.full(len(dates), np.nan)
             for i, (idx, row) in enumerate(power_df.iterrows()):
                 pars = {}
                 for col in row.index:
@@ -716,8 +921,14 @@ def plot_device_amplitude_history(db_fname, device, plot_dir, analyzer):
                             pars[col] = val
                     except (TypeError, ValueError):
                         pass  # skip non-numeric columns
-                analyzer.load_model(pars)
-                output_range = analyzer.output_range()
+                # A row from a different analysis model (e.g. sinusoidal
+                # before switching to polynomial) won't load into the current
+                # analyzer; skip it (leaves NaN, not a spurious zero).
+                try:
+                    analyzer.load_model(pars)
+                    output_range = analyzer.output_range()
+                except Exception:
+                    continue
                 minpower[i] = np.real(output_range[0])
                 maxpower[i] = np.real(output_range[1])
             ax[0].plot(
@@ -1132,6 +1343,7 @@ def compute_and_save_factor(db_fname, device, laser, ana_config):
     positions = np.linspace(att_min, att_max, 50)
 
     all_ratios = []
+    all_ps, all_pb = [], []
     for lpwr in common_lpwrs:
         manual_rows = db_manual.loc[
             db_manual.index.get_level_values(POWER_TAG) == lpwr
@@ -1180,6 +1392,8 @@ def compute_and_save_factor(db_fname, device, laser, ana_config):
                 p_b = ana_b.estimate_power(pos)
                 if p_m > 0 and p_b > 0:
                     all_ratios.append(p_m / p_b)
+                    all_ps.append(p_m)
+                    all_pb.append(p_b)
             except Exception:
                 pass
 
@@ -1196,15 +1410,26 @@ def compute_and_save_factor(db_fname, device, laser, ana_config):
     # set if the mask would empty it.
     ratios = np.asarray(all_ratios, dtype=float)
     outliers = mad_outlier_mask(ratios, thresh=3.5)
-    kept = ratios[~outliers]
+    keep = ~outliers
     n_dropped = int(outliers.sum())
-    if kept.size == 0:
-        kept = ratios
+    if not keep.any():
+        keep = np.ones(ratios.shape, dtype=bool)
         n_dropped = 0
+    kept = ratios[keep]
 
     factor_mean = float(np.mean(kept))
     factor_std = float(np.std(kept))
     n_points = int(kept.size)
+    # Compare against the slope over the SAME outlier-filtered points, so a
+    # failed-run outlier cluster doesn't trigger a spurious offset warning.
+    _warn_if_offset_biased(
+        factor_mean,
+        _offset_immune_factor(
+            np.asarray(all_ps, dtype=float)[keep],
+            np.asarray(all_pb, dtype=float)[keep],
+        ),
+        "{}/{} nm".format(device, laser),
+    )
     logger.debug(
         "transmission_objective %s/%s: mean=%.4f std=%.4f n=%d "
         "(dropped %d outlier ratio(s))",
@@ -1238,6 +1463,51 @@ def _row_model_pars(row):
     return pars
 
 
+def _offset_immune_factor(p_sample, p_bfp):
+    """Slope of P_sample vs P_bfp — an offset-immune transmission estimate.
+
+    A pure multiplicative objective transmission is the *slope* of the
+    sample-vs-BFP power relation. Unlike the mean of pointwise P_sample/P_bfp
+    ratios (:func:`compute_pair_factor`), the slope is immune to an additive
+    offset (stray light or an un-zeroed meter) in either plane, which
+    otherwise biases the ratio by tens of percent when the offset is a large
+    fraction of the signal. Returns ``None`` if it cannot be estimated.
+    """
+    p_sample = np.asarray(p_sample, dtype=float)
+    p_bfp = np.asarray(p_bfp, dtype=float)
+    if p_sample.size < 2 or float(np.ptp(p_bfp)) == 0.0:
+        return None
+    try:
+        slope = float(np.polyfit(p_bfp, p_sample, 1)[0])
+    except Exception:
+        return None
+    return slope
+
+
+def _warn_if_offset_biased(mean_ratio, slope, context):
+    """Warn when the mean-of-ratios factor diverges from the slope estimate.
+
+    A gap between the stored mean-of-ratios transmission factor and the
+    offset-immune slope (see :func:`_offset_immune_factor`) flags an additive
+    offset in one plane, so the stored factor may be biased. Diagnostic only —
+    the stored factor is unchanged.
+    """
+    if slope is None or not np.isfinite(slope) or slope <= 0:
+        return
+    dev = abs(mean_ratio - slope) / slope
+    if dev > 0.05:
+        logger.warning(
+            "transmission_objective %s: mean-of-ratios factor %.4f differs "
+            "from the offset-immune slope %.4f by %.1f%% — likely an additive "
+            "offset (stray light / un-zeroed meter) in one plane; the stored "
+            "mean-of-ratios factor may be biased.",
+            context,
+            mean_ratio,
+            slope,
+            dev * 100.0,
+        )
+
+
 def compute_pair_factor(sample_pars, bfp_pars, ana_config):
     """Robust P_sample / P_bfp factor from two calibrations' model params.
 
@@ -1258,21 +1528,35 @@ def compute_pair_factor(sample_pars, bfp_pars, ana_config):
     except Exception:
         return None, 0
     ratios = []
+    ps, pb = [], []
     for pos in positions:
         try:
             p_s = ana_s.estimate_power(pos)
             p_b = ana_b.estimate_power(pos)
             if p_s > 0 and p_b > 0:
                 ratios.append(p_s / p_b)
+                ps.append(p_s)
+                pb.append(p_b)
         except Exception:
             pass
     if not ratios:
         return None, 0
     arr = np.asarray(ratios, dtype=float)
-    keep = arr[~mad_outlier_mask(arr, thresh=3.5)]
-    if keep.size == 0:
-        keep = arr
-    return float(np.mean(keep)), int(keep.size)
+    mask = ~mad_outlier_mask(arr, thresh=3.5)
+    if not mask.any():
+        mask = np.ones(arr.shape, dtype=bool)
+    kept = arr[mask]
+    factor = float(np.mean(kept))
+    # Slope over the same outlier-filtered points (see compute_and_save_factor).
+    _warn_if_offset_biased(
+        factor,
+        _offset_immune_factor(
+            np.asarray(ps, dtype=float)[mask],
+            np.asarray(pb, dtype=float)[mask],
+        ),
+        "pair",
+    )
+    return factor, int(kept.size)
 
 
 def _pair_factor(df_sample, df_bfp, lpwr, ana_config):
@@ -1817,7 +2101,12 @@ def _save_factor_http(
     }
     cache = _get_cache(server_url)
     try:
-        resp = requests.post(f"{server_url}/factors", json=payload, timeout=10)
+        resp = requests.post(
+            f"{server_url}/factors",
+            json=payload,
+            timeout=10,
+            headers=_auth_headers(),
+        )
         resp.raise_for_status()
         cache.upsert_factor(payload)
     except _CONNECTION_ERRORS:
@@ -1909,7 +2198,10 @@ def load_factors(db_fname, device=None, laser=None):
         cache = _get_cache(db_fname)
         try:
             resp = requests.post(
-                f"{db_fname}/factors/query", json=payload, timeout=10
+                f"{db_fname}/factors/query",
+                json=payload,
+                timeout=10,
+                headers=_auth_headers(),
             )
             resp.raise_for_status()
             records = resp.json().get("records", [])

@@ -8,6 +8,7 @@ A Python-based laser power calibration and control suite for microscopy systems.
 - Sinusoidal, linear, and polynomial curve fitting for attenuation mapping
 - Three power-setting modes — combined (laser + attenuator), fixed-laser (adjust attenuator only), fixed-attenuator (adjust laser only)
 - **Closed-loop power setting** with a PI controller against a power meter, with configurable tolerance and gains
+- **Guided onboarding wizard** (`monet setup` + GUI first-run wizard) that connects a new machine to the server, authors its config, and verifies the hardware
 - Interactive CLI for calibration, adjustment, and power setting
 - **PyQt6 GUI** with a Calibrate / Set Power / Database tab set, including a live feedback-convergence plot
 - **Embeddable widget API** (`monet.qt`) — the GUI can be dropped into any other Qt application
@@ -49,10 +50,41 @@ pip install -e ".[gui]"       # PyQt6 GUI (python -m monet gui)
 pip install -e ".[server]"    # FastAPI calibration server (python -m monet serve)
 pip install -e ".[hardware]"  # real-instrument SDKs (pyvisa, nidaqmx, ...)
 pip install -e ".[dev]"       # test / development tooling
+pip install -e ".[setup]"     # paramiko, for the wizard's SSH server install
 pip install -e ".[all]"       # everything above
 ```
 
+### Standalone Windows GUI (`monet-gui.exe`)
+
+For a lab acquisition PC that shouldn't need a Python/conda setup, each tagged
+release ships a single-file **`monet-gui.exe`** on its
+[GitHub Release](https://github.com/jungmannlab/monet/releases): download it and
+double-click to launch the GUI — the first-run setup wizard then connects the
+machine to the calibration server. The exe is built by CI
+(`.github/workflows/release-windows.yml`) from `packaging/monet-gui.spec`.
+Real-instrument SDKs (NI-DAQ, Thorlabs TLPM/Kinesis, pyvisa, …) still require
+their vendor drivers installed on the machine; the bundled GUI drives whatever
+is present.
+
 ## Quick Start
+
+### First-time setup wizard (`monet setup`)
+
+On a freshly installed acquisition machine, the fastest path is the guided
+wizard — it connects you to the lab's calibration server (or stands a new one
+up), points monet at your `configs.yaml` / `protocols.yaml`, authors a
+microscope entry, verifies the hardware, and writes the per-machine `.env`:
+
+```bash
+python -m monet setup          # interactive terminal wizard
+```
+
+The PyQt6 GUI opens the same wizard **automatically on first launch** (when the
+machine is not configured yet), and you can re-open it anytime from its
+**Setup → Setup Wizard…** menu. To let the wizard install the server on a Linux
+box over SSH, add the optional extra: `pip install -e ".[setup]"` (otherwise it
+prints the manual steps to run there). See
+[`docs/ONBOARDING.md`](docs/ONBOARDING.md) for the full walkthrough.
 
 ### Single-microscope setup (Excel database)
 
@@ -86,9 +118,14 @@ Inside the interactive `set` shell:
 
 ### Multi-microscope setup (database server)
 
-Start the centralized database server on one lab machine:
+Start the centralized database server on one lab machine. `serve` binds
+`127.0.0.1` by default; to reach it from other machines you must expose it on the
+network **and** configure authentication (see [Authentication](#authentication)
+below) — the server will refuse a non-loopback bind without tokens:
 
 ```bash
+# tokens configured -> may bind the network interface
+export PAINT_MONET_TOKENS="s3cr3t-write:write:microscope-mercury,s3cr3t-read:read:dashboards"
 python -m monet serve --db-path /shared/calibrations.db --host 0.0.0.0 --port 8000
 ```
 
@@ -99,6 +136,168 @@ database: http://server-hostname:8000
 ```
 
 All `calibrate`, `set`, `adjust`, and `gui` commands work unchanged — `monet` automatically routes through HTTP when the database path is a URL.
+
+### Target-power API (for the recommender)
+
+Passing a microscope name to `serve` additionally exposes a **target-power API**
+so an external recommender (PycroFlow) can set a per-laser power and log the
+measured value:
+
+```bash
+python -m monet serve <MicroscopeName> --host 127.0.0.1 --port 8000
+```
+
+- `POST /power/set` — set a per-laser target power (`write` scope). Reuses the
+  closed-loop PI setter when a power meter is attached, else sets open-loop from
+  the calibration; returns the measured power. The request is **clamped to a hard
+  per-laser safety ceiling** before the laser is actuated (see below).
+- `GET /power` — read back the current measured/predicted power (`read` scope).
+- `POST /laser/set` `{laser, enabled}` — enable/disable one laser's emission
+  (`write`). `POST /laser/off` disables **all** lasers — the fail-safe the
+  recommender/PycroFlow calls on end-of-run and abort (A10/C21). `GET /laser`
+  reports per-laser state (`read`).
+
+Without a microscope name, `serve` runs the database only and the `/power` and
+`/laser` routes return `503`.
+
+**Safety ceiling (C34).** A monet `write` actuates laser hardware, so power-set
+is bounded by a hard per-laser maximum. Until the versioned site descriptor
+(WP-FLEET) supplies it, configure the ceiling in the microscope YAML:
+
+```yaml
+safety:
+  max_power_mw:
+    488: 120.0
+    561: 200.0
+    640: 200.0
+```
+
+A request above the ceiling is clamped down (the response flags `clamped: true`
+and reports the delivered `target_power_mw`); the hardware is never driven above
+the ceiling. Enforcement is in code, not advisory.
+
+### Authentication
+
+The serve API (calibration DB **and** the power actuator) uses the shared
+bearer-token auth helper from picasso-registry (`picasso_registry.auth`, WP-3b /
+[ADR-001](https://github.com/jungmannlab/picasso-registry/blob/main/docs/adr/001-service-authentication.md)),
+so both DNA-PAINT services share one audited implementation.
+
+- **Tokens** live in `PAINT_MONET_TOKENS` (never committed, never in the DB) as a
+  comma/semicolon/newline-separated `token:scope:label` map. `scope` is `read` or
+  `write`; `label` is the attributable holder (e.g. `microscope-mercury`,
+  `cluster`). A `write` token also satisfies `read`.
+- **Scopes:** `write` on DB edits (`/calibrations`, `/factors`,
+  `/calibrations/delete`, `/database/restart`) and on `POST /power/set`; `read` on
+  the query routes and `GET /power`. `/health` is public.
+- **monet's own clients** (a microscope running `calibrate`/`set`, or the GUI,
+  pointing `database:` at an auth-enabled server) read their token from
+  `PAINT_MONET_TOKEN` (a single value, not the server's map). Because the client
+  both reads and writes the DB, give it a **`write`** token. Unset ⇒ no header
+  sent (works against a loopback / auth-off server). **Enable auth on a networked
+  server and set `PAINT_MONET_TOKEN` on the clients together** — a token-enforcing
+  server rejects token-less clients with 401.
+- **Toggle (`PAINT_MONET_AUTH`)** for easy onboarding — `off` | `on` | `auto`
+  (default `auto`): `auto` enforces iff tokens are set (backward-compatible);
+  `off` runs open on loopback and makes the client omit its token (debugging);
+  `on` requires tokens and makes `monet serve` refuse to start without them. Set
+  it in `.env` alongside the token.
+- **Fail-closed:** with auth inactive the service refuses any non-loopback bind
+  (startup guard) and any non-loopback request (request-time net). Loopback dev
+  stays zero-config.
+- **TLS:** terminate TLS at a reverse proxy (Caddy/nginx) or run uvicorn with
+  `--ssl-keyfile`/`--ssl-certfile`. Do not expose plain HTTP off-box.
+- **Dashboard:** the browser dashboard (`/dashboard/`) is **bearer-guarded** —
+  when auth is enabled it shows a login prompt, and you paste a token (a `read`
+  token views; a `write` token also deletes). The token is kept in the browser's
+  `localStorage` and sent as `Authorization: Bearer` on each request; sign out
+  clears it. You may still add a reverse-proxy layer (HTTP Basic / lab SSO) in
+  front, per ADR-001.
+
+#### Creating, storing & rotating tokens
+
+**The easy way — `monet token`** (run on the server box, where the `.env` lives).
+It generates the token, writes the `PAINT_MONET_TOKENS` map for you, and prints
+the value once with the exact line to paste on the client:
+
+```bash
+monet token add --scope write --label microscope-mercury   # -> prints PAINT_MONET_TOKEN=…
+monet token add --scope read  --label dashboards
+monet token list        # scopes + labels only (never the values)
+monet token rotate --label microscope-mercury
+monet token revoke --label microscope-mercury
+# --env-file PATH targets a specific .env (default: the package-root .env)
+```
+
+Tokens are read at startup. To apply a change, restart `serve` — or, on Unix,
+`kill -HUP <serve-pid>` **live-reloads** the tokens with no downtime.
+
+> **systemd `EnvironmentFile` deployments:** `monet token` and the SIGHUP reload
+> both target a **`.env`**, not a systemd `EnvironmentFile`. If your unit sets
+> tokens via `EnvironmentFile=/etc/monet/monet.env`, pass `--env-file
+> /etc/monet/monet.env` to `monet token` and `systemctl restart` the unit to
+> apply — editing the package-root `.env` (the default) would be silently ignored
+> by such a server.
+
+Give each machine/role its **own** label so it can be rotated/revoked
+independently; the
+`label` is what attributes writes in the logs.
+
+**Verify from a client — `monet auth test`.** On a rig whose `.env` has
+`PAINT_MONET_TOKEN`, check the whole chain (reachability + auth) and see the
+label/scope the server knows the token by:
+
+```bash
+monet auth test --url http://<server>:8000   # or: monet auth test <MicroscopeName>
+# -> Authenticated: YES — 'microscope-mercury' (scope: write)
+```
+
+Exit code is 0 when the server accepts the token (or auth is off), 1 otherwise.
+
+**By hand** (equivalent): a token is just a high-entropy string that must not
+contain `:` `,` `;` or a newline (the map's separators):
+
+```bash
+python -c "import secrets; print(secrets.token_urlsafe(32))"   # or: openssl rand -hex 32
+# then add one `token:scope:label` entry per holder, comma-separated, to
+# PAINT_MONET_TOKENS (see below).
+```
+
+**Store** it out of the repo and off the DB: a per-machine, root-owned
+`EnvironmentFile` is the simplest fit for the systemd unit that runs `serve`:
+
+```ini
+# /etc/monet/monet.env   (chmod 600, owned by the service user; NEVER committed)
+PAINT_MONET_TOKENS=Xy7...q:write:microscope-mercury,Zq9...t:read:dashboards
+MONET_DB_PATH=/shared/calibrations.db
+```
+```ini
+# /etc/systemd/system/monet-serve.service
+[Service]
+EnvironmentFile=/etc/monet/monet.env
+ExecStart=/opt/monet/.venv/bin/monet serve Mercury --host 0.0.0.0 --port 8000
+```
+
+A gitignored `.env` (loaded by your shell/`direnv`) or a secrets manager works
+too; the only hard rules are *never in git* and *never in the calibration DB*.
+
+**Rotate / revoke** with `monet token rotate/revoke --label <holder>` (or edit the
+map by hand), then restart `serve`. Because each holder has a distinct `label`,
+you can rotate/revoke one microscope or the dashboards without disturbing the
+others. There is no online revocation list — a change applies on restart, so keep
+the map small and per-role.
+
+```bash
+# clients send the bearer token
+curl -H "Authorization: Bearer $TOKEN" \
+     -X POST http://scope:8000/power/set \
+     -d '{"laser": 488, "target_power_mw": 30}'
+```
+
+**Testing & rollout:** to validate server–client auth before touching production
+(how to generate `<wtok>`/`<rtok>`, a hardware-free harness, a two-machine dry run
+against a copy of the prod DB, and the safe cutover ordering), see
+[`docs/staging/ROLLOUT.md`](docs/staging/ROLLOUT.md).
 
 ## Usage
 
@@ -111,12 +310,17 @@ All `calibrate`, `set`, `adjust`, and `gui` commands work unchanged — `monet` 
 | GUI | `python -m monet gui <Name>` | Launch the PyQt6 graphical interface |
 | Serve | `python -m monet serve` | Start the database server |
 | Migrate | `python -m monet migrate --source <xlsx> --db-path <db>` | Migrate Excel database to SQLite |
+| Token | `python -m monet token add --scope write --label <holder>` | Manage server auth tokens (add/list/revoke/rotate) |
 
 ### Server options
 
 ```bash
-python -m monet serve --host 0.0.0.0 --port 8000 --db-path calibrations.db
+# loopback by default; add a microscope name to enable the power API
+python -m monet serve <MicroscopeName> --host 127.0.0.1 --port 8000 --db-path calibrations.db
 ```
+
+Binding a non-loopback `--host` requires `PAINT_MONET_TOKENS`
+(see [Authentication](#authentication)); otherwise the server refuses to start.
 
 ### Migration from Excel
 
@@ -170,17 +374,51 @@ A runnable end-to-end demo is in [`examples/embed_monet.py`](examples/embed_mone
 
 When running in server mode, monet exposes these HTTP endpoints:
 
-| Endpoint | Method | Description |
-|---|---|---|
-| `/calibrations` | POST | Save a new calibration record |
-| `/calibrations/query` | POST | Query calibration records (supports filtering and time modes) |
-| `/database/restart` | POST | Backup current database and prune to latest entries |
-| `/dashboard` | GET | Browser dashboard for stored calibrations |
-| `/health` | GET | Health check |
+| Endpoint | Method | Scope | Description |
+|---|---|---|---|
+| `/calibrations` | POST | `write` | Save a new calibration record |
+| `/calibrations/query` | POST | `read` | Query calibration records (supports filtering and time modes) |
+| `/calibrations/delete` | POST | `write` | Delete calibration records matching a query |
+| `/database/restart` | POST | `write` | Backup current database and prune to latest entries |
+| `/factors` | POST | `write` | Save/update an objective-transmission factor |
+| `/factors/query` | POST | `read` | Query objective-transmission factors |
+| `/power/set` | POST | `write` | Set a per-laser target power (clamped to the safety ceiling); returns measured power. Requires `serve <Name>` |
+| `/power` | GET | `read` | Read back measured/predicted power. Requires `serve <Name>` |
+| `/laser/set` | POST | `write` | Enable/disable one laser's emission. Requires `serve <Name>` |
+| `/laser/off` | POST | `write` | Disable ALL lasers (fail-safe, A10/C21). Requires `serve <Name>` |
+| `/laser` | GET | `read` | Per-laser enabled state + current laser. Requires `serve <Name>` |
+| `/dashboard/` | GET | public | Browser dashboard HTML shell (public so the login UI loads) |
+| `/dashboard/api/*` | GET/POST | `read` | Dashboard data (bearer token via the page's login) |
+| `/auth/whoami` | GET | `read` | Report the caller's token `(label, scope)` — used by `monet auth test` and the dashboard login |
+| `/health` | GET | public | Health check |
+
+Scopes are enforced only when `PAINT_MONET_TOKENS` is set; see [Authentication](#authentication).
 
 ## Configuration
 
-Microscope configurations are defined in YAML files referenced by `env.yaml`. Each config specifies:
+### Per-machine settings (`.env`)
+
+monet reads its per-machine settings from environment variables, loaded from a
+gitignored **`.env`** in the package root at import (via `python-dotenv`,
+`override=False` — an already-exported variable or a systemd `EnvironmentFile`
+still wins). Copy [`.env.template`](.env.template) to `.env` and fill in:
+
+| Variable | Purpose |
+|---|---|
+| `MONET_CONFIG_PATHS` | `os.pathsep`-separated list of `configs.yaml` paths (first that exists wins) |
+| `MONET_PROTOCOL_PATHS` | same, for `protocols.yaml` |
+| `PAINT_MONET_AUTH` | auth toggle: `off` \| `on` \| `auto` (default `auto`) |
+| `PAINT_MONET_TOKEN` | client bearer token (a `write` token; see [Authentication](#authentication)) |
+| `PAINT_MONET_TOKENS` | server token→scope→label map (on the `serve` host) |
+
+> **Deprecation:** the config/protocol paths used to live in `env.yaml`
+> (`config_paths` / `protocol_paths`). That file is still read as a fallback but
+> emits a `DeprecationWarning`; migrate to `MONET_CONFIG_PATHS` /
+> `MONET_PROTOCOL_PATHS` in `.env`.
+
+### Microscope configs
+
+Microscope configurations are defined in YAML files referenced by `MONET_CONFIG_PATHS` (or, deprecated, `env.yaml`). Each config specifies:
 
 - `database` — file path (`.xlsx`) or server URL (`http://...`)
 - `index` — microscope name, wavelength, laser power

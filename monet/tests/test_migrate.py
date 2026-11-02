@@ -104,5 +104,95 @@ class TestMigrate(unittest.TestCase):
         self.assertEqual(params_561["amp"], 5.0)
 
 
+class _MockResponse:
+    def __init__(self, resp):
+        self._resp = resp
+        self.status_code = resp.status_code
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise Exception(
+                "HTTP {}: {}".format(self.status_code, self._resp.text)
+            )
+
+    def json(self):
+        return self._resp.json()
+
+
+class TestMigrateToServer(unittest.TestCase):
+    def setUp(self):
+        from fastapi.testclient import TestClient
+
+        self.tmpdir = tempfile.mkdtemp()
+        self.excel_path = os.path.join(self.tmpdir, "power_database.xlsx")
+        _make_excel(self.excel_path)
+        self._orig_env = dict(os.environ)
+        os.environ["MONET_DB_PATH"] = os.path.join(self.tmpdir, "server.db")
+
+        from monet import cache as _mcache
+
+        _mcache._set_cache_dir(self.tmpdir)
+        _mcache._clear_cache_registry()
+
+        from monet.server import app
+
+        self.client = TestClient(app)
+        self.client.__enter__()
+
+        import requests as _requests
+
+        self._orig_post = _requests.post
+        tc = self.client
+
+        def mock_post(url, **kwargs):
+            from urllib.parse import urlparse
+
+            resp = tc.post(
+                urlparse(url).path,
+                json=kwargs.get("json"),
+                headers=kwargs.get("headers"),
+            )
+            return _MockResponse(resp)
+
+        _requests.post = mock_post
+
+    def tearDown(self):
+        import shutil
+
+        import requests as _requests
+
+        _requests.post = self._orig_post
+        self.client.__exit__(None, None, None)
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+        os.environ.clear()
+        os.environ.update(self._orig_env)
+
+    def test_migrate_preserves_dates_and_is_idempotent(self):
+        from monet.migrate import migrate_excel_to_server
+
+        inserted, skipped = migrate_excel_to_server(
+            self.excel_path, "http://localhost:8000"
+        )
+        self.assertEqual((inserted, skipped), (2, 0))
+
+        recs = self.client.post(
+            "/calibrations/query", json={"index": {}, "time_idx": "all"}
+        ).json()["records"]
+        self.assertEqual(len(recs), 2)
+        # original dates are preserved (not stamped "now")
+        self.assertTrue(
+            any("2024-01-01" in r["calibration_date"] for r in recs)
+        )
+        self.assertTrue(
+            any("2024-01-02" in r["calibration_date"] for r in recs)
+        )
+
+        # re-running imports nothing (skip-existing dedup)
+        inserted2, skipped2 = migrate_excel_to_server(
+            self.excel_path, "http://localhost:8000"
+        )
+        self.assertEqual((inserted2, skipped2), (0, 2))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -38,6 +38,25 @@ class _TrackingAttenuator:
         self._pos = 0.0
 
 
+class _BacklashAttenuator(_TrackingAttenuator):
+    """Attenuator whose *effective* angle lags the commanded one by
+    ``backlash`` in the direction of the last move — a rotation-mount with
+    hysteresis. ``curr_pos()`` still reports the commanded angle (as real
+    encoders do after a move), so only a power reading reveals the backlash."""
+
+    def __init__(self, start=0.0, backlash=1.0):
+        super().__init__(start)
+        self._backlash = backlash
+        self._last_dir = 0
+
+    def set(self, val):
+        self._last_dir = 1 if val >= self._pos else -1
+        super().set(val)
+
+    def effective_pos(self):
+        return self._pos - self._backlash * self._last_dir
+
+
 class _LaserPowerMeter:
     """Fake powermeter whose reading tracks the laser power set-point.
     Models 'fixed_attenuator' mode, where only the laser power changes."""
@@ -246,6 +265,108 @@ class TestControl(unittest.TestCase):
             "load_calibration_database must not enable any laser",
         )
 
+    def _minimal_control_config(self):
+        """A bare IlluminationControl config (no lasers, no DB access)."""
+        return {
+            "index": {"name": "DefaultMicroscope"},
+            "attenuation": {
+                "classpath": "monet.attenuation.TestAttenuator",
+                "init_kwargs": {
+                    "bkg": 0,
+                    "amp": 50,
+                    "phi": 30,
+                    "start": 30,
+                    "step": 5,
+                },
+            },
+            "analysis": {
+                "classpath": "monet.analysis.LinearCurveAnalyzer",
+                "init_kwargs": {"min": 0, "max": 100, "step": 5},
+            },
+        }
+
+    def test_auto_home_homes_attenuator_on_startup(self):
+        """By default the attenuator is homed once at construction."""
+        with mock.patch("monet.attenuation.TestAttenuator.home") as mock_home:
+            ctrl = mco.IlluminationControl(
+                self._minimal_control_config(), do_load_cal=False
+            )
+        self.assertTrue(ctrl.auto_home)  # default preserved
+        mock_home.assert_called_once_with()
+
+    def test_auto_home_can_be_disabled(self):
+        """auto_home=False leaves the attenuator untouched at construction."""
+        with mock.patch("monet.attenuation.TestAttenuator.home") as mock_home:
+            ctrl = mco.IlluminationControl(
+                self._minimal_control_config(),
+                do_load_cal=False,
+                auto_home=False,
+            )
+        self.assertFalse(ctrl.auto_home)
+        mock_home.assert_not_called()
+
+    def test_auto_home_failure_does_not_block_construction(self):
+        """A home() that raises must not prevent the control from building."""
+        with mock.patch(
+            "monet.attenuation.TestAttenuator.home",
+            side_effect=RuntimeError("mount not responding"),
+        ):
+            ctrl = mco.IlluminationControl(
+                self._minimal_control_config(), do_load_cal=False
+            )
+        self.assertIsNotNone(ctrl.attenuator)
+
+    def test_hysteresis_probe_ideal_attenuator_zero_spread(self):
+        """A backlash-free attenuator: both approaches agree, angle restored."""
+        ctrl = mco.IlluminationControl(
+            self._minimal_control_config(), do_load_cal=False, auto_home=False
+        )
+        ctrl.attenuator = _TrackingAttenuator(start=50.0)
+        # power is a deterministic function of the reported angle
+        res = ctrl.attenuator_hysteresis_probe(
+            read_power=lambda: 2.0 * ctrl.attenuator.curr_pos(),
+            delta=5.0,
+            settle=0,
+        )
+        self.assertAlmostEqual(res["power_spread_frac"], 0.0, places=9)
+        self.assertEqual(res["target"], 50.0)
+        # left where we found it
+        self.assertEqual(ctrl.attenuator.curr_pos(), 50.0)
+        # both approaches stayed inside [0, 100]
+        self.assertGreaterEqual(res["approach_below"], 0)
+        self.assertLessEqual(res["approach_above"], 100)
+
+    def test_hysteresis_probe_detects_backlash(self):
+        """A mount with hysteresis yields a non-zero power spread."""
+        ctrl = mco.IlluminationControl(
+            self._minimal_control_config(), do_load_cal=False, auto_home=False
+        )
+        att = _BacklashAttenuator(start=50.0, backlash=1.0)
+        ctrl.attenuator = att
+        res = ctrl.attenuator_hysteresis_probe(
+            read_power=lambda: 2.0 * att.effective_pos(),
+            delta=5.0,
+            settle=0,
+        )
+        # from below: last move up -> effective = 50-1=49 -> 98
+        # from above: last move down -> effective = 50+1=51 -> 102
+        self.assertAlmostEqual(res["power_from_below"], 98.0, places=6)
+        self.assertAlmostEqual(res["power_from_above"], 102.0, places=6)
+        self.assertGreater(res["power_spread_frac"], 0.03)
+        self.assertEqual(ctrl.attenuator.curr_pos(), 50.0)
+
+    def test_hysteresis_probe_clamps_to_range(self):
+        """Approaches never leave the calibrated angle range."""
+        ctrl = mco.IlluminationControl(
+            self._minimal_control_config(), do_load_cal=False, auto_home=False
+        )
+        ctrl.attenuator = _TrackingAttenuator(start=98.0)  # near max=100
+        res = ctrl.attenuator_hysteresis_probe(
+            read_power=lambda: 1.0, delta=5.0, settle=0
+        )
+        self.assertLessEqual(res["approach_above"], 100.0)
+        self.assertGreaterEqual(res["approach_below"], 0.0)
+
     @mock.patch("time.sleep")
     def test_run_power_feedback_fixed_attenuator(self, _sleep):
         """Feedback in fixed_attenuator mode scales the laser power until the
@@ -422,6 +543,47 @@ class TestControl(unittest.TestCase):
         self.assertEqual(ctrl.curr_laserpower, 100)
         self.assertEqual(ctrl.laserpower, 100)
 
+    def test_laserpower_setter_uncalibrated_power_goes_uncalibrated(self):
+        """Setting a laser power with no stored calibration must not raise.
+
+        Regression: a calibration run setting a new power level (e.g. 10 mW
+        added to the protocol) crashed with a bare ``KeyError: 10`` because
+        the setter indexed ``_analyzers`` while the instrument still counted
+        as calibrated from the old database. It now degrades to uncalibrated
+        so the run can proceed to calibrate that power, and restores as soon
+        as a calibrated power is selected again (no laser re-select needed).
+        """
+        ctrl = self._build_laser_control()
+        self.assertTrue(ctrl.is_calibrated)
+        ctrl.laserpower = 10  # only 50 and 100 mW are calibrated
+        self.assertEqual(ctrl.curr_laserpower, 10)
+        self.assertEqual(ctrl.laserpower, 10)
+        self.assertFalse(ctrl.is_calibrated)
+        # calibrated power setting is locked out while uncalibrated ...
+        with self.assertRaises(ValueError):
+            ctrl.power = 50.0
+        # ... and selecting a calibrated power restores symmetrically.
+        ctrl.laserpower = 100
+        self.assertTrue(ctrl.is_calibrated)
+        self.assertIs(ctrl.analyzer, ctrl._analyzers[100])
+
+    def test_laserpower_setter_fallback_does_not_alias_analyzer(self):
+        """The uncalibrated fallback must install a fresh analyzer.
+
+        Regression: the fallback left ``self.analyzer`` aliased to the
+        previously selected power's entry in ``_analyzers``; a subsequent 1D
+        calibration refit that shared object in place, silently overwriting
+        the stored calibration of a different power.
+        """
+        ctrl = self._build_laser_control()
+        ctrl.laserpower = 100
+        stored = dict(ctrl._analyzers)
+        ctrl.laserpower = 10  # uncalibrated -> fallback
+        for analyzer in stored.values():
+            self.assertIsNot(ctrl.analyzer, analyzer)
+        # fitting the fallback analyzer must leave the stored ones intact
+        self.assertEqual(ctrl._analyzers, stored)
+
     def test_laser_enabled_property(self):
         ctrl = self._build_laser_control()
         ctrl.laser_enabled = True
@@ -456,6 +618,111 @@ class TestControl(unittest.TestCase):
         with self.assertRaises(ValueError):
             ctrl.power = 50.0
 
+    def test_power_setter_prefers_lowest_adequate_level(self):
+        # 488 levels 50 (max 100) and 100 (max 200). After a high set that put
+        # us on level 100, a subsequent low set must drop back to level 50
+        # (served near its top), not stay on level 100's trough.
+        ctrl = self._build_laser_control()
+        ctrl.power = 150.0  # → level 100
+        self.assertEqual(ctrl.curr_laserpower, 100)
+        ctrl.power = (
+            30.0  # reachable on level 50 (max 100) → should switch down
+        )
+        self.assertEqual(ctrl.curr_laserpower, 50)
+        self.assertAlmostEqual(ctrl.power, 30.0, places=6)
+
+    # ── pin_calibration (one-point rescale) ──────────────────────────────
+
+    def test_pin_calibration_rescales_get_and_set(self):
+        ctrl = self._build_laser_control()
+        # simulate the laser running 10% hotter than the stored calibration
+        gain = 1.1
+
+        def read_power():
+            pos = ctrl.attenuator.curr_pos()
+            return gain * ctrl.analyzer.estimate_power(pos)
+
+        res = ctrl.pin_calibration(read_power, settle=0.0)
+        self.assertAlmostEqual(res["factor"], gain, places=6)
+        self.assertTrue(res["shape_ok"])
+        self.assertAlmostEqual(ctrl._pin_factor(), gain, places=6)
+        # getter now reports the pinned (true) power
+        ctrl.attenuator.set(40.0)
+        self.assertAlmostEqual(ctrl.power, gain * 40.0, places=6)
+        # setter hits the true target: to get 55 mW the model is inverted at
+        # 55/1.1 = 50 → angle 50
+        ctrl.power = 55.0
+        self.assertAlmostEqual(ctrl.attenuator.curr_pos(), 50.0, places=6)
+        self.assertAlmostEqual(ctrl.power, 55.0, places=6)
+
+    def test_pin_calibration_flags_shape_change(self):
+        ctrl = self._build_laser_control()
+
+        # amplitude up 10% at the anchor but a distorted mid-curve → not a
+        # pure rescale; shape_ok must be False.
+        def read_power():
+            pos = ctrl.attenuator.curr_pos()
+            base = ctrl.analyzer.estimate_power(pos)
+            return 1.1 * base + (20.0 if pos < 80.0 else 0.0)
+
+        res = ctrl.pin_calibration(read_power, settle=0.0)
+        self.assertFalse(res["shape_ok"])
+
+    def test_pin_scales_cleared_on_reload(self):
+        ctrl = self._build_laser_control()
+        ctrl._pin_scales[(ctrl.curr_laser, ctrl.curr_laserpower)] = 1.2
+        ctrl.load_calibration_database()
+        self.assertEqual(ctrl._pin_scales, {})
+
+    def _pin_gain(self, ctrl, gain):
+        ctrl.pin_calibration(
+            lambda: gain
+            * ctrl.analyzer.estimate_power(ctrl.attenuator.curr_pos()),
+            settle=0.0,
+        )
+
+    def test_pin_applies_in_fixed_laser_mode(self):
+        ctrl = self._build_laser_control()
+        ctrl.laser = 488
+        ctrl.laserpower = 50  # linear amp=1.0 → power == angle
+        self._pin_gain(ctrl, 1.1)
+        # request 55 mW: reality = 1.1*model, so model target = 50 → angle 50
+        ctrl.set_power_fixed_laser(55.0)
+        self.assertAlmostEqual(ctrl.attenuator.curr_pos(), 50.0, places=4)
+        self.assertAlmostEqual(ctrl.power, 55.0, places=4)
+
+    def test_pin_applies_in_fixed_attenuator_mode(self):
+        ctrl = self._build_laser_control()
+        ctrl.laser = 488
+        ctrl.laserpower = 50
+        ctrl.attenuator.set(40.0)
+        # predicted output before pin, then 10% hot
+        before = ctrl.predict_power_fixed_attenuator(50.0)
+        ctrl._pin_scales[(488, 50)] = 1.1
+        ctrl._pin_scales[(488, 100)] = 1.1
+        after = ctrl.predict_power_fixed_attenuator(50.0)
+        self.assertAlmostEqual(after, before * 1.1, places=4)
+
+    def test_pin_scales_fixed_laser_range(self):
+        ctrl = self._build_laser_control()
+        ctrl.laser = 488
+        ctrl.laserpower = 50
+        _, hi0 = ctrl.accessible_power_range("fixed_laser")
+        self._pin_gain(ctrl, 1.1)
+        _, hi1 = ctrl.accessible_power_range("fixed_laser")
+        self.assertAlmostEqual(hi1, hi0 * 1.1, places=3)
+
+    def test_pin_rejects_implausible_reading_and_restores(self):
+        ctrl = self._build_laser_control()
+        ctrl.attenuator.set(30.0)
+        entry = ctrl.attenuator.curr_pos()
+        with self.assertRaises(ValueError):
+            ctrl.pin_calibration(lambda: 0.0, settle=0.0)  # dark reading
+        self.assertEqual(ctrl._pin_scales, {})  # nothing stored
+        self.assertAlmostEqual(
+            ctrl.attenuator.curr_pos(), entry, places=4
+        )  # attenuator restored
+
     # ── set_power_fixed_attenuator / fixed_laser / predict ───────────────
 
     def test_set_power_fixed_attenuator(self):
@@ -488,6 +755,88 @@ class TestControl(unittest.TestCase):
             ctrl.set_power_fixed_laser(40.0, laser=488)
         with self.assertRaises(ValueError):
             ctrl.predict_power_fixed_attenuator(75.0, laser=488)
+
+    # ── C34 per-laser safety ceiling (enforced below the actuation layer) ──
+
+    def test_parse_safety_envelope_valid(self):
+        parsed = mco.IlluminationLaserControl._parse_safety_envelope(
+            {"safety": {"max_power_mw": {488: 40, "561": 80.5}}}
+        )
+        self.assertEqual(parsed, {488: 40.0, 561: 80.5})
+
+    def test_parse_safety_envelope_absent_is_empty(self):
+        self.assertEqual(
+            mco.IlluminationLaserControl._parse_safety_envelope({}), {}
+        )
+        self.assertEqual(
+            mco.IlluminationLaserControl._parse_safety_envelope(
+                {"safety": {}}
+            ),
+            {},
+        )
+
+    def test_parse_safety_envelope_malformed_fails_closed(self):
+        """A broken ceiling config must refuse rather than silently disable."""
+        for bad in (
+            {"safety": {"max_power_mw": {488: "abc"}}},  # non-numeric value
+            {"safety": {"max_power_mw": {488: 0}}},  # non-positive
+            {"safety": {"max_power_mw": {488: -5}}},  # negative
+            {"safety": {"max_power_mw": {488: float("inf")}}},  # non-finite
+            {"safety": {"max_power_mw": {"x": 40}}},  # non-numeric key
+            {"safety": {"max_power_mw": [488, 40]}},  # not a mapping
+        ):
+            with self.assertRaises(ValueError):
+                mco.IlluminationLaserControl._parse_safety_envelope(bad)
+
+    def test_clamp_to_max_power_reports_flag(self):
+        ctrl = self._build_laser_control()
+        ctrl._max_power = {488: 25.0}
+        self.assertEqual(ctrl.clamp_to_max_power(10.0, 488), (10.0, False))
+        self.assertEqual(ctrl.clamp_to_max_power(80.0, 488), (25.0, True))
+        # a laser with no configured ceiling is never clamped
+        self.assertEqual(ctrl.clamp_to_max_power(80.0, 561), (80.0, False))
+
+    def test_power_setter_clamps_to_safety_ceiling(self):
+        """The combined-mode setter (used by the GUI and CLI) is bounded by the
+        ceiling — proving enforcement is below the actuation layer, not only in
+        the HTTP route."""
+        ctrl = self._build_laser_control()
+        ctrl._max_power = {488: 25.0}
+        ctrl.laser = 488
+        ctrl.power = 80.0  # request well above the ceiling
+        self.assertLessEqual(ctrl.power, 25.0 + 1e-6)
+
+    def test_set_power_fixed_laser_respects_ceiling(self):
+        ctrl = self._build_laser_control()
+        ctrl._max_power = {488: 20.0}
+        ctrl.laserpower = 50
+        ctrl.set_power_fixed_laser(40.0, laser=488)  # clamp 40 -> 20
+        # level-50 amp=1.0 ⇒ attenuator position == delivered power == 20
+        self.assertAlmostEqual(ctrl.attenuator.curr_pos(), 20.0, places=4)
+
+    def test_set_power_fixed_attenuator_respects_ceiling(self):
+        ctrl = self._build_laser_control()
+        ctrl._max_power = {488: 30.0}
+        ctrl.set_power_fixed_attenuator(45.0, laser=488)  # clamp 45 -> 30
+        # att=30: output = 0.6·laser_pwr ⇒ 30 mW needs laser power 50 mW
+        self.assertAlmostEqual(ctrl.lasers[488].power, 50.0, places=4)
+
+    @mock.patch("time.sleep")
+    def test_run_power_feedback_respects_ceiling(self, _sleep):
+        ctrl = self._build_laser_control()
+        ctrl._max_power = {488: 20.0}
+        pm = _AttenuatorCurvePowerMeter(ctrl, miscal=1.0)
+        result = mco.run_power_feedback(
+            ctrl,
+            pm,
+            target_pwr=50,  # asks for 50, ceiling is 20
+            laser=488,
+            mode="fixed_laser",
+            max_dev_pct=2.0,
+            max_iter=20,
+        )
+        # the loop drives to the clamped target, never toward 50
+        self.assertLessEqual(result["measured"], 20.0 * 1.05)
 
     # ── BFP-calibrated ranges (sample plane vs power-meter units) ─────────
 

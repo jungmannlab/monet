@@ -11,6 +11,8 @@ Test the powermeter module of monet.
 import unittest
 from unittest import mock
 
+import numpy as np
+
 import monet.powermeter as mpm
 
 
@@ -28,6 +30,10 @@ class _FakeTLPM:
 
     def __init__(self):
         self._wavelength = 488.0
+        self.power_autorange = None  # records setPowerAutoRange() calls
+
+    def setPowerAutoRange(self, mode):
+        self.power_autorange = mode.value
 
     def findRsrc(self, count_ref):
         count_ref._obj.value = self._device_count
@@ -53,6 +59,11 @@ class _FakeTLPM:
 
 class _FakeTLPMNoDevice(_FakeTLPM):
     _device_count = 0
+
+
+class _FakeTLPMOverRange(_FakeTLPM):
+    # SCPI / IEEE-488.2 over-range sentinel (9.9e37 W) for a saturated channel.
+    _power_w = 9.9e37
 
 
 def _patch_wrapper(wrapper_cls):
@@ -99,6 +110,29 @@ class TestPowerMeter(unittest.TestCase):
             self.assertAlmostEqual(pm.wavelength, 488.0)
             pm.wavelength = 561
             self.assertAlmostEqual(pm.wavelength, 561.0)
+
+    def test_basics_02b_ThorlabsTLPM_overrange_is_nan(self):
+        # A saturated channel returns the 9.9e37 SCPI over-range sentinel;
+        # read() must normalize that to NaN (not ~1e41 mW) so the caller can
+        # reject the point instead of corrupting the calibration fit.
+        with _patch_wrapper(_FakeTLPMOverRange):
+            pm = mpm.ThorlabsTLPMPowerMeter({"address": "find connection"})
+            self.assertTrue(np.isnan(pm.read(averaging=5)))
+
+    def test_basics_02c_ThorlabsTLPM_autorange_default_on(self):
+        # By default the meter is put into power auto-range at open, so a
+        # too-low fixed range can't silently saturate during calibration.
+        with _patch_wrapper(_FakeTLPM):
+            pm = mpm.ThorlabsTLPMPowerMeter({"address": "find connection"})
+            self.assertEqual(pm.pm.power_autorange, 1)
+
+    def test_basics_02d_ThorlabsTLPM_autorange_opt_out(self):
+        # power_autorange=False leaves the device range untouched.
+        with _patch_wrapper(_FakeTLPM):
+            pm = mpm.ThorlabsTLPMPowerMeter(
+                {"address": "find connection", "power_autorange": False}
+            )
+            self.assertIsNone(pm.pm.power_autorange)
 
     def test_basics_03_ThorlabsTLPM_no_device_raises(self):
         with _patch_wrapper(_FakeTLPMNoDevice):

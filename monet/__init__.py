@@ -8,9 +8,10 @@ monet/__init__.py
 """
 
 import logging
+import os
+import warnings
 from logging import handlers
 
-import importlib_resources
 import yaml as _yaml
 
 try:
@@ -28,20 +29,89 @@ def config_logger():
     formatter = logging.Formatter(
         "%(asctime)s | %(name)s | %(levelname)s -> %(message)s"
     )
-    file_handler = handlers.RotatingFileHandler(
-        "monet.log", maxBytes=1e6, backupCount=5
+    # Log-file location is configurable so monet can run from a read-only or
+    # unwritable working directory (e.g. a systemd service whose CWD is `/`):
+    # MONET_LOG_FILE sets the full path; MONET_LOG_DIR sets a directory (file
+    # is monet.log). Neither set ⇒ ``monet.log`` in the CWD, as before.
+    log_file = os.environ.get("MONET_LOG_FILE") or os.path.join(
+        os.environ.get("MONET_LOG_DIR", ""), "monet.log"
     )
+    # Idempotent: if a rotating handler for this same file is already attached
+    # (config_logger() re-run after import, or a second entry point — e.g.
+    # `python -m monet` — calling it again), don't open a *second* OS handle on
+    # the file. On Windows two open handles make log rotation fail with
+    # "WinError 32 ... used by another process" when one handler renames the
+    # file the other still holds open.
+    resolved = os.path.abspath(log_file)
+    for existing in logger.handlers:
+        if isinstance(
+            existing, handlers.RotatingFileHandler
+        ) and os.path.abspath(getattr(existing, "baseFilename", "")) == (
+            resolved
+        ):
+            return
+    try:
+        file_handler = handlers.RotatingFileHandler(
+            log_file, maxBytes=int(1e6), backupCount=5
+        )
+    except OSError as exc:
+        # An unwritable log path must not crash `import monet` (which would
+        # take down the CLI, GUI and server). Fall back to stderr and warn.
+        stream_handler = logging.StreamHandler()
+        stream_handler.setFormatter(formatter)
+        stream_handler.setLevel(logging.WARNING)
+        logger.addHandler(stream_handler)
+        logger.warning(
+            "Could not open log file %r (%s); logging to stderr only. Set "
+            "MONET_LOG_FILE or MONET_LOG_DIR to a writable path.",
+            log_file,
+            exc,
+        )
+        return
     file_handler.setFormatter(formatter)
     file_handler.setLevel(logging.DEBUG)
-    stream_handler = logging.StreamHandler()
-    stream_handler.setFormatter(formatter)
-    stream_handler.setLevel(logging.WARNING)
     logger.addHandler(file_handler)
-    # logger.addHandler(stream_handler)
 
 
 config_logger()
 logger = logging.getLogger(__name__)
+
+# ── per-machine settings via .env ────────────────────────────────────────────
+# monet reads its per-machine settings from environment variables: the config /
+# protocol path lists (MONET_CONFIG_PATHS / MONET_PROTOCOL_PATHS), the auth
+# token(s) (PAINT_MONET_TOKEN / PAINT_MONET_TOKENS) and the auth toggle
+# (PAINT_MONET_AUTH). Load a gitignored `.env` (package root, then cwd) into the
+# environment so those can live in one file. override=False ⇒ an already-exported
+# variable or a systemd EnvironmentFile still wins.
+_PKG_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _load_env_files(pkg_root=_PKG_ROOT, override=False):
+    """Load `.env` (package root, then cwd/parents) into os.environ.
+
+    ``find_dotenv(usecwd=True)`` is required for the cwd search: plain
+    ``load_dotenv()`` searches from the *caller's* file location (this package),
+    not the working directory, so it would never find a client's cwd ``.env``.
+
+    ``override`` is False at import (an already-exported var / systemd
+    EnvironmentFile wins). A live token reload (``server.reload_auth``) passes
+    ``override=True`` so a value *changed* in the .env replaces the stale one.
+    """
+    try:
+        from dotenv import find_dotenv, load_dotenv
+    except Exception:  # pragma: no cover - python-dotenv is a core dep
+        logger.debug("python-dotenv unavailable; .env not loaded")
+        return
+    try:
+        load_dotenv(os.path.join(pkg_root, ".env"), override=override)
+        cwd_env = find_dotenv(usecwd=True)
+        if cwd_env:
+            load_dotenv(cwd_env, override=override)
+    except Exception:
+        logger.debug("could not load .env", exc_info=True)
+
+
+_load_env_files()
 
 DEVICE_TAG = "name"
 LASER_TAG = "wavelength [nm]"
@@ -72,14 +142,34 @@ def normalize_powermeter_type(value):
     return v
 
 
-try:
-    ref = importlib_resources.files("monet") / "..\\env.yaml"
-    with importlib_resources.as_file(ref) as envpath:
-        with open(envpath, "r") as f:
-            env = _yaml.full_load(f)
-except Exception:
-    logger.debug("env.yaml cannot be loaded.")
-    env = None
+# Auth toggle (PAINT_MONET_AUTH): 'off' | 'on' | 'auto' (default). Kept here
+# (dependency-light) so both the client (monet.io) and the server helper
+# (monet.serviceauth) can read it without importing the FastAPI/auth stack.
+#   auto  — enforce iff tokens are configured (backward-compatible default)
+#   off   — never enforce (loopback dev); the client omits its token
+#   on    — require tokens (serve refuses to start if none are configured)
+PAINT_MONET_AUTH_ENV = "PAINT_MONET_AUTH"
+_AUTH_OFF_VALUES = frozenset({"off", "0", "false", "no"})
+_AUTH_ON_VALUES = frozenset({"on", "1", "true", "yes"})
+
+
+def auth_mode():
+    """Return the normalized auth toggle: 'off', 'on', or 'auto' (default)."""
+    value = (os.environ.get(PAINT_MONET_AUTH_ENV) or "").strip().lower()
+    if value in _AUTH_OFF_VALUES:
+        return "off"
+    if value in _AUTH_ON_VALUES:
+        return "on"
+    return "auto"
+
+
+def _paths_from_env(var):
+    """Parse an os.pathsep-separated path list from ``var``, or None if unset."""
+    raw = os.environ.get(var)
+    if not raw:
+        return None
+    return [p.strip() for p in raw.split(os.pathsep) if p.strip()]
+
 
 ###########################################################
 #
@@ -229,12 +319,36 @@ test_config_2d = {
 ###########################################################
 
 
-if env:
-    default_config_paths = env["config_paths"]
-    default_protocol_paths = env["protocol_paths"]
-else:
-    default_config_paths = []
-    default_protocol_paths = []
+# Preferred source: MONET_CONFIG_PATHS / MONET_PROTOCOL_PATHS (from .env / env).
+default_config_paths = _paths_from_env("MONET_CONFIG_PATHS")
+default_protocol_paths = _paths_from_env("MONET_PROTOCOL_PATHS")
+
+# Legacy fallback: env.yaml (deprecated). Only consulted for a list not already
+# supplied via the environment, and it emits a DeprecationWarning so rigs migrate.
+if default_config_paths is None or default_protocol_paths is None:
+    _legacy_env = None
+    try:
+        _envpath = os.path.join(_PKG_ROOT, "env.yaml")
+        if os.path.exists(_envpath):
+            with open(_envpath, "r") as f:
+                _legacy_env = _yaml.full_load(f)
+    except Exception:
+        logger.debug("env.yaml cannot be loaded.", exc_info=True)
+        _legacy_env = None
+    if _legacy_env:
+        warnings.warn(
+            "monet: env.yaml is deprecated; set MONET_CONFIG_PATHS and "
+            "MONET_PROTOCOL_PATHS in a .env file instead (see .env.template).",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        if default_config_paths is None:
+            default_config_paths = _legacy_env.get("config_paths", [])
+        if default_protocol_paths is None:
+            default_protocol_paths = _legacy_env.get("protocol_paths", [])
+
+default_config_paths = default_config_paths or []
+default_protocol_paths = default_protocol_paths or []
 
 
 CONFIGS = {}
@@ -274,3 +388,57 @@ for defpath in default_protocol_paths:
         pass
 if PROTOCOLS == {}:
     PROTOCOLS = {"test_2D": calibration_protocol}
+
+
+def set_config_analysis(name, analysis):
+    """Persist a microscope's analysis-model config to the config file.
+
+    Updates ``CONFIGS[name]['analysis']`` in memory and rewrites
+    ``CONFIGS_PATH`` (the loaded config YAML), backing the previous file up to
+    ``<path>.bak`` first. Used by the GUI's "Apply best model" so a chosen
+    analysis model survives a restart. The model is a per-microscope setting,
+    so this changes it for all of that microscope's lasers.
+
+    Parameters
+    ----------
+    name : str
+        The microscope key in :data:`CONFIGS`.
+    analysis : dict
+        The new ``analysis`` section (``classpath`` + ``init_kwargs``).
+
+    Returns
+    -------
+    str or None
+        The config-file path written, or ``None`` if the microscope is unknown
+        or there is no writable config file (e.g. defaults, or an
+        externally-managed config); the in-memory ``CONFIGS`` is still updated
+        when the name is known.
+    """
+    if name not in CONFIGS:
+        logger.warning(
+            "set_config_analysis: unknown microscope %r; not persisted.", name
+        )
+        return None
+    CONFIGS[name]["analysis"] = analysis
+    if not CONFIGS_PATH or not os.path.isfile(CONFIGS_PATH):
+        logger.warning(
+            "set_config_analysis: no writable config file (CONFIGS_PATH=%r); "
+            "change applied in memory only.",
+            CONFIGS_PATH,
+        )
+        return None
+    try:
+        import shutil as _shutil
+
+        _shutil.copyfile(CONFIGS_PATH, CONFIGS_PATH + ".bak")
+    except Exception:
+        logger.debug("could not back up config file", exc_info=True)
+    with open(CONFIGS_PATH, "w") as f:
+        _yaml.dump(CONFIGS, f, default_flow_style=False, sort_keys=False)
+    logger.info(
+        "Persisted analysis model for %s to %s (backup at %s.bak).",
+        name,
+        CONFIGS_PATH,
+        CONFIGS_PATH,
+    )
+    return CONFIGS_PATH

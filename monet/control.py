@@ -61,7 +61,7 @@ class IlluminationControl:
         }
     """
 
-    def __init__(self, config, do_load_cal=True):
+    def __init__(self, config, do_load_cal=True, auto_home=True):
         """Initialize the analyzer and attenuator classes from config.
 
         Parameters
@@ -71,6 +71,14 @@ class IlluminationControl:
             'classpath' and 'init_kwargs'.
         do_load_cal : bool
             Whether to load the latest calibration.
+        auto_home : bool
+            Whether to home the attenuator once at connection. Homing the
+            Thorlabs rotation mount establishes its absolute-position
+            reference; without it, absolute moves can be offset. Done here
+            in the base ``__init__`` so it runs before any lasers are
+            enabled (see ``IlluminationLaserControl``), keeping the
+            half-wave-plate power swing dark. A no-op for attenuators
+            without a moving axis (AOTF, NI-DAQ analog-out, TestAttenuator).
         """
         self.config = config
         self.is_calibrated = False
@@ -86,6 +94,18 @@ class IlluminationControl:
         self.attenuator = load_class(
             attconfig["classpath"], attconfig["init_kwargs"], settgs
         )
+
+        self.auto_home = auto_home
+        if auto_home:
+            try:
+                self.attenuator.home()
+            except Exception as e:
+                logger.warning(
+                    "Could not home the attenuator at startup: %s. "
+                    "Absolute-position accuracy may be reduced until it "
+                    "is homed manually.",
+                    e,
+                )
 
         if do_load_cal:
             try:
@@ -112,12 +132,99 @@ class IlluminationControl:
         """
         if not self.is_calibrated:
             raise ValueError("No calibration present. Please calibrate first.")
-        ctrlval = self.analyzer.estimate(power)
+        # reality = pin * model(angle); to reach `power` invert the model at
+        # power / pin (pin is 1.0 unless a one-point rescale is active).
+        ctrlval = self.analyzer.estimate(power / self._pin_factor())
         self.set_attenuator(ctrlval)
+
+    def _pin_factor(self):
+        """One-point-rescale factor for the active calibration (1.0 = none).
+
+        Overridden in the 2-D control to return the per-(laser, power) pin set
+        by :meth:`pin_calibration`; the base control is never pinned.
+        """
+        return 1.0
 
     def set_attenuator(self, value):
         """Set the attenuator value."""
         self.attenuator.set(value)
+
+    def attenuator_hysteresis_probe(self, read_power, delta=5.0, settle=0.5):
+        """Quantify attenuator backlash by re-approaching one angle two ways.
+
+        Re-commands the *current* attenuator angle approached first from below
+        (angle - ``delta``) and then from above (angle + ``delta``), reading
+        the power after each approach. A rotation-mount / half-wave-plate with
+        backlash returns different powers for the two directions even though the
+        commanded angle is identical — and because the squared-sine attenuation
+        curve is steep, a fraction of a degree of hysteresis becomes a large
+        power swing. That makes this the prime suspect for a calibrate-vs-
+        measure deviation when both are done in the same plane (where the
+        objective transmission factor cancels out).
+
+        The attenuator is returned to the starting angle. Both approaches are
+        clamped to the calibrated angle range. ``read_power`` is a zero-arg
+        callable returning a power reading (the caller supplies the meter).
+
+        Parameters
+        ----------
+        read_power : callable
+            Zero-arg callable returning a power reading (e.g.
+            ``powermeter.read``).
+        delta : float
+            How far to move away before re-approaching, in attenuator units.
+        settle : float
+            Seconds to wait after each move before reading.
+
+        Returns
+        -------
+        dict
+            ``target``, ``approach_below``/``approach_above`` (the away
+            positions), ``pos_from_below``/``pos_from_above`` (read-back
+            angles), ``power_from_below``/``power_from_above``, and
+            ``power_spread_frac`` = \\|Δpower\\| / mean power.
+        """
+        import time
+
+        att = self.attenuator
+        target = att.curr_pos()
+
+        # Keep both approaches inside the calibrated angle range.
+        params = getattr(self.analyzer, "analysis_parameters", {}) or {}
+        lo_lim = params.get("min")
+        hi_lim = params.get("max")
+        below = target - delta
+        above = target + delta
+        if lo_lim is not None and np.isfinite(lo_lim):
+            below = max(below, lo_lim)
+        if hi_lim is not None and np.isfinite(hi_lim):
+            above = min(above, hi_lim)
+
+        def _approach(via):
+            att.set(via)
+            time.sleep(settle)
+            att.set(target)
+            time.sleep(settle)
+            return att.curr_pos(), read_power()
+
+        pos_lo, p_lo = _approach(below)
+        pos_hi, p_hi = _approach(above)
+        att.set(target)  # leave it where we found it
+
+        mean = (p_lo + p_hi) / 2.0
+        spread = abs(p_hi - p_lo) / mean if mean else float("nan")
+        result = {
+            "target": target,
+            "approach_below": below,
+            "approach_above": above,
+            "pos_from_below": pos_lo,
+            "pos_from_above": pos_hi,
+            "power_from_below": p_lo,
+            "power_from_above": p_hi,
+            "power_spread_frac": spread,
+        }
+        logger.info("attenuator hysteresis probe: %s", result)
+        return result
 
     def load_calibration(self, time_idx="latest"):
         """Load a calibration from the database and set the analyzer model.
@@ -133,7 +240,21 @@ class IlluminationControl:
             fname, self.config["index"], time_idx=time_idx
         )
 
-        self.analyzer.load_model(cali_pars)
+        # The stored calibration may have been fit with a different analysis
+        # model than the current config (e.g. sinusoidal before switching to
+        # polynomial); loading it into the current analyzer then raises. Stay
+        # uncalibrated with a clear warning rather than crashing.
+        try:
+            self.analyzer.load_model(cali_pars)
+        except Exception as exc:
+            logger.warning(
+                "Stored calibration is incompatible with the current "
+                "analysis model (%s); recalibrate. Leaving the instrument "
+                "uncalibrated.",
+                exc,
+            )
+            self.is_calibrated = False
+            return
         self.is_calibrated = True
 
     def disconnect(self):
@@ -166,7 +287,13 @@ class IlluminationLaserControl(IlluminationControl):
         }
     """
 
-    def __init__(self, config, do_load_cal=True, auto_enable_lasers=True):
+    def __init__(
+        self,
+        config,
+        do_load_cal=True,
+        auto_enable_lasers=True,
+        auto_home=True,
+    ):
         """Initialize the multi-laser illumination control.
 
         Parameters
@@ -178,8 +305,12 @@ class IlluminationLaserControl(IlluminationControl):
             Whether to load the latest calibration.
         auto_enable_lasers : bool
             Whether to switch on lasers at connection.
+        auto_home : bool
+            Whether to home the attenuator once at connection. Homing
+            happens in the base ``__init__`` (before lasers are loaded or
+            enabled below), so the power swing occurs with lasers dark.
         """
-        super().__init__(config, do_load_cal=do_load_cal)
+        super().__init__(config, do_load_cal=do_load_cal, auto_home=auto_home)
 
         # here, all lasers (wavelengths) and powers are loaded
         config["index"][LASER_TAG] = slice(None)
@@ -223,8 +354,22 @@ class IlluminationLaserControl(IlluminationControl):
             )
         self.curr_laser = list(self.lasers.keys())[0]
 
+        # Hard per-laser output-power ceiling (C34 safety envelope). Enforced in
+        # this control layer — below *every* actuation path (the HTTP power API,
+        # the GUI, the CLI) — so no caller can drive a laser above the limit.
+        # Parsed fail-closed: a malformed entry refuses construction rather than
+        # silently running without the limit.
+        self._max_power = self._parse_safety_envelope(config)
+
         self._factors = {}  # {laser: transmission_objective}; = P_sample/P_bfp
         self._powermeter_type = {}  # {laser: 'sample'/'bfp'}
+
+        # One-point rescale ("pin") factors keyed by (laser, laser_power): a
+        # multiplicative correction applied to the calibration model to track
+        # slow laser-power drift between a full calibration and use. Set via
+        # pin_calibration(); 1.0 (absent) means the stored calibration is used
+        # unchanged. Cleared when a fresh calibration is loaded.
+        self._pin_scales = {}
 
         # Where the power meter is *physically* positioned right now. This is
         # independent of the stored calibration's powermeter type: it drives
@@ -249,6 +394,23 @@ class IlluminationLaserControl(IlluminationControl):
                     e,
                 )
 
+    def _analyzers_for(self, laser):
+        """Analyzers/power-ranges for ``laser`` under the current model.
+
+        Like :meth:`_populate_analyzers`, but raises a clear error when no
+        stored calibration is compatible with the current analysis model
+        (e.g. after switching the model before recalibrating) instead of
+        letting callers crash on an empty mapping.
+        """
+        analyzers, power_ranges = self._populate_analyzers(self.cali_db, laser)
+        if not analyzers:
+            raise ValueError(
+                "No calibration compatible with the current analysis model "
+                "for laser {}; recalibrate this laser with the current "
+                "model.".format(laser)
+            )
+        return analyzers, power_ranges
+
     def _populate_analyzers(self, db, laser):
         """Create analyzers for various power settings from the database.
 
@@ -267,9 +429,9 @@ class IlluminationLaserControl(IlluminationControl):
         power_ranges : pandas DataFrame
             Indexed by laser power settings, with columns 'min', 'max'.
         """
-        if not self.is_calibrated:
+        if db is None:
             raise KeyError(
-                "Cannot populate analyzers: no calibration present."
+                "Cannot populate analyzers: no calibration database loaded."
             )
         laser = int(laser)
         ic(db)
@@ -279,20 +441,44 @@ class IlluminationLaserControl(IlluminationControl):
         analyzers = {}
         power_ranges = pd.DataFrame(columns=["min", "max"])
         for pwr, cali_pars in subdb.groupby(POWER_TAG):
+            # Use the most recent calibration for this power. The DB may hold
+            # older rows from a different analysis model (e.g. sinusoidal
+            # before switching to polynomial); the latest row matches the
+            # current model, and any still-incompatible row is skipped below.
+            try:
+                cali_pars = cali_pars.sort_index()
+            except Exception:
+                pass
+            row = cali_pars.iloc[-1]
             pars = {}
             for col in cali_pars.columns:
-                val = cali_pars[col].to_numpy()[0]
+                val = row[col]
                 try:
                     if not np.isnan(val):
                         pars[col] = val
                 except (TypeError, ValueError):
                     pass  # skip non-numeric columns (e.g. powermeter_type)
-            analyzers[pwr] = load_class(
+            analyzer = load_class(
                 anaconfig["classpath"], anaconfig["init_kwargs"]
             )
-            analyzers[pwr].load_model(pars)
-
-            power_ranges.loc[pwr, :] = sorted(analyzers[pwr].output_range())
+            try:
+                analyzer.load_model(pars)
+                # fold in any one-point pin for this (laser, power) so the
+                # stored range matches the pinned set/read path
+                pin = self._pin_scales.get((laser, pwr), 1.0)
+                power_ranges.loc[pwr, :] = sorted(
+                    v * pin for v in analyzer.output_range()
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Skipping laser power %s: stored calibration is "
+                    "incompatible with the current analysis model (%s). "
+                    "Recalibrate this power with the current model.",
+                    pwr,
+                    exc,
+                )
+                continue
+            analyzers[pwr] = analyzer
         ic(power_ranges)
         return analyzers, power_ranges
 
@@ -326,12 +512,29 @@ class IlluminationLaserControl(IlluminationControl):
             self.config["index"][LASER_TAG] = laser
             if self.auto_enable_lasers:
                 self.lasers[self.curr_laser].enabled = True
-            if self.is_calibrated:
+            # Gate on having a database, not on is_calibrated: switching to a
+            # laser with a valid calibration must re-establish it even if a
+            # previously-selected laser (incompatible with the current model)
+            # cleared the flag — otherwise the instrument stays locked out.
+            if getattr(self, "cali_db", None) is not None:
                 ic(self.cali_db)
                 self._analyzers, self._power_ranges = self._populate_analyzers(
                     self.cali_db, self.curr_laser
                 )
-                self.laserpower = self._power_ranges.index.min()
+                if len(self._power_ranges.index) == 0:
+                    # No calibration compatible with the current analysis
+                    # model (e.g. just after switching the model, before
+                    # recalibrating). Stay uncalibrated rather than setting
+                    # laserpower to NaN and later KeyError'ing on it.
+                    logger.warning(
+                        "No calibration compatible with the current analysis "
+                        "model for laser %s; recalibrate.",
+                        self.curr_laser,
+                    )
+                    self.is_calibrated = False
+                else:
+                    self.is_calibrated = True
+                    self.laserpower = self._power_ranges.index.min()
             else:
                 logger.debug(
                     "Calibration not available, not setting analyzers."
@@ -358,8 +561,36 @@ class IlluminationLaserControl(IlluminationControl):
         self.curr_laserpower = laserpower
         self.config["index"][POWER_TAG] = laserpower
         self.lasers[self.curr_laser].power = laserpower
-        if self.is_calibrated:
-            self.analyzer = self._analyzers[self.curr_laserpower]
+        analyzers = getattr(self, "_analyzers", None)
+        if analyzers is None:
+            return
+        analyzer = analyzers.get(self.curr_laserpower)
+        if analyzer is not None:
+            self.analyzer = analyzer
+            self.is_calibrated = True
+        else:
+            # No usable calibration for this power — either a new power
+            # level or a stored row skipped as incompatible with the
+            # current analysis model. Degrade to uncalibrated instead of
+            # KeyError'ing: a calibration run must be able to set a power
+            # it is about to calibrate. Selecting a power with a loaded
+            # calibration restores (rows saved this session need a
+            # database reload first). Install a fresh analyzer so a
+            # subsequent 1D calibration fits into it instead of mutating
+            # another power's stored analyzer in ``_analyzers`` in place.
+            if self.is_calibrated:
+                logger.warning(
+                    "No calibration for laser %s at %s mW; the instrument "
+                    "is uncalibrated until a calibrated power is selected "
+                    "or this power is calibrated.",
+                    self.curr_laser,
+                    laserpower,
+                )
+            self.is_calibrated = False
+            anaconfig = self.config["analysis"]
+            self.analyzer = load_class(
+                anaconfig["classpath"], anaconfig["init_kwargs"]
+            )
 
     @property
     def laser_enabled(self):
@@ -413,6 +644,99 @@ class IlluminationLaserControl(IlluminationControl):
         if laser is None:
             laser = self.curr_laser
         return laser in self._factors
+
+    @staticmethod
+    def _parse_safety_envelope(config):
+        """Parse the per-laser max-power ceiling from config (fail-closed).
+
+        Reads ``config['safety']['max_power_mw']`` — a ``{wavelength: mW}``
+        mapping (the interim C34 source until WP-FLEET ships the versioned site
+        descriptor). Returns ``{int(laser): float(mW)}``. A malformed entry
+        (non-numeric key/value, non-positive or non-finite power, or a
+        non-mapping) raises ``ValueError`` so a broken safety config refuses
+        construction instead of silently disabling the interlock.
+        """
+        safety = config.get("safety") or {}
+        raw = safety.get("max_power_mw") or {}
+        if not isinstance(raw, dict):
+            raise ValueError(
+                "config 'safety.max_power_mw' must be a mapping of "
+                "{laser_wavelength: max_mW}"
+            )
+        parsed = {}
+        for key, val in raw.items():
+            try:
+                laser = int(key)
+            except (TypeError, ValueError):
+                raise ValueError(
+                    "safety.max_power_mw has a non-numeric laser key: "
+                    "{!r}".format(key)
+                )
+            try:
+                mw = float(val)
+            except (TypeError, ValueError):
+                raise ValueError(
+                    "safety.max_power_mw[{!r}] is not a number: {!r}".format(
+                        key, val
+                    )
+                )
+            if not np.isfinite(mw) or mw <= 0:
+                raise ValueError(
+                    "safety.max_power_mw[{!r}] must be a positive, finite "
+                    "power in mW, got {!r}".format(key, mw)
+                )
+            parsed[laser] = mw
+        return parsed
+
+    def max_power(self, laser=None):
+        """Return the hard per-laser output-power ceiling in mW (C34), or None.
+
+        ``None`` means no ceiling is configured for this laser.
+
+        Parameters
+        ----------
+        laser : int or str, optional
+            Laser wavelength; defaults to curr_laser.
+        """
+        if laser is None:
+            laser = self.curr_laser
+        try:
+            laser = int(laser)
+        except (TypeError, ValueError):
+            pass
+        return self._max_power.get(laser)
+
+    def clamp_to_max_power(self, pwr, laser=None):
+        """Clamp a requested sample-plane power to the per-laser ceiling.
+
+        This is the single enforcement point for the C34 safety envelope; it
+        sits below every actuation method, so the HTTP power API, the GUI and
+        the CLI are all bounded by the same hard limit.
+
+        Parameters
+        ----------
+        pwr : float
+            Requested output power in mW (sample plane).
+        laser : int or str, optional
+            Laser wavelength; defaults to curr_laser.
+
+        Returns
+        -------
+        (value, was_clamped) : tuple of (float, bool)
+            The power to actually use (never above the ceiling) and whether it
+            had to be clamped.
+        """
+        ceiling = self.max_power(laser)
+        if ceiling is not None and pwr > ceiling:
+            logger.warning(
+                "Requested power %.3f mW exceeds the safety ceiling %.3f mW "
+                "for laser %s; clamping.",
+                pwr,
+                ceiling,
+                self.curr_laser if laser is None else laser,
+            )
+            return ceiling, True
+        return pwr, False
 
     def _sample_power_ranges(self, laser=None, power_ranges=None):
         """Return calibrated output power ranges in sample-plane units.
@@ -472,8 +796,129 @@ class IlluminationLaserControl(IlluminationControl):
     @property
     def power(self):
         attpos = self.attenuator.curr_pos()
-        raw = self.analyzer.estimate_power(attpos)
+        raw = self.analyzer.estimate_power(attpos) * self._pin_factor()
         return raw * self._bfp_factor()
+
+    def _pin_for(self, laser, power):
+        """One-point-rescale factor stored for a (laser, power) (1.0 = none)."""
+        try:
+            key = (int(laser), power)
+        except (TypeError, ValueError):
+            key = (laser, power)
+        return self._pin_scales.get(key, 1.0)
+
+    def _pin_factor(self):
+        """Active one-point-rescale factor for the current (laser, power)."""
+        return self._pin_for(self.curr_laser, self.curr_laserpower)
+
+    def pin_calibration(self, read_power, settle=0.5, check=True):
+        """One-point rescale ("pin") the active calibration to the laser's
+        *current* output, correcting slow laser-power drift without a full
+        recalibration.
+
+        Measures the actual power at the calibration's highest-power angle and
+        stores a multiplicative factor (measured / model-predicted) for the
+        current (laser, laser_power), so open-loop set-power and the power
+        read-back match reality again. If ``check`` is set, a second point near
+        half-power is measured to test whether the drift is a pure amplitude
+        rescale. A large residual there (``shape_ok=False``) usually means the
+        laser is still warming up — the attenuation curve's small thermal phase
+        shift hasn't settled — so warm up ~30 min and retry; rarely the curve
+        shape genuinely changed and a full recalibration is needed. In the
+        weekend study every line pinned to ~0.5-0.7 %FS once warmed up.
+
+        Parameters
+        ----------
+        read_power : callable
+            Zero-arg callable returning a power-meter reading in the *same
+            plane as the calibration model* (the raw meter reading, i.e. not
+            projected to the sample plane).
+        settle : float
+            Seconds to wait after each attenuator move before reading.
+        check : bool
+            Whether to measure the second (shape-check) point.
+
+        Returns
+        -------
+        dict
+            ``factor``, ``anchor_angle``, ``measured``, ``predicted``; and when
+            ``check``: ``check_angle``, ``check_resid_fs`` (% full scale) and
+            ``shape_ok`` (False → recommend a full recalibration).
+        """
+        import time
+
+        if not self.is_calibrated:
+            raise ValueError("Not calibrated. Cannot pin.")
+        analyzer = self.analyzer
+        lo = float(analyzer.analysis_parameters["min"])
+        hi = float(analyzer.analysis_parameters["max"])
+        grid = np.linspace(lo, hi, 181)
+        pmodel = np.asarray(analyzer.estimate_power(grid), dtype=float)
+        pmax = float(np.nanmax(pmodel))
+        anchor = float(grid[int(np.nanargmax(pmodel))])
+
+        # Restore the attenuator afterwards: a pin is a measurement, not a
+        # move the caller asked for.
+        entry = self.attenuator.curr_pos()
+        try:
+            self.set_attenuator(anchor)
+            time.sleep(settle)
+            measured = float(read_power())
+            predicted = float(analyzer.estimate_power(anchor))
+            if (
+                not (np.isfinite(measured) and np.isfinite(predicted))
+                or measured <= 0
+                or predicted <= 0
+            ):
+                raise ValueError(
+                    "Pin aborted: implausible reading (measured=%.4g, "
+                    "model=%.4g). Is the laser on and the beam routed to the "
+                    "meter?" % (measured, predicted)
+                )
+            factor = measured / predicted
+            if not (0.2 <= factor <= 5.0):
+                raise ValueError(
+                    "Pin aborted: measured/model = %.2f is implausible "
+                    "(laser off, wrong beam path, or a stale calibration). "
+                    "Recalibrate this line." % factor
+                )
+            result = {
+                "factor": factor,
+                "anchor_angle": anchor,
+                "measured": measured,
+                "predicted": predicted,
+            }
+            if check:
+                half = 0.5 * pmax
+                a_chk = float(grid[int(np.nanargmin(np.abs(pmodel - half)))])
+                self.set_attenuator(a_chk)
+                time.sleep(settle)
+                meas2 = float(read_power())
+                pred2 = float(analyzer.estimate_power(a_chk))
+                fs = (factor * pmax) if (factor * pmax) > 0 else 1.0
+                resid = (meas2 - factor * pred2) / fs * 100.0
+                result["check_angle"] = a_chk
+                result["check_resid_fs"] = resid
+                result["shape_ok"] = abs(resid) < 3.0
+        finally:
+            try:
+                self.set_attenuator(entry)
+            except Exception:
+                pass
+
+        self._pin_scales[(int(self.curr_laser), self.curr_laserpower)] = factor
+        # Keep the stored power ranges consistent with the pin so every
+        # range-based path (combined-mode clamp, accessible_power_range,
+        # _sample_power_ranges, GUI range label) agrees with the pinned set.
+        # Recompute from the unpinned model range each time so re-pinning does
+        # not compound.
+        try:
+            self._power_ranges.loc[self.curr_laserpower, :] = sorted(
+                v * factor for v in analyzer.output_range()
+            )
+        except Exception:
+            pass
+        return result
 
     @power.setter
     def power(self, pwr):
@@ -489,49 +934,44 @@ class IlluminationLaserControl(IlluminationControl):
         if not self.is_calibrated:
             raise ValueError("Not calibrated. Cannot set power.")
 
+        # C34 safety ceiling — enforced below the actuation layer.
+        pwr, _ = self.clamp_to_max_power(pwr)
+
         # pwr is a sample-plane power; the calibrated ranges are in
         # power-meter units. Compare both in the sample plane.
         ranges = self._sample_power_ranges()
 
         newpwr = pwr
 
-        if (
-            pwr < ranges.loc[self.curr_laserpower, "min"]
-            or pwr > ranges.loc[self.curr_laserpower, "max"]
-        ):
-            # necessary to change laser output power setting
+        # Always operate as high as possible on an attenuation curve: pick the
+        # LOWEST laser output level that can still reach the target (its
+        # 95%-max exceeds pwr), so a low setpoint is served near the gentle top
+        # of a low-power curve instead of the steep, error-amplifying trough of
+        # a high-power one. (Previously the level only changed when the target
+        # fell outside the *current* level's range, so a small setpoint set
+        # right after a large one stayed on the high level's trough.) Fall back
+        # to the highest level if none reaches the target.
+        reachable = list(ranges.loc[ranges["max"] * 0.95 > pwr].index)
+        laserpwr_best = min(reachable) if reachable else max(ranges.index)
 
-            # find best laserpwoer: minimal laserpower of which 95% of max
-            # is larger than pwr to set
-            laserpwr_best = list(ranges.loc[ranges["max"] * 0.95 > pwr].index)
-            if len(laserpwr_best) > 0:
-                laserpwr_best = min(laserpwr_best)
-            else:
-                laserpwr_best = max(list(ranges.index))
+        if ranges.loc[laserpwr_best, "min"] > pwr:
+            newpwr = ranges.loc[laserpwr_best, "min"]
+            msg = "Power setting {:.2f} is out of range. ".format(
+                pwr
+            ) + "Setting closest power = {:.2f}.".format(newpwr)
+            logger.debug(msg)
+            print(msg)
+            pwr = newpwr
+        elif ranges.loc[laserpwr_best, "max"] < pwr:
+            newpwr = ranges.loc[laserpwr_best, "max"]
+            msg = "Power setting {:.2f} is out of range. ".format(
+                pwr
+            ) + "Setting closest power = {:.2f}.".format(newpwr)
+            logger.debug(msg)
+            print(msg)
+            pwr = newpwr
 
-            if ranges.loc[laserpwr_best, "min"] > pwr:
-                newpwr = ranges.loc[laserpwr_best, "min"]
-                logger.debug(
-                    "Power setting {:.2f} is out of range. ".format(pwr)
-                    + "Setting closest power = {:.2f}.".format(newpwr)
-                )
-                print(
-                    "Power setting {:.2f} is out of range. ".format(pwr)
-                    + "Setting closest power = {:.2f}.".format(newpwr)
-                )
-                pwr = newpwr
-            elif ranges.loc[laserpwr_best, "max"] < pwr:
-                newpwr = ranges.loc[laserpwr_best, "max"]
-                logger.debug(
-                    "Power setting {:.2f} is out of range. ".format(pwr)
-                    + "Setting closest power = {:.2f}.".format(newpwr)
-                )
-                print(
-                    "Power setting {:.2f} is out of range. ".format(pwr)
-                    + "Setting closest power = {:.2f}.".format(newpwr)
-                )
-                pwr = newpwr
-
+        if laserpwr_best != self.curr_laserpower:
             logger.debug(
                 "setting laser power to {:s}".format(str(laserpwr_best))
             )
@@ -576,7 +1016,10 @@ class IlluminationLaserControl(IlluminationControl):
         if laser is None:
             laser = self.curr_laser
 
-        analyzers, _ = self._populate_analyzers(self.cali_db, laser)
+        # C34 safety ceiling — enforced below the actuation layer.
+        pwr, _ = self.clamp_to_max_power(pwr, laser)
+
+        analyzers, _ = self._analyzers_for(laser)
         if len(analyzers) < 2:
             raise ValueError(
                 "At least 2 calibrated laser power levels are required for "
@@ -585,11 +1028,17 @@ class IlluminationLaserControl(IlluminationControl):
 
         att_pos = self.attenuator.curr_pos()
 
+        # Each level's model output is scaled by its own pin (1.0 if that level
+        # was never pinned), so a one-point pin corrects the level it was
+        # measured at and leaves other levels as calibrated — this linear fit
+        # across levels therefore reflects only the drift actually measured.
         laser_pwrs = []
         output_pwrs = []
         for lpwr, analyzer in analyzers.items():
             try:
-                out = analyzer.estimate_power(att_pos)
+                out = analyzer.estimate_power(att_pos) * self._pin_for(
+                    laser, lpwr
+                )
                 laser_pwrs.append(float(lpwr))
                 output_pwrs.append(float(out))
             except Exception:
@@ -652,7 +1101,10 @@ class IlluminationLaserControl(IlluminationControl):
         if laser is None:
             laser = self.curr_laser
 
-        analyzers, _ = self._populate_analyzers(self.cali_db, laser)
+        # C34 safety ceiling — enforced below the actuation layer.
+        pwr, _ = self.clamp_to_max_power(pwr, laser)
+
+        analyzers, _ = self._analyzers_for(laser)
 
         # Find the calibrated level nearest to the current hardware laser power
         curr_lp = float(self.lasers[laser].power)
@@ -667,8 +1119,11 @@ class IlluminationLaserControl(IlluminationControl):
         )
 
         factor = self._bfp_factor(laser)
+        pin = self._pin_for(laser, closest_level)
         raw_lo, raw_hi = sorted(analyzers[closest_level].output_range())
-        target = pwr / factor
+        # reality = pin * model; pwr is sample-plane → model-plane target is
+        # pwr / transmission / pin
+        target = pwr / factor / pin
         span = max(abs(raw_hi - raw_lo), 1e-12)
         if target < raw_lo - 1e-6 * span or target > raw_hi + 1e-6 * span:
             raise ValueError(
@@ -677,8 +1132,8 @@ class IlluminationLaserControl(IlluminationControl):
                 "{:.3f} – {:.3f} mW.".format(
                     pwr,
                     str(closest_level),
-                    raw_lo * factor,
-                    raw_hi * factor,
+                    raw_lo * factor * pin,
+                    raw_hi * factor * pin,
                 )
             )
         # clip so a value right at the boundary cannot round out of the
@@ -711,14 +1166,20 @@ class IlluminationLaserControl(IlluminationControl):
         if laser is None:
             laser = self.curr_laser
 
-        analyzers, _ = self._populate_analyzers(self.cali_db, laser)
+        analyzers, _ = self._analyzers_for(laser)
         att_pos = self.attenuator.curr_pos()
 
+        # Each level's model output is scaled by its own pin (1.0 if that level
+        # was never pinned), so a one-point pin corrects the level it was
+        # measured at and leaves other levels as calibrated — this linear fit
+        # across levels therefore reflects only the drift actually measured.
         laser_pwrs = []
         output_pwrs = []
         for lpwr, analyzer in analyzers.items():
             try:
-                out = analyzer.estimate_power(att_pos)
+                out = analyzer.estimate_power(att_pos) * self._pin_for(
+                    laser, lpwr
+                )
                 laser_pwrs.append(float(lpwr))
                 output_pwrs.append(float(out))
             except Exception:
@@ -767,7 +1228,7 @@ class IlluminationLaserControl(IlluminationControl):
         if same_laser:
             pr = getattr(self, "_power_ranges", None)
         else:
-            _, pr = self._populate_analyzers(self.cali_db, laser)
+            _, pr = self._analyzers_for(laser)
         if pr is None or pr.empty:
             raise ValueError("No calibration power ranges available.")
         # power-meter units → sample plane (no-op unless BFP-calibrated)
@@ -815,6 +1276,8 @@ class IlluminationLaserControl(IlluminationControl):
             ]
         )
         self.is_calibrated = True
+        # a fresh calibration supersedes any one-point pins
+        self._pin_scales = {}
 
         # Load powermeter types and correction factors
         self._powermeter_type = {}
@@ -1030,6 +1493,12 @@ def run_power_feedback(
             "Feedback is only supported for 'fixed_laser' and "
             "'fixed_attenuator' modes, not '{}'.".format(mode)
         )
+
+    # C34 safety ceiling — clamp the target below the actuation layer so the PI
+    # loop's setpoint can never exceed the per-laser limit, whatever the caller
+    # passed (no-op if already clamped upstream or no ceiling is configured).
+    if hasattr(instrument, "clamp_to_max_power"):
+        target_pwr, _ = instrument.clamp_to_max_power(target_pwr, laser)
 
     # `target_pwr`, the progress callbacks and the returned `measured` are in
     # the sample plane. The loop runs internally in the *physical* meter plane

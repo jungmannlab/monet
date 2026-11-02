@@ -125,6 +125,182 @@ class TestAnalysis(unittest.TestCase):
             self.assertTrue(os.path.exists(fname))
 
 
+class TestCompareModels(unittest.TestCase):
+    """analysis.compare_models ranks candidate fits by residual."""
+
+    ANA = {"min": 30.0, "max": 130.0, "step": 5.0}
+
+    def test_ranks_and_reports_all_models(self):
+        x = np.arange(30.0, 131.0, 5.0)
+        # clean squared-sine data -> the sinus model should fit it well
+        y = 1.0 + 40.0 * (1 + np.sin(4 * np.pi / 180 * (x + 15))) / 2
+        ranking = man.compare_models(x, y, self.ANA, degrees=(3, 4, 5))
+        names = {r["model"] for r in ranking}
+        self.assertIn("sinus", names)
+        self.assertIn("poly deg 4", names)
+        # sorted ascending by RMS
+        rms = [r["rms_pct"] for r in ranking]
+        self.assertEqual(rms, sorted(rms))
+        # sinus fits the sinusoid to within a small residual
+        sinus = next(r for r in ranking if r["model"] == "sinus")
+        self.assertLess(sinus["rms_pct"], 2.0)
+
+    def test_params2coef_rejects_foreign_model_params(self):
+        # A sinusoidal-model row must not silently load into the polynomial
+        # analyzer (would KeyError on 'p0'); it raises a clear error instead.
+        poly = man.PolynomAttenuationCurveAnalyzer(
+            {"min": 30, "max": 130, "step": 5, "polydegree": 4}
+        )
+        with self.assertRaises(ValueError) as ctx:
+            poly.load_model({"bkg": 1.0, "amp": 40.0, "phi": 15.0})
+        self.assertIn("different analysis model", str(ctx.exception))
+
+    def test_poly_model_roundtrips(self):
+        poly = man.PolynomAttenuationCurveAnalyzer(
+            {"min": 30, "max": 130, "step": 5, "polydegree": 4}
+        )
+        x = np.linspace(30, 130, 21)
+        y = 0.001 * (x - 20) ** 2 + 2.0
+        poly.fit(x, y)
+        pars = poly.get_model()
+        poly2 = man.PolynomAttenuationCurveAnalyzer(
+            {"min": 30, "max": 130, "step": 5, "polydegree": 4}
+        )
+        poly2.load_model(pars)
+        self.assertAlmostEqual(
+            float(poly2.estimate_power(80)),
+            float(poly.estimate_power(80)),
+            places=4,
+        )
+
+    def test_model_spec_maps_names(self):
+        cp, extra = man.model_spec("sinus")
+        self.assertTrue(cp.endswith("SinusAttenuationCurveAnalyzer"))
+        self.assertEqual(extra, {})
+        cp, extra = man.model_spec("poly deg 5")
+        self.assertTrue(cp.endswith("PolynomAttenuationCurveAnalyzer"))
+        self.assertEqual(extra, {"polydegree": 5})
+        cp, extra = man.model_spec("linear")
+        self.assertTrue(cp.endswith("LinearCurveAnalyzer"))
+        self.assertEqual(extra, {})
+
+    def test_model_name_from_config_roundtrips(self):
+        self.assertEqual(
+            man.model_name_from_config(
+                "monet.analysis.SinusAttenuationCurveAnalyzer"
+            ),
+            "sinus",
+        )
+        self.assertEqual(
+            man.model_name_from_config("monet.analysis.LinearCurveAnalyzer"),
+            "linear",
+        )
+        self.assertEqual(
+            man.model_name_from_config(
+                "monet.analysis.PolynomAttenuationCurveAnalyzer",
+                {"polydegree": 5},
+            ),
+            "poly deg 5",
+        )
+
+    def test_polynomial_wins_on_polynomial_data(self):
+        x = np.arange(30.0, 131.0, 5.0)
+        y = 0.001 * (x - 20) ** 2 + 2.0  # a parabola, not a sinusoid
+        ranking = man.compare_models(x, y, self.ANA, degrees=(2, 3, 4))
+        self.assertTrue(ranking[0]["model"].startswith("poly"))
+        self.assertLess(ranking[0]["rms_pct"], 1.0)
+
+    def test_compare_models_multi_pools_across_curves(self):
+        x = np.arange(30.0, 131.0, 5.0)
+        y1 = 1.0 + 40.0 * (1 + np.sin(4 * np.pi / 180 * (x + 15))) / 2
+        y2 = 0.5 + 30.0 * (1 + np.sin(4 * np.pi / 180 * (x + 15))) / 2
+        ranking = man.compare_models_multi(
+            [(x, y1), (x, y2)], self.ANA, degrees=(3, 4)
+        )
+        names = {r["model"] for r in ranking}
+        self.assertIn("sinus", names)
+        # every model was fit on both curves
+        for r in ranking:
+            self.assertEqual(r["n_curves"], 2)
+        # sorted ascending by pooled RMS; sinus fits the sinusoids well
+        rms = [r["rms_pct"] for r in ranking]
+        self.assertEqual(rms, sorted(rms))
+        sinus = next(r for r in ranking if r["model"] == "sinus")
+        self.assertLess(sinus["rms_pct"], 2.0)
+
+
+class TestSplineAnalyzer(unittest.TestCase):
+    """The smoothing-spline attenuation model + its serialization."""
+
+    ANA = {"min": 30.0, "max": 130.0, "step": 5.0}
+
+    def _fit(self):
+        a = man.SplineAttenuationCurveAnalyzer(dict(self.ANA))
+        x = np.arange(30.0, 131.0, 5.0)
+        y = 0.001 * (x - 20) ** 2 + 2.0  # monotonic on [30, 130]
+        a.fit(x, y)
+        return a, x, y
+
+    def test_forward_follows_data(self):
+        a, x, y = self._fit()
+        pred = np.asarray(a.estimate_power(x), dtype=float)
+        rms = np.sqrt(np.mean(((pred - y) / y) ** 2)) * 100.0
+        self.assertLess(rms, 3.0)
+
+    def test_inverse_roundtrips(self):
+        a, x, y = self._fit()
+        span = float(y.max() - y.min())
+        for frac in (0.3, 0.7):
+            p = float(y.min() + frac * span)
+            ang = float(a.estimate(p))
+            self.assertLess(abs(float(a.estimate_power(ang)) - p), 0.03 * span)
+
+    def test_inverse_on_non_monotonic_uses_principal_branch(self):
+        # A curve that rises then falls (non-monotonic over the range): the
+        # inverse must restrict to the dominant monotonic branch and return an
+        # angle that round-trips, not a meaningless cross-branch interpolation.
+        a = man.SplineAttenuationCurveAnalyzer(dict(self.ANA))
+        x = np.arange(30.0, 131.0, 5.0)
+        y = -(((x - 80.0) / 30.0) ** 2) + 2.0  # peak near x=80
+        a.fit(x, y)
+        ymax = float(np.max(a.estimate_power(x)))
+        target = 0.5 * (float(a.estimate_power(x)[0]) + ymax)
+        ang = float(a.estimate(target))
+        self.assertGreaterEqual(ang, self.ANA["min"] - 1e-6)
+        self.assertLessEqual(ang, self.ANA["max"] + 1e-6)
+        # the returned angle actually produces ~the requested power
+        self.assertLess(abs(float(a.estimate_power(ang)) - target), 0.2)
+
+    def test_model_roundtrips_through_params(self):
+        a, _, _ = self._fit()
+        pars = a.get_model()
+        self.assertIn("spl_k", pars)
+        self.assertTrue(any(str(k).startswith("t") for k in pars))
+        b = man.SplineAttenuationCurveAnalyzer(dict(self.ANA))
+        b.load_model(pars)
+        self.assertAlmostEqual(
+            float(b.estimate_power(75.0)),
+            float(a.estimate_power(75.0)),
+            places=4,
+        )
+
+    def test_load_model_rejects_foreign_params(self):
+        b = man.SplineAttenuationCurveAnalyzer(dict(self.ANA))
+        with self.assertRaises(ValueError):
+            b.load_model({"bkg": 1.0, "amp": 40.0, "phi": 15.0})
+
+    def test_model_spec_and_name(self):
+        cp, extra = man.model_spec("spline")
+        self.assertTrue(cp.endswith("SplineAttenuationCurveAnalyzer"))
+        self.assertEqual(extra, {})
+        self.assertEqual(
+            man.model_name_from_config(
+                "monet.analysis.SplineAttenuationCurveAnalyzer"
+            ),
+            "spline",
+        )
+
+
 class TestLinearAnalyzer(unittest.TestCase):
 
     def setUp(self):

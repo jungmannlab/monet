@@ -108,6 +108,23 @@ class TestMainDispatch(unittest.TestCase):
         with Session(get_engine(db)) as session:
             self.assertEqual(session.query(Calibration).count(), 1)
 
+    def test_migrate_db_path_and_url_are_mutually_exclusive(self):
+        argv = [
+            "monet",
+            "migrate",
+            "--source",
+            "x.xlsx",
+            "--db-path",
+            "a.db",
+            "--url",
+            "http://host:8000",
+        ]
+        with mock.patch.object(sys, "argv", argv):
+            # argparse rejects both targets at once (SystemExit), rather than
+            # silently uploading to --url.
+            with self.assertRaises(SystemExit):
+                mm.main()
+
     def test_migrate_mode_requires_source(self):
         argv = [
             "monet",

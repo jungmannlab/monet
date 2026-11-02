@@ -20,25 +20,26 @@ from monet.util import load_class, refresh_mm_gui
 
 # pycromanager is imported lazily inside get_pycromgr() so the rest of the
 # package can be used (and tested) on machines without Micro-Manager.
-# import pymmcore
 
 
 logger = logging.getLogger(__name__)
 ic.configureOutput(outputFunction=logger.debug)
 
 pycrocore = None
-# or load specific config here: https://github.com/micro-manager/pymmcore/
 
 
 def get_pycromgr(pycore_config=None):
     """Initialize the pycromanager core.
 
-    Uses a saved configuration if supplied, otherwise the default.
+    Connects to the running Micro-Manager instance via pycromanager's
+    ``Core()``. The Micro-Manager configuration is loaded in the
+    Micro-Manager GUI, not here.
 
     Parameters
     ----------
     pycore_config : None or dict
-        If a dict, with keys 'micromanager_path' and 'mmconfig_name'.
+        Accepted for call-site compatibility (e.g. ``BeamPath`` forwards a
+        saved config) but not used: only a debug line is logged when set.
 
     Returns
     -------
@@ -47,44 +48,24 @@ def get_pycromgr(pycore_config=None):
     """
     global pycrocore
     if pycrocore is not None:
-        # logger.debug('Pycromanager Core already initialized. Returning.')
         return pycrocore
 
     from pycromanager import Core
 
-    if pycore_config is None:
-        try:
-            pycrocore = Core()
-        except TimeoutError as e:
-            raise TimeoutError(
-                "Timed out connecting to Micro-Manager (pycromanager). "
-                "Check that Micro-Manager is running and the Java gateway is "
-                "accessible on the expected port."
-            ) from e
-    else:
-        # no need to specifically load the config
+    if pycore_config is not None:
         logger.debug(
             "Ignoring pycromanager configuration {:s}.".format(
                 str(pycore_config)
             )
         )
-        try:
-            pycrocore = Core()
-        except TimeoutError as e:
-            raise TimeoutError(
-                "Timed out connecting to Micro-Manager (pycromanager). "
-                "Check that Micro-Manager is running and the Java gateway is "
-                "accessible on the expected port."
-            ) from e
-        # pycrocore = pymmcore.CMMCore()
-        # pycrocore.setDeviceAdapterSearchPaths(
-        #     [pycore_config['micromanager_path']])
-        # pycrocore.loadSystemConfiguration(
-        #     os.path.join(pycore_config['micromanager_path'],
-        #                  pycore_config['mmconfig_name']))
-
-        # logger.debug(pycrocore.getAvailablePropertyBlocks())
-        # logger.debug(pycrogore.getChannelGroup())
+    try:
+        pycrocore = Core()
+    except TimeoutError as e:
+        raise TimeoutError(
+            "Timed out connecting to Micro-Manager (pycromanager). "
+            "Check that Micro-Manager is running and the Java gateway is "
+            "accessible on the expected port."
+        ) from e
     return pycrocore
 
 

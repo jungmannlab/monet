@@ -16,6 +16,10 @@ from pydantic import BaseModel
 class CalibrationCreate(BaseModel):
     index: dict
     parameters: dict
+    # Optional: preserve original timestamps when migrating an existing database
+    # over HTTP. Omitted on a normal save, where the server stamps "now".
+    calibration_date: Optional[str] = None
+    calibration_time: Optional[str] = None
 
 
 class CalibrationQuery(BaseModel):
@@ -80,3 +84,74 @@ class FactorQuery(BaseModel):
 
 class FactorListResponse(BaseModel):
     records: List[FactorRecord]
+
+
+# ── Target-power API (WP-12a) ────────────────────────────────────────────────
+# The recommender/PycroFlow sets a per-laser target power and reads back the
+# measured power (so target + measured are logged to the registry). A power-set
+# ACTUATES laser hardware, so this route is `write`-scoped and clamped to a hard
+# per-laser safety ceiling (C34) before anything touches the instrument.
+
+
+class PowerSetRequest(BaseModel):
+    laser: int
+    target_power_mw: float
+    # 'fixed_laser' (PI on the attenuator) / 'fixed_attenuator' (scale laser
+    # power) use the closed-loop meter feedback; 'combined' is open-loop from the
+    # calibration. Omit to let the server choose (closed-loop when a meter is
+    # present, else open-loop).
+    mode: Optional[str] = None
+    # Convergence tolerance for closed-loop modes, in percent of the target.
+    tolerance_pct: Optional[float] = None
+
+
+class PowerSetResponse(BaseModel):
+    laser: int
+    requested_power_mw: float  # what the caller asked for
+    target_power_mw: float  # what was actually driven (clamped to the ceiling)
+    measured_power_mw: float  # sample-plane power measured / predicted
+    clamped: bool  # True if the request exceeded the safety ceiling
+    max_power_mw: Optional[float]  # the per-laser ceiling in force, if any
+    converged: bool
+    iterations: int
+    mode: str
+    label: Optional[str] = None  # attributable token holder (auth on)
+
+
+class PowerReadResponse(BaseModel):
+    laser: int
+    measured_power_mw: Optional[float]  # from the meter, if one is attached
+    predicted_power_mw: Optional[float]  # from the calibration model
+    has_powermeter: bool
+
+
+# ── Laser enable/disable (WP-12a) ────────────────────────────────────────────
+# Enabling actuates the laser (emission on); disabling / all-off is the fail-safe
+# the recommender/PycroFlow uses on end-of-run and abort (A10 / C21).
+
+
+class LaserSetRequest(BaseModel):
+    laser: int
+    enabled: bool
+
+
+class LaserState(BaseModel):
+    laser: int
+    enabled: bool
+
+
+class LaserStatusResponse(BaseModel):
+    lasers: List[LaserState]
+    current_laser: int
+    label: Optional[str] = None  # attributable token holder (auth on)
+
+
+class WhoAmIResponse(BaseModel):
+    """Auth introspection for ``GET /auth/whoami`` — lets a client confirm the
+    server accepts its token and see the ``(scope, label)`` it maps to."""
+
+    # a valid token was presented (False on the server's auth-off path)
+    authenticated: bool
+    auth_enabled: bool  # whether the server enforces auth at all
+    label: Optional[str] = None  # token holder as registered server-side
+    scope: Optional[str] = None  # 'read' or 'write'

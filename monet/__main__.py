@@ -15,7 +15,6 @@ import pprint
 import traceback
 from contextlib import redirect_stdout
 from io import StringIO
-from logging import handlers
 
 import yaml as _yaml
 
@@ -23,28 +22,38 @@ import monet.io as io
 from monet import CONFIGS, CONFIGS_PATH, PROTOCOLS, PROTOCOLS_PATH
 
 
-# configure logger and log that this shouldn't be done here
+# configure logger
 def config_logger():
-    logger = logging.getLogger(__name__)
-    logger.setLevel(logging.DEBUG)
-    formatter = logging.Formatter(
-        "%(asctime)s | %(name)s | %(levelname)s -> %(message)s"
-    )
-    file_handler = handlers.RotatingFileHandler(
-        "monet.log", maxBytes=1e6, backupCount=5
-    )
-    file_handler.setFormatter(formatter)
-    file_handler.setLevel(logging.DEBUG)
-    stream_handler = logging.StreamHandler()
-    stream_handler.setFormatter(formatter)
-    stream_handler.setLevel(logging.WARNING)
-    logger.addHandler(file_handler)
-    # logger.addHandler(stream_handler)
+    # Delegate to the package's idempotent setup (monet/__init__.py) rather than
+    # opening a *second* RotatingFileHandler on the same monet.log: on Windows
+    # two open handles make log rotation fail with "WinError 32 ... used by
+    # another process" when one handler renames the file the other holds open.
+    import monet
+
+    monet.config_logger()
 
 
 def main():
     """Function called from the command line."""
     import argparse
+    import sys
+
+    # `token` and `auth` have their own sub-command parsers; dispatch before the
+    # flat parser below, which doesn't know those sub-args.
+    if len(sys.argv) > 1 and sys.argv[1] == "token":
+        from monet.tokens import token_cli
+
+        sys.exit(token_cli(sys.argv[2:]))
+
+    if len(sys.argv) > 1 and sys.argv[1] == "auth":
+        from monet.authcheck import auth_cli
+
+        sys.exit(auth_cli(sys.argv[2:]))
+
+    if len(sys.argv) > 1 and sys.argv[1] == "setup":
+        from monet.setup_cli import setup_cli
+
+        sys.exit(setup_cli(sys.argv[2:]))
 
     # os.chdir(os.path.split(CONFIGS_PATH)[0])
 
@@ -55,7 +64,7 @@ def main():
         type=str,
         help=(
             'mode. One of "set", "adjust", "caliaotf", "calibrate", '
-            '"serve", "migrate", or "gui".'
+            '"serve", "migrate", "gui", "setup", "token", or "auth".'
         ),
     )
     parser.add_argument(
@@ -92,8 +101,14 @@ def main():
     parser.add_argument(
         "--host",
         type=str,
-        default="0.0.0.0",
-        help="Host to bind the server to (serve mode only).",
+        default="127.0.0.1",
+        help=(
+            "Host to bind the server to (serve mode only). Defaults to "
+            "loopback: the serve API actuates laser hardware, so it must "
+            "not be exposed on a network without authentication. Binding a "
+            "non-loopback host is gated on the shared auth helper (A9 / "
+            "ADR-001; built in WP-3b, reused here in WP-12a)."
+        ),
     )
     parser.add_argument(
         "--port",
@@ -102,16 +117,27 @@ def main():
         help="Port to bind the server to (serve mode only).",
     )
     parser.add_argument(
+        "--source",
+        type=str,
+        default=None,
+        help="Path to the source Excel database (migrate mode only).",
+    )
+    # serve always uses --db-path; migrate uses exactly one of --db-path /
+    # --url, so make them mutually exclusive to catch an ambiguous invocation.
+    db_target = parser.add_mutually_exclusive_group()
+    db_target.add_argument(
         "--db-path",
         type=str,
         default="calibrations.db",
         help="Path to the SQLite database file (serve/migrate mode).",
     )
-    parser.add_argument(
-        "--source",
+    db_target.add_argument(
+        "--url",
         type=str,
         default=None,
-        help="Path to the source Excel database (migrate mode only).",
+        help="migrate mode: upload to a monet server over HTTP (preserving "
+        "dates/times) instead of writing a local SQLite file. Mutually "
+        "exclusive with --db-path.",
     )
 
     # Parse
@@ -120,15 +146,65 @@ def main():
         import uvicorn
 
         os.environ["MONET_DB_PATH"] = args.db_path
-        from monet.server import app
+
+        # Fail-closed host guard (A9 / ADR-001, C18): refuse to *start* on a
+        # non-loopback host unless auth is active. A monet `write` actuates laser
+        # hardware, so a misconfigured networked bind must fail fast with a clear
+        # error, not serve an open actuator. The loopback dev path stays
+        # zero-config. (The request-time net in require_scope holds the invariant
+        # even when the module app is served directly.)
+        from monet import PAINT_MONET_AUTH_ENV, auth_mode
+        from monet.serviceauth import (
+            MONET_TOKENS_ENV,
+            auth_from_env,
+            is_loopback_host,
+        )
+
+        _auth = auth_from_env()
+        # PAINT_MONET_AUTH=on means "auth is required" — refuse to start without
+        # tokens even on loopback, so an intended-secure rig fails loudly on a
+        # misconfiguration instead of silently running open.
+        if auth_mode() == "on" and not _auth.enabled:
+            parser.error(
+                f"{PAINT_MONET_AUTH_ENV}=on but no tokens configured; set "
+                f"{MONET_TOKENS_ENV} (token:scope:label,...) or use "
+                f"{PAINT_MONET_AUTH_ENV}=off."
+            )
+        if not is_loopback_host(args.host) and not _auth.enabled:
+            parser.error(
+                f"refusing to bind non-loopback host {args.host!r} without "
+                f"auth: set {MONET_TOKENS_ENV} (token:scope:label,...) or bind "
+                "127.0.0.1. The serve API actuates laser hardware — see "
+                "README 'Authentication'."
+            )
+
+        # With a microscope name, build the instrument so the target-power API
+        # is live; without one, serve the DB-only app.
+        if args.name:
+            from monet.server import build_app_for_microscope
+
+            app = build_app_for_microscope(args.name, args.configs_file)
+        else:
+            from monet.server import app
+
+        # Live-reload tokens on SIGHUP (Unix) so `monet token` changes apply
+        # without a restart; a no-op on Windows (restart required there).
+        from monet.server import install_auth_reload
+
+        install_auth_reload(app)
 
         uvicorn.run(app, host=args.host, port=args.port)
     elif args.mode == "migrate":
-        from monet.migrate import migrate_excel_to_sqlite
-
         if args.source is None:
             parser.error("migrate mode requires --source argument")
-        migrate_excel_to_sqlite(args.source, args.db_path)
+        if args.url:
+            from monet.migrate import migrate_excel_to_server
+
+            migrate_excel_to_server(args.source, args.url)
+        else:
+            from monet.migrate import migrate_excel_to_sqlite
+
+            migrate_excel_to_sqlite(args.source, args.db_path)
     elif args.mode == "calibrate":
         MonetCalibrateInteractive(
             args.name, args.configs_file, args.protocol_file
@@ -156,8 +232,9 @@ def main():
         sys.exit(app.exec())
     else:
         raise KeyError(
-            'monet mode has to be one of "set", "calibrate", "serve", '
-            '"migrate", or "gui".'
+            'monet mode has to be one of "set", "adjust", "caliaotf", '
+            '"calibrate", "serve", "migrate", "gui", "setup", "token", or '
+            '"auth".'
         )
 
 
@@ -281,7 +358,8 @@ class MonetCalibrateInteractive(cmd.Cmd):
         """Perform a power calibration with the settings as described
         in the configuration.
         """
-        self.pc.instrument.attenuator.home()
+        # The attenuator is already homed once when the protocol's control
+        # was constructed (auto_home default), so no explicit home here.
         if not self.run_2d:
             self.pc.calibrate()
         else:
@@ -610,6 +688,12 @@ class MonetAdjustInteractive(cmd.Cmd):
         else:
             try:
                 self.pc.instrument.laserpower = int(power)
+                if not self.pc.instrument.is_calibrated:
+                    print(
+                        "No calibration for this power; the instrument is "
+                        "uncalibrated until a calibrated power is selected "
+                        "or this power is calibrated."
+                    )
             except ValueError as e:
                 print(str(e))
 
@@ -900,6 +984,12 @@ class MonetSetInteractive(cmd.Cmd):
         else:
             try:
                 self.instrument.laserpower = int(power)
+                if not self.instrument.is_calibrated:
+                    print(
+                        "No calibration for this power; the instrument is "
+                        "uncalibrated until a calibrated power is selected "
+                        "or this power is calibrated."
+                    )
             except ValueError as e:
                 print(str(e))
 
