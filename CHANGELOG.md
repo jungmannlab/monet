@@ -10,6 +10,19 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
+### Added
+- GUI Set Power tab: an **"All lasers ON"** button next to the existing "All
+  lasers OFF", switching every configured laser on at once.
+
+### Fixed
+- GUI Set Power tab: on connect the direct **"Power (mW)"** field now shows the
+  laser's *live* current power (e.g. a ~10 mW idle floor) instead of being
+  overwritten by a stale saved set-point (often 0). The saved settings are
+  still applied first as a fallback for when the live read is unavailable.
+- GUI Set Power tab: the per-laser **switch ON/OFF** button is re-synced to the
+  hardware when a calibration run finishes, so it no longer keeps showing the
+  selected laser as "on" after a run has switched every laser off.
+
 ## [0.6.0] - 2026-11-02
 
 ### Added
