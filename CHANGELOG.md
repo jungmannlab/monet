@@ -10,6 +10,8 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-11-02
+
 ### Added
 - GUI Set Power tab: an **"All lasers ON"** button next to the existing "All
   lasers OFF", switching every configured laser on at once.
