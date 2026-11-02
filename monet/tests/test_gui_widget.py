@@ -308,5 +308,79 @@ class TestCalibrationPlots(unittest.TestCase):
         )
 
 
+class TestLaserStateControls(unittest.TestCase):
+    """All-lasers on/off buttons, live startup-power display, and the
+    post-calibration laser-toggle refresh on SetPowerTab."""
+
+    class _Laser:
+        def __init__(self, enabled=False, power=0.0):
+            self.enabled = enabled
+            self.power = power
+
+    class _Att:
+        def curr_pos(self):
+            return 2.5
+
+    class _Inst:
+        def __init__(self, lasers, saved=None):
+            self.lasers = lasers
+            self.curr_laser = next(iter(lasers))
+            self.attenuator = TestLaserStateControls._Att()
+            self.is_calibrated = False
+            self.powermeter_position = None
+            self._saved = saved
+
+        def load_calibration_database(self):
+            pass
+
+        def saved_state(self, laser):
+            return self._saved
+
+    class _PC:
+        def __init__(self, inst):
+            self.instrument = inst
+
+    def test_all_on_and_off_buttons_present(self):
+        tab = SetPowerTab()
+        self.assertEqual(tab._btn_allon.text(), "All lasers ON")
+        self.assertEqual(tab._btn_alloff.text(), "All lasers OFF")
+
+    def test_sync_laser_toggle_reflects_enabled_state(self):
+        tab = SetPowerTab()
+        lasers = {488: self._Laser(enabled=True)}
+        tab._pc = self._PC(self._Inst(lasers))
+        tab._sync_laser_toggle(488)
+        self.assertTrue(tab._btn_onoff.isChecked())
+        self.assertEqual(tab._btn_onoff.text(), "switch OFF")
+        lasers[488].enabled = False
+        tab._sync_laser_toggle(488)
+        self.assertFalse(tab._btn_onoff.isChecked())
+        self.assertEqual(tab._btn_onoff.text(), "switch ON")
+
+    def test_refresh_laser_toggle_clears_stale_on_after_calibration(self):
+        # A calibration run leaves the lasers off; the toggle (left showing
+        # "on" for the selected laser) must be re-synced to off.
+        tab = SetPowerTab()
+        lasers = {488: self._Laser(enabled=False)}
+        tab._pc = self._PC(self._Inst(lasers))
+        tab._laser_combo.addItem("488", 488)  # currentData() -> 488
+        tab._btn_onoff.setChecked(True)
+        tab._btn_onoff.setText("switch OFF")
+        tab.refresh_laser_toggle()
+        self.assertFalse(tab._btn_onoff.isChecked())
+        self.assertEqual(tab._btn_onoff.text(), "switch ON")
+
+    def test_set_pc_shows_live_power_not_stale_saved_setpoint(self):
+        # On connect the direct "Power (mW)" must reflect the live hardware
+        # power (~10 mW idle), not a stale saved set-point of 0.
+        tab = SetPowerTab()
+        lasers = {488: self._Laser(enabled=True, power=10.0)}
+        inst = self._Inst(
+            lasers, saved={"laser_power": 0.0, "attenuator": 1.0}
+        )
+        tab.set_pc(self._PC(inst))
+        self.assertEqual(tab._hw_pwr_spin.value(), 10.0)
+
+
 if __name__ == "__main__":
     unittest.main()

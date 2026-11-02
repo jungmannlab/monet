@@ -2268,6 +2268,9 @@ class SetPowerTab(QWidget):
         self._btn_onoff.setCheckable(True)
         self._btn_onoff.clicked.connect(self._on_toggle_laser)
         laser_row.addWidget(self._btn_onoff)
+        self._btn_allon = QPushButton("All lasers ON")
+        self._btn_allon.clicked.connect(self._on_all_on)
+        laser_row.addWidget(self._btn_allon)
         self._btn_alloff = QPushButton("All lasers OFF")
         self._btn_alloff.clicked.connect(self._on_all_off)
         laser_row.addWidget(self._btn_alloff)
@@ -2573,7 +2576,12 @@ class SetPowerTab(QWidget):
         self._laser_combo.blockSignals(False)
         if self._laser_combo.count():
             self._on_laser_changed(0)
-        # Populate hardware spinboxes
+        # Populate the hardware spinboxes from the *live* hardware, so on
+        # connect the direct-control "Power (mW)" reflects the laser's actual
+        # current power (e.g. a ~10 mW idle floor) rather than 0 or a stale
+        # saved set-point. _on_laser_changed() above already applied the saved
+        # settings as a fallback, so this overrides them only when the live
+        # read succeeds.
         if pc is not None:
             try:
                 pos = pc.instrument.attenuator.curr_pos()
@@ -2588,9 +2596,6 @@ class SetPowerTab(QWidget):
                     self._hw_pwr_spin.setValue(float(pwr))
             except Exception:
                 pass
-            # Overlay the last persisted settings for the current laser so
-            # the user can restore them after a restart with a single Set.
-            self._apply_saved_state_to_ui(pc.instrument.curr_laser)
             self._set_bp_label(self._read_bp_positions())
             # Sync the instrument's physical powermeter position to the toggle
             # (the toggle default and the instrument default are both BFP).
@@ -2662,12 +2667,7 @@ class SetPowerTab(QWidget):
             if mode_idx >= 0:
                 self._mode_combo.setCurrentIndex(mode_idx)
 
-        try:
-            enabled = self._pc.instrument.lasers[laser].enabled
-            self._btn_onoff.setChecked(enabled)
-            self._btn_onoff.setText("switch OFF" if enabled else "switch ON")
-        except Exception as exc:
-            self._status.setText(str(exc))
+        self._sync_laser_toggle(laser)
         # Show the persisted hardware settings for the newly selected laser
         # line (populate only — not applied to hardware).
         self._apply_saved_state_to_ui(laser)
@@ -3767,6 +3767,23 @@ class SetPowerTab(QWidget):
         self._btn_pin.setEnabled(available)
         self._update_feedback_enabled()
 
+    def _on_all_on(self):
+        if self._pc is None:
+            return
+
+        def _do():
+            for laser in self._pc.instrument.lasers:
+                self._pc.instrument.lasers[laser].enabled = True
+
+        def _done():
+            self._status.setText("All lasers switched on.")
+            self._btn_onoff.setChecked(True)
+            self._btn_onoff.setText("switch OFF")
+            self._update_measure_hint()
+            self._emit_status("Ready", 2000)
+
+        self._run_hw(_do, "Switching all lasers on…", on_done=_done)
+
     def _on_all_off(self):
         if self._pc is None:
             return
@@ -3783,6 +3800,34 @@ class SetPowerTab(QWidget):
             self._emit_status("Ready", 2000)
 
         self._run_hw(_do, "Switching all lasers off…", on_done=_done)
+
+    def _sync_laser_toggle(self, laser=None):
+        """Reflect a laser's actual on/off state onto the toggle button.
+
+        Reads ``enabled`` for ``laser`` (the currently selected one if None) and
+        sets the switch-ON/OFF button's checked state and label to match.
+        """
+        if self._pc is None:
+            return
+        if laser is None:
+            laser = self._laser_combo.currentData()
+        try:
+            enabled = bool(self._pc.instrument.lasers[laser].enabled)
+        except Exception as exc:
+            self._status.setText(str(exc))
+            return
+        self._btn_onoff.setChecked(enabled)
+        self._btn_onoff.setText("switch OFF" if enabled else "switch ON")
+
+    def refresh_laser_toggle(self):
+        """Re-sync the on/off button with the hardware's actual laser state.
+
+        A calibration run switches every laser off when it finishes, but this
+        tab's toggle is only updated on user interaction, so it would be left
+        showing "switch OFF" (on) for the selected laser. Called from the
+        calibration-finished hook so the button isn't left stale.
+        """
+        self._sync_laser_toggle()
 
     # ── Hardware state helpers ───────────────────────────────────────────────
 
@@ -5227,6 +5272,10 @@ class MonetWidget(QWidget):
             # instead of staying stuck on "not calibrated".
             if hasattr(sp, "refresh_calibration_state"):
                 sp.refresh_calibration_state()
+            # A run leaves every laser switched off; re-sync the on/off button
+            # so it doesn't keep showing the selected laser as on.
+            if hasattr(sp, "refresh_laser_toggle"):
+                sp.refresh_laser_toggle()
         self.calibration_finished.emit()
 
     def closeEvent(self, event):
