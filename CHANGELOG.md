@@ -10,6 +10,8 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-02
+
 ### Added
 - **Upgrade a single-computer lab to a server (migrate database over HTTP).**
   `monet migrate --source x.xlsx --url http://host:8000` uploads a local Excel
