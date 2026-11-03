@@ -11,6 +11,7 @@ laser/attenuator adjustment, power setting, and database management.
 """
 
 import logging
+import sys
 
 import numpy as np
 
@@ -82,6 +83,45 @@ _LICENSE_FALLBACK = (
     "text ships as LICENSE.md with the source distribution:\n"
     "https://github.com/jungmannlab/monet/blob/master/LICENSE.md"
 )
+
+
+def install_excepthook():
+    """Route uncaught exceptions to a dialog + the log, not a silent abort.
+
+    PyQt6 terminates the process (``abort()``) when a Python exception
+    propagates out of a slot — e.g. a signal handler run by the event loop —
+    which to the user looks like the app simply closing with no message. That
+    is exactly what a hardware-connect handler hitting an unexpected error on a
+    rig does. Installing a ``sys.excepthook`` makes PyQt call this instead of
+    aborting: it logs the full traceback (to ``monet.log``) and shows it, so
+    failures are visible and the app stays up. Idempotent.
+    """
+    if getattr(sys.excepthook, "_monet_hook", False):
+        return
+    import traceback
+
+    def _hook(exc_type, exc, tb):
+        if issubclass(exc_type, KeyboardInterrupt):
+            sys.__excepthook__(exc_type, exc, tb)
+            return
+        detail = "".join(traceback.format_exception(exc_type, exc, tb))
+        logger.error("Unhandled exception:\n%s", detail)
+        try:
+            from PyQt6.QtWidgets import QApplication, QMessageBox
+
+            if QApplication.instance() is not None:
+                QMessageBox.critical(
+                    None,
+                    "Monet — unexpected error",
+                    "An unexpected error occurred:\n\n{}: {}\n\nThe full "
+                    "traceback was written to monet.log. You may need to "
+                    "reconnect or restart.".format(exc_type.__name__, exc),
+                )
+        except Exception:
+            logger.debug("could not show error dialog", exc_info=True)
+
+    _hook._monet_hook = True
+    sys.excepthook = _hook
 
 
 def _license_text():
@@ -217,6 +257,11 @@ class ConnectWorker(QThread):
             # Remember the CONFIGS key so tabs can persist config changes
             # (e.g. Apply best model) back to the right microscope entry.
             pc._microscope_name = self._name
+            # Emit `connected` first so the main thread fully binds the tabs
+            # before any modal warning dialog runs. Emitting the warning first
+            # would pop a modal whose event loop re-enters and processes
+            # `connected` mid-dialog — fragile, and it delays the UI setup.
+            self.connected.emit(pc)
             if not getattr(pc, "powermeter_available", True):
                 msg = (
                     "PowerMeter not available — calibration and power "
@@ -226,7 +271,6 @@ class ConnectWorker(QThread):
                 if detail:
                     msg += "\n\nReason: " + detail
                 self.warning.emit(msg)
-            self.connected.emit(pc)
         except Exception as exc:
             self.error.emit(str(exc))
 
@@ -4996,6 +5040,13 @@ class DoctorTab(QWidget):
         # Probe the server once the event loop is running (non-blocking).
         QTimer.singleShot(0, self._recheck)
 
+    def set_pc(self, pc):
+        """Part of the tab interface (``MonetWidget`` calls ``set_pc`` on every
+        tab when a microscope connects). The diagnostics view is about files
+        and server reachability, not the live connection, so this is a no-op —
+        but it must exist, or binding a connection would raise and, via Qt's
+        slot handling, abort the app."""
+
     def _build_ui(self):
         layout = QVBoxLayout(self)
         intro = QLabel(
@@ -5025,8 +5076,12 @@ class DoctorTab(QWidget):
     def _recheck(self):
         if self._worker is not None:
             return
+        # Don't post to the shared status bar: this probe runs automatically on
+        # startup, and its result would overwrite the "Connecting to <rig>…"
+        # message a simultaneous connect is showing. The Doctor tab reports its
+        # own result into its text view (and the button shows progress).
         self._btn_recheck.setEnabled(False)
-        self.status.emit("Checking server…", 0)
+        self._btn_recheck.setText("Checking…")
         from monet import setup_core as sc
 
         worker = GenericWorker(lambda: sc.detect_state(probe_server=True))
@@ -5040,16 +5095,15 @@ class DoctorTab(QWidget):
         self._server_url = getattr(state, "server_url", None)
         self._server_status = getattr(state, "server_status", None)
         self._render()
-        self.status.emit("Server check complete", 4000)
 
     def _on_probe_error(self, msg):
         self._server_status = {"error": msg}
         self._render()
-        self.status.emit("Server check failed: {}".format(msg), 6000)
 
     def _probe_done(self):
         self._worker = None
         self._btn_recheck.setEnabled(True)
+        self._btn_recheck.setText("Re-check server")
 
     # ---- report assembly ------------------------------------------------
     def _copy(self):
@@ -5445,8 +5499,13 @@ class MonetWidget(QWidget):
         self._pc = pc
         name = self.current_microscope or ""
         self.status_changed.emit("Loading data for {}…".format(name), 0)
-        for w in self._tab_widgets.values():
-            w.set_pc(pc)
+        for key, w in self._tab_widgets.items():
+            # Isolate each tab: a failure binding one tab (e.g. a driver quirk
+            # on a rig with no power meter) must not abort the whole connect.
+            try:
+                w.set_pc(pc)
+            except Exception:
+                logger.exception("Tab %r failed to bind the connection", key)
         powermeter_ok = getattr(pc, "powermeter_available", True)
         self._apply_powermeter_state(powermeter_ok)
         status = "Connected to {}.".format(name)
@@ -5514,6 +5573,10 @@ class MonetMainWindow(QMainWindow):
 
     def __init__(self, initial_microscope=None):
         super().__init__()
+        # Turn an unhandled exception in any slot into a logged, visible error
+        # instead of a silent PyQt6 process abort (e.g. a hardware-connect
+        # handler hitting an unexpected rig error).
+        install_excepthook()
         self.setWindowTitle("{} — Laser Power Calibration".format(_TITLE_BASE))
         self.resize(1200, 850)
         # The standalone app includes the Doctor (diagnostics) tab; embedders
