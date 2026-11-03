@@ -10,6 +10,27 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-11-03
+
+### Added
+- **One-click Windows installer.** Each release now ships
+  `Monet-Setup-<version>.exe` (Inno Setup, `packaging/monet-gui.iss`) alongside
+  the portable `monet-gui.exe`. It installs Monet per-user (no admin), creating
+  a **Monet GUI** Start-menu shortcut, an Add/Remove-Programs entry, and an
+  uninstaller — so the GUI is actually installed rather than run from the
+  Downloads folder. The release workflow builds and attaches both.
+- **Default microscope in `.env` (`MONET_MICROSCOPE`).** The setup wizard records
+  the microscope it authors, and the GUI connects to it when launched without a
+  `<Name>` argument (e.g. from the installed Start-menu shortcut). A command-line
+  name still overrides it. Exposed as `monet.DEFAULT_MICROSCOPE`.
+- **GUI Doctor tab.** A read-only diagnostics tab showing where monet reads its
+  configuration (`.env`, `configs.yaml`/`protocols.yaml`, log file, user data
+  dir, version) and a threaded re-check of calibration-server reachability +
+  authentication — the first stop when a rig misbehaves.
+- **GUI Help menu.** **Check for Updates…** compares the running version against
+  the latest GitHub release (`monet/updates.py`); plus **License** and **About**
+  (version, author, copyright) entries.
+
 ## [0.6.1] - 2026-11-02
 
 ### Added

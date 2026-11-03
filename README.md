@@ -54,17 +54,29 @@ pip install -e ".[setup]"     # paramiko, for the wizard's SSH server install
 pip install -e ".[all]"       # everything above
 ```
 
-### Standalone Windows GUI (`monet-gui.exe`)
+### Standalone Windows install (`Monet-Setup-<version>.exe`)
 
 For a lab acquisition PC that shouldn't need a Python/conda setup, each tagged
-release ships a single-file **`monet-gui.exe`** on its
-[GitHub Release](https://github.com/jungmannlab/monet/releases): download it and
-double-click to launch the GUI — the first-run setup wizard then connects the
-machine to the calibration server. The exe is built by CI
-(`.github/workflows/release-windows.yml`) from `packaging/monet-gui.spec`.
-Real-instrument SDKs (NI-DAQ, Thorlabs TLPM/Kinesis, pyvisa, …) still require
-their vendor drivers installed on the machine; the bundled GUI drives whatever
-is present.
+release ships a one-click Windows installer, **`Monet-Setup-<version>.exe`**, on
+its [GitHub Release](https://github.com/jungmannlab/monet/releases). Run it to
+*install* Monet per-user (no admin rights): it adds a **Monet GUI** entry to the
+Start menu, an Add/Remove-Programs entry, and an uninstaller. The first-run
+setup wizard then connects the machine to the calibration server and records the
+default microscope (see `MONET_MICROSCOPE` below), so the Start-menu shortcut
+launches straight into that microscope — no command-line argument needed.
+
+The same Release also carries the **portable `monet-gui.exe`** for anyone who
+prefers to run it without installing. Both are built by CI
+(`.github/workflows/release-windows.yml`): the exe from
+`packaging/monet-gui.spec` (PyInstaller) and the installer from
+`packaging/monet-gui.iss` (Inno Setup). Real-instrument SDKs (NI-DAQ, Thorlabs
+TLPM/Kinesis, pyvisa, …) still require their vendor drivers installed on the
+machine; the bundled GUI drives whatever is present.
+
+Once installed, **Help ▸ Check for Updates…** compares the running version
+against the latest GitHub release, and the GUI's **Doctor** tab shows where
+monet reads its configuration and whether the calibration server is reachable —
+the first stop when a rig misbehaves.
 
 ## Quick Start
 
@@ -85,6 +97,11 @@ machine is not configured yet), and you can re-open it anytime from its
 box over SSH, add the optional extra: `pip install -e ".[setup]"` (otherwise it
 prints the manual steps to run there). See
 [`docs/ONBOARDING.md`](docs/ONBOARDING.md) for the full walkthrough.
+
+The wizard also records the microscope it authored as **`MONET_MICROSCOPE`** in
+the `.env` — the microscope the GUI connects to when launched without a `<Name>`
+argument (e.g. from the installed build's Start-menu shortcut). A command-line
+name still overrides it: `python -m monet gui OtherScope`.
 
 ### Single-microscope setup (Excel database)
 
