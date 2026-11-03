@@ -10,6 +10,13 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
+## [0.6.3] - 2026-11-03
+
+### Fixed
+- License/author name: the copyright line now reads **Heinrich Grabmayr** (was
+  truncated to "Heinrich"), so the Windows installer's license page and the
+  GUI's **Help ▸ License** show the full author name.
+
 ## [0.6.2] - 2026-11-03
 
 ### Added
