@@ -21,6 +21,13 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
   Micro-Manager) still have to be installed on the acquisition PC. `--selfcheck`
   now also verifies the core SDKs import, to catch an incomplete bundle at
   release time.
+- GUI **Help ▸ Check for Updates…**: when a newer release is found, the
+  download URL is now a clickable link (the update, update-error, and About
+  dialogs all follow their links to the browser).
+
+### Changed
+- License copyright line now spans **2022-2026** (was 2022), in `LICENSE.md`
+  (the installer's license page + GUI Help ▸ License).
 
 ## [0.6.3] - 2026-11-03
 

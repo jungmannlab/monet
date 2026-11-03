@@ -438,6 +438,35 @@ class TestMainWindowChrome(unittest.TestCase):
         self.assertIn("&Help", menus)
         self.assertIn("&Setup", menus)
 
+    def test_update_available_dialog_has_clickable_link(self):
+        """When an update is found, the download URL is a browser link."""
+        from unittest import mock
+
+        from PyQt6.QtWidgets import QLabel, QMessageBox
+
+        win = MonetMainWindow(initial_microscope=None)
+        captured = {}
+
+        def fake_exec(box):
+            captured["html"] = box.text()
+            captured["opens_links"] = [
+                lbl.openExternalLinks() for lbl in box.findChildren(QLabel)
+            ]
+            return 0
+
+        url = "https://github.com/jungmannlab/monet/releases"
+        with mock.patch.object(QMessageBox, "exec", fake_exec):
+            win._on_update_result(
+                {
+                    "current": "0.6.3",
+                    "latest": "0.7.0",
+                    "update_available": True,
+                    "url": url,
+                }
+            )
+        self.assertIn('<a href="{}"'.format(url), captured["html"])
+        self.assertTrue(any(captured["opens_links"]))
+
 
 if __name__ == "__main__":
     unittest.main()
