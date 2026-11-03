@@ -26,7 +26,11 @@ Notes
 
 import os
 
-from PyInstaller.utils.hooks import collect_data_files, collect_submodules
+from PyInstaller.utils.hooks import (
+    collect_data_files,
+    collect_submodules,
+    copy_metadata,
+)
 
 # SPECPATH is injected by PyInstaller = the directory holding this spec, so the
 # build works regardless of the invocation CWD.
@@ -56,6 +60,59 @@ hiddenimports = [
 datas = [(_examples, "docs/examples")]
 datas += collect_data_files("matplotlib")
 
+# Hardware SDK packages (the [hardware] extra). monet's drivers lazy-import
+# these by name *inside methods* (e.g. attenuation.py's KinesisAttenuator does
+# `from msl.equipment import ...` only when it connects), and several resolve
+# submodules dynamically — msl-equipment's resource backends
+# (`msl.equipment.resources.thorlabs`), pyvisa/pyvisa-py backends, nidaqmx — so
+# PyInstaller's static analysis would miss them and a real rig would fail at
+# connect time with ModuleNotFoundError. Pull each in explicitly. Best-effort:
+# a package not present in a given build (e.g. a [gui]-only build) just
+# contributes nothing instead of failing the spec.
+_HARDWARE_PKGS = (
+    "msl",
+    "pyvisa",
+    "pyvisa_py",
+    "nidaqmx",
+    "pycobolt",
+    "microscope",
+    "pycromanager",
+    "ThorlabsPM100",
+    "serial",  # pyserial — base dep, but several drivers import it dynamically
+)
+for _pkg in _HARDWARE_PKGS:
+    try:
+        hiddenimports += collect_submodules(_pkg)
+    except Exception:
+        pass
+    try:
+        datas += collect_data_files(_pkg)
+    except Exception:
+        pass
+
+# Some SDKs read their own (or a dependency's) distribution metadata at import
+# via importlib.metadata — e.g. nidaqmx pulls in `nitypes`, which calls
+# ``version("nitypes")`` on import and dies with "No package metadata was found"
+# if the .dist-info isn't bundled. ``copy_metadata(..., recursive=True)`` ships
+# each package's metadata and that of its dependencies. Distribution names (not
+# import names) are required here; best-effort so a missing package is skipped.
+_METADATA_DISTS = (
+    "nidaqmx",
+    "nitypes",
+    "PyVISA",
+    "PyVISA-py",
+    "pycromanager",
+    "microscope",
+    "ThorlabsPM100",
+    "msl-equipment",
+    "pycobolt",
+)
+for _dist in _METADATA_DISTS:
+    try:
+        datas += copy_metadata(_dist, recursive=True)
+    except Exception:
+        pass
+
 a = Analysis(
     [_launcher],
     pathex=[],
@@ -65,9 +122,11 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    # Trim heavyweight libs that are only needed for the [hardware]/[server]
-    # extras and are not part of the GUI build, so the exe stays smaller.
-    excludes=["tkinter", "fastapi", "uvicorn", "nidaqmx", "pycromanager"],
+    # Trim libs that aren't part of this build: the [server] web stack (the GUI
+    # never imports it) and tkinter (matplotlib's Qt backend is used, not Tk).
+    # nidaqmx / pycromanager are NO LONGER excluded — the installer now bundles
+    # the [hardware] extra so a real rig can connect.
+    excludes=["tkinter", "fastapi", "uvicorn"],
     noarchive=False,
 )
 pyz = PYZ(a.pure)
