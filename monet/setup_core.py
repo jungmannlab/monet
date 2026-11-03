@@ -46,6 +46,11 @@ ENV_CONFIG_PATHS = "MONET_CONFIG_PATHS"
 ENV_PROTOCOL_PATHS = "MONET_PROTOCOL_PATHS"
 ENV_CLIENT_TOKEN = "PAINT_MONET_TOKEN"
 ENV_AUTH = "PAINT_MONET_AUTH"
+# The default microscope the GUI connects to when none is given on the command
+# line — essential for the installed/frozen build, which is launched from a
+# Start-menu shortcut with no arguments. monet reads it at import (see
+# ``monet.DEFAULT_MICROSCOPE``).
+ENV_MICROSCOPE = "MONET_MICROSCOPE"
 
 # Server-side install knowledge, kept in one place so the guided text and the
 # SSH automation agree and the coupling to deploy/setup-server.sh (which owns

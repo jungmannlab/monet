@@ -63,18 +63,39 @@ jobs:
           # driver module didn't make it into the frozen bundle.
           ./dist/monet-gui.exe --selfcheck
 
-      - name: Upload exe as a build artifact (always)
+      - name: Build the Windows installer (Inno Setup)
+        shell: bash
+        run: |
+          # Version for the installer filename / Add-Remove-Programs entry:
+          # the tag on a release run, else the bundled version.
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            ver="${GITHUB_REF_NAME#v}"
+          else
+            ver=$(python -c "import monet; print(monet.__version__)")
+          fi
+          echo "installer version: $ver"
+          choco install innosetup --no-progress -y
+          iscc="/c/Program Files (x86)/Inno Setup 6/ISCC.exe"
+          "$iscc" "/DMyAppVersion=$ver" packaging/monet-gui.iss
+          test -f "dist/Monet-Setup-$ver.exe"
+
+      - name: Upload exe + installer as build artifacts (always)
         uses: actions/upload-artifact@v6
         with:
-          name: monet-gui-exe
-          path: dist/monet-gui.exe
+          name: monet-gui-windows
+          path: |
+            dist/monet-gui.exe
+            dist/Monet-Setup-*.exe
           if-no-files-found: error
 
-      - name: Attach exe to the GitHub Release (tag runs only)
+      - name: Attach exe + installer to the GitHub Release (tag runs only)
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v3
         with:
           # Attaches to the Release for this tag, creating it if it does not
           # exist yet and updating it (without clobbering notes) if it does.
-          files: dist/monet-gui.exe
+          # Both the one-click installer and the portable exe are shipped.
+          files: |
+            dist/Monet-Setup-*.exe
+            dist/monet-gui.exe
           fail_on_unmatched_files: true

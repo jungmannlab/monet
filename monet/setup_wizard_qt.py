@@ -945,6 +945,10 @@ class SetupWizard(QWizard):
 
     def commit(self, env_file):
         """Persist .env + (optional) microscope config; return a summary."""
+        if self.microscope_name:
+            # The GUI's default microscope (connected to on a no-argument,
+            # Start-menu launch of the installed build).
+            self.updates[sc.ENV_MICROSCOPE] = self.microscope_name
         sc.write_env(self.updates, env_path=env_file)
         lines = ["Saved settings to {}".format(env_file)]
         if self.microscope_entry is not None and self.configs_path:

@@ -171,6 +171,14 @@ def _paths_from_env(var):
     return [p.strip() for p in raw.split(os.pathsep) if p.strip()]
 
 
+# Default microscope the GUI connects to when none is given on the command line.
+# Set in the .env (MONET_MICROSCOPE) by the setup wizard; read here (after the
+# .env is loaded) so the installed/frozen build — launched from a Start-menu
+# shortcut with no arguments — still knows which microscope to open. A CLI
+# argument always overrides this (see __main__.py / packaging/monet_gui.py).
+DEFAULT_MICROSCOPE = (os.environ.get("MONET_MICROSCOPE") or "").strip() or None
+
+
 ###########################################################
 #
 # Example configurations and protocols are defined in the

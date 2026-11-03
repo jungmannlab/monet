@@ -86,9 +86,13 @@ def main():
 
     from PyQt6.QtWidgets import QApplication
 
+    import monet
     from monet.gui import MonetMainWindow
 
-    name = sys.argv[1] if len(sys.argv) > 1 else None
+    # An optional argv[1] selects a microscope; otherwise fall back to the
+    # .env default (MONET_MICROSCOPE) the setup wizard wrote — the installed
+    # build is launched from a Start-menu shortcut with no arguments.
+    name = sys.argv[1] if len(sys.argv) > 1 else monet.DEFAULT_MICROSCOPE
     app = QApplication(sys.argv)
     window = MonetMainWindow(initial_microscope=name)
     window.show()

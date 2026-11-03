@@ -23,6 +23,8 @@ from monet.gui import (  # noqa: E402
     CalibrateTab,
     CalibrationPlots,
     DatabaseTab,
+    DoctorTab,
+    MonetMainWindow,
     MonetWidget,
     SetPowerTab,
 )
@@ -380,6 +382,61 @@ class TestLaserStateControls(unittest.TestCase):
         )
         tab.set_pc(self._PC(inst))
         self.assertEqual(tab._hw_pwr_spin.value(), 10.0)
+
+
+class TestDoctorTab(unittest.TestCase):
+    def test_report_lists_config_locations(self):
+        """The diagnostics report names the key config locations."""
+        tab = DoctorTab()
+        txt = tab.report_text()
+        self.assertIn("monet diagnostics", txt)
+        self.assertIn("monet version", txt)
+        self.assertIn(".env file", txt)
+        self.assertIn("configs loaded", txt)
+        self.assertIn("Calibration server", txt)
+
+    def test_server_section_renders_status_dict(self):
+        """A probed server status dict is rendered into the report."""
+        tab = DoctorTab()
+        tab._server_url = "https://server.example/monet"
+        tab._server_status = {
+            "reachable": True,
+            "auth_enabled": True,
+            "token_present": True,
+            "authenticated": True,
+            "scope": "write",
+            "label": "microscope-mercury",
+            "ok": True,
+            "detail": "authenticated as microscope-mercury",
+        }
+        txt = tab.report_text()
+        self.assertIn("https://server.example/monet", txt)
+        self.assertIn("write / microscope-mercury", txt)
+        self.assertIn("OK", txt)
+
+    def test_no_server_configured_message(self):
+        tab = DoctorTab()
+        tab._server_url = None
+        self.assertIn("No server configured", tab.report_text())
+
+    def test_is_standalone_tab(self):
+        """DoctorTab is in the catalog and constructs without a parent."""
+        self.assertIn("doctor", MonetWidget._TAB_CATALOG)
+        w = MonetWidget(show_toolbar=False, tabs=("doctor",))
+        self.assertIsNotNone(w.tab("doctor"))
+
+
+class TestMainWindowChrome(unittest.TestCase):
+    def test_main_window_includes_doctor_tab_and_help_menu(self):
+        win = MonetMainWindow(initial_microscope=None)
+        tabs = [
+            win._widget._tabs.tabText(i)
+            for i in range(win._widget._tabs.count())
+        ]
+        self.assertIn("Doctor", tabs)
+        menus = [a.text() for a in win.menuBar().actions()]
+        self.assertIn("&Help", menus)
+        self.assertIn("&Setup", menus)
 
 
 if __name__ == "__main__":
