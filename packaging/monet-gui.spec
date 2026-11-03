@@ -26,7 +26,11 @@ Notes
 
 import os
 
-from PyInstaller.utils.hooks import collect_data_files, collect_submodules
+from PyInstaller.utils.hooks import (
+    collect_data_files,
+    collect_submodules,
+    copy_metadata,
+)
 
 # SPECPATH is injected by PyInstaller = the directory holding this spec, so the
 # build works regardless of the invocation CWD.
@@ -83,6 +87,29 @@ for _pkg in _HARDWARE_PKGS:
         pass
     try:
         datas += collect_data_files(_pkg)
+    except Exception:
+        pass
+
+# Some SDKs read their own (or a dependency's) distribution metadata at import
+# via importlib.metadata — e.g. nidaqmx pulls in `nitypes`, which calls
+# ``version("nitypes")`` on import and dies with "No package metadata was found"
+# if the .dist-info isn't bundled. ``copy_metadata(..., recursive=True)`` ships
+# each package's metadata and that of its dependencies. Distribution names (not
+# import names) are required here; best-effort so a missing package is skipped.
+_METADATA_DISTS = (
+    "nidaqmx",
+    "nitypes",
+    "PyVISA",
+    "PyVISA-py",
+    "pycromanager",
+    "microscope",
+    "ThorlabsPM100",
+    "msl-equipment",
+    "pycobolt",
+)
+for _dist in _METADATA_DISTS:
+    try:
+        datas += copy_metadata(_dist, recursive=True)
     except Exception:
         pass
 
