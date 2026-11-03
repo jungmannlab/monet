@@ -69,9 +69,15 @@ The same Release also carries the **portable `monet-gui.exe`** for anyone who
 prefers to run it without installing. Both are built by CI
 (`.github/workflows/release-windows.yml`): the exe from
 `packaging/monet-gui.spec` (PyInstaller) and the installer from
-`packaging/monet-gui.iss` (Inno Setup). Real-instrument SDKs (NI-DAQ, Thorlabs
-TLPM/Kinesis, pyvisa, …) still require their vendor drivers installed on the
-machine; the bundled GUI drives whatever is present.
+`packaging/monet-gui.iss` (Inno Setup).
+
+The build bundles the `[hardware]` extra, so the **vendor SDK Python packages**
+(msl-equipment, pyvisa, nidaqmx, pycobolt, python-microscope, pycromanager,
+ThorlabsPM100) ship inside the exe — a real rig can connect without a separate
+Python install. What the exe **cannot** carry is each vendor's **DLL/runtime**:
+Thorlabs Kinesis (`C:/Program Files/Thorlabs/Kinesis`), the NI-DAQmx runtime,
+Micro-Manager, etc. must still be installed on the acquisition PC; the bundled
+GUI drives whatever is present.
 
 Once installed, **Help ▸ Check for Updates…** compares the running version
 against the latest GitHub release, and the GUI's **Doctor** tab shows where

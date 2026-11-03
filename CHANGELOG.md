@@ -10,6 +10,18 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
+### Fixed
+- **Windows installer now bundles the hardware SDKs.** The frozen build was
+  `[gui]`-only, so connecting a real rig raised `ModuleNotFoundError` for the
+  driver's vendor SDK (e.g. `msl` for the Thorlabs `KinesisAttenuator`). The
+  build now installs the `[hardware]` extra and the PyInstaller spec collects
+  each SDK's submodules (msl-equipment, pyvisa, nidaqmx, pycobolt,
+  python-microscope, pycromanager, ThorlabsPM100), so a rig can connect with no
+  separate Python install. Vendor DLLs/runtimes (Thorlabs Kinesis, NI-DAQmx,
+  Micro-Manager) still have to be installed on the acquisition PC. `--selfcheck`
+  now also verifies the core SDKs import, to catch an incomplete bundle at
+  release time.
+
 ## [0.6.3] - 2026-11-03
 
 ### Fixed
