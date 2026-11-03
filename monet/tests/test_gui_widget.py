@@ -7,6 +7,7 @@ Skipped automatically when PyQt6 is not installed.
 """
 
 import os
+import sys
 import unittest
 
 import pytest
@@ -22,11 +23,13 @@ from monet.gui import (  # noqa: E402
     AdjustTab,
     CalibrateTab,
     CalibrationPlots,
+    ConnectWorker,
     DatabaseTab,
     DoctorTab,
     MonetMainWindow,
     MonetWidget,
     SetPowerTab,
+    install_excepthook,
 )
 
 # A single QApplication is required for any QWidget construction.
@@ -466,6 +469,66 @@ class TestMainWindowChrome(unittest.TestCase):
             )
         self.assertIn('<a href="{}"'.format(url), captured["html"])
         self.assertTrue(any(captured["opens_links"]))
+
+
+class TestConnectRobustness(unittest.TestCase):
+    """A successful connect binds every tab via ``set_pc``; a tab missing that
+    method (or raising) must not abort the app. Regression for the Doctor tab,
+    which lacked ``set_pc`` and crashed the GUI on connect."""
+
+    def test_every_catalog_tab_implements_set_pc(self):
+        for key, (_label, cls) in MonetWidget._TAB_CATALOG.items():
+            tab = cls()
+            self.assertTrue(
+                callable(getattr(tab, "set_pc", None)),
+                "tab {!r} ({}) is missing a set_pc method".format(
+                    key, cls.__name__
+                ),
+            )
+
+    def test_doctor_tab_set_pc_is_noop(self):
+        # Must accept a pc without touching it (it has no live-connection role).
+        DoctorTab().set_pc(object())
+
+    def test_on_connected_isolates_a_failing_tab(self):
+        from unittest import mock
+
+        w = MonetWidget(show_toolbar=True, tabs=("set_power",))
+        boom = mock.Mock()
+        boom.set_pc.side_effect = RuntimeError("driver quirk")
+        ok = mock.Mock()
+        w._tab_widgets = {"boom": boom, "ok": ok}
+
+        class _PC:
+            powermeter_available = True
+
+        # Before the fix this raised out of the slot -> PyQt6 abort.
+        w._on_connected(_PC())
+        ok.set_pc.assert_called_once()  # later tabs still bound
+
+    def test_connect_microscope_emits_connecting_status(self):
+        from unittest import mock
+
+        w = MonetWidget(show_toolbar=True, tabs=("set_power",))
+        msgs = []
+        w.status_changed.connect(lambda m, t: msgs.append(m))
+        # Don't spawn the hardware worker thread; we only assert the status.
+        with mock.patch.object(ConnectWorker, "start", lambda self: None):
+            w.connect_microscope("test")
+        self.assertTrue(any("Connecting to test" in m for m in msgs))
+
+
+class TestExceptHook(unittest.TestCase):
+    def test_install_is_idempotent_and_tagged(self):
+        orig = sys.excepthook
+        try:
+            install_excepthook()
+            self.assertTrue(getattr(sys.excepthook, "_monet_hook", False))
+            first = sys.excepthook
+            install_excepthook()
+            self.assertIs(sys.excepthook, first)  # not re-wrapped
+        finally:
+            sys.excepthook = orig
 
 
 if __name__ == "__main__":
