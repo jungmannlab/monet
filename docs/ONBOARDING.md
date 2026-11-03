@@ -24,9 +24,12 @@ server (Part 6) as needed.
 > below explain, by hand, everything the wizard automates.
 >
 > On a Windows acquisition PC with no Python/conda, you can skip Part 1 entirely
-> and download the single-file **`monet-gui.exe`** from the
-> [GitHub Release](https://github.com/jungmannlab/monet/releases) — double-click
-> it and the first-run wizard takes over (see the README).
+> and run the one-click installer **`Monet-Setup-<version>.exe`** from the
+> [GitHub Release](https://github.com/jungmannlab/monet/releases) — it installs
+> Monet per-user, adds a **Monet GUI** Start-menu shortcut, and the first-run
+> wizard takes over (the wizard records the default microscope, so the shortcut
+> opens straight into it). A portable **`monet-gui.exe`** is attached to the
+> same Release if you prefer not to install. See the README for details.
 
 > Terminology: a **microscope config** is one named entry in `configs.yaml`.
 > A **protocol** (in `protocols.yaml`) describes a multi-laser/multi-power

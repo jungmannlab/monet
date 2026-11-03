@@ -46,6 +46,7 @@ from PyQt6.QtWidgets import (
 
 import monet.analysis as analysis
 import monet.io as io
+from monet import updates
 from monet import (
     CONFIGS,
     LASER_TAG,
@@ -74,6 +75,30 @@ _TITLE_BASE = (
 )
 
 logger = logging.getLogger(__name__)
+
+_LICENSE_FALLBACK = (
+    "Copyright (c) 2022, Heinrich Grabmayr — Jungmann Lab, MPI of "
+    "Biochemistry.\n\nmonet is distributed under a BSD-style license. The full "
+    "text ships as LICENSE.md with the source distribution:\n"
+    "https://github.com/jungmannlab/monet/blob/master/LICENSE.md"
+)
+
+
+def _license_text():
+    """Return LICENSE.md's text, or a short fallback if it isn't on disk.
+
+    The file sits beside the package in a normal install; a frozen build may
+    not bundle it, so fall back to a pointer at the canonical copy.
+    """
+    import os
+
+    pkg_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    try:
+        with open(os.path.join(pkg_root, "LICENSE.md"), "r") as f:
+            text = f.read().strip()
+        return text or _LICENSE_FALLBACK
+    except OSError:
+        return _LICENSE_FALLBACK
 
 
 # ---------------------------------------------------------------------------
@@ -4949,6 +4974,202 @@ class DatabaseTab(QWidget):
         worker.start()
 
 
+class DoctorTab(QWidget):
+    """Read-only diagnostics: where monet reads its configuration and whether
+    the calibration server is reachable + authenticated.
+
+    Pure inspection — it never connects a microscope or actuates hardware, so it
+    works on an unconfigured first-run machine too (the point: debugging a fresh
+    install). The server probe runs in a background thread so the UI stays
+    responsive while the network call is outstanding.
+    """
+
+    status = pyqtSignal(str, int)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._worker = None
+        self._server_status = None
+        self._server_url = None
+        self._build_ui()
+        self._render()
+        # Probe the server once the event loop is running (non-blocking).
+        QTimer.singleShot(0, self._recheck)
+
+    def _build_ui(self):
+        layout = QVBoxLayout(self)
+        intro = QLabel(
+            "Diagnostics for support: where monet reads its configuration, "
+            "and whether the calibration server is reachable."
+        )
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        self._view = QTextEdit()
+        self._view.setReadOnly(True)
+        self._view.setFont(QFont("Monospace"))
+        self._view.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
+        layout.addWidget(self._view)
+
+        row = QHBoxLayout()
+        self._btn_recheck = QPushButton("Re-check server")
+        self._btn_recheck.clicked.connect(self._recheck)
+        row.addWidget(self._btn_recheck)
+        btn_copy = QPushButton("Copy report")
+        btn_copy.clicked.connect(self._copy)
+        row.addWidget(btn_copy)
+        row.addStretch()
+        layout.addLayout(row)
+
+    # ---- server probe (threaded) ---------------------------------------
+    def _recheck(self):
+        if self._worker is not None:
+            return
+        self._btn_recheck.setEnabled(False)
+        self.status.emit("Checking server…", 0)
+        from monet import setup_core as sc
+
+        worker = GenericWorker(lambda: sc.detect_state(probe_server=True))
+        worker.result.connect(self._on_state)
+        worker.error.connect(self._on_probe_error)
+        worker.finished.connect(self._probe_done)
+        self._worker = worker
+        worker.start()
+
+    def _on_state(self, state):
+        self._server_url = getattr(state, "server_url", None)
+        self._server_status = getattr(state, "server_status", None)
+        self._render()
+        self.status.emit("Server check complete", 4000)
+
+    def _on_probe_error(self, msg):
+        self._server_status = {"error": msg}
+        self._render()
+        self.status.emit("Server check failed: {}".format(msg), 6000)
+
+    def _probe_done(self):
+        self._worker = None
+        self._btn_recheck.setEnabled(True)
+
+    # ---- report assembly ------------------------------------------------
+    def _copy(self):
+        from PyQt6.QtWidgets import QApplication
+
+        QApplication.clipboard().setText(self._view.toPlainText())
+        self.status.emit("Report copied to clipboard", 3000)
+
+    @staticmethod
+    def _log_path():
+        import os
+
+        log_file = os.environ.get("MONET_LOG_FILE") or os.path.join(
+            os.environ.get("MONET_LOG_DIR", ""), "monet.log"
+        )
+        return os.path.abspath(log_file)
+
+    def report_text(self):
+        """The full diagnostics report as plain text (also used by tests)."""
+        import os
+        import sys
+
+        import monet
+        from monet import setup_core as sc
+
+        def row(label, value):
+            return "  {:<22} {}".format(label, value)
+
+        def flag(value):
+            if value is None:
+                return "unknown"
+            return "yes" if value else "no"
+
+        env_path = sc.default_env_path()
+        lines = ["monet diagnostics", "=" * 48, ""]
+
+        lines.append("[ Version & runtime ]")
+        lines.append(row("monet version", monet.__version__))
+        lines.append(
+            row("frozen build", flag(bool(getattr(sys, "frozen", False))))
+        )
+        lines.append(row("python", sys.version.split()[0]))
+        lines.append("")
+
+        lines.append("[ Configuration files ]")
+        lines.append(
+            row("default microscope", monet.DEFAULT_MICROSCOPE or "(none set)")
+        )
+        lines.append(
+            row(
+                ".env file",
+                env_path
+                + ("" if os.path.isfile(env_path) else "   (not present)"),
+            )
+        )
+        lines.append(
+            row(
+                "configs loaded",
+                monet.CONFIGS_PATH or "(built-in defaults — no file loaded)",
+            )
+        )
+        lines.append(
+            row(
+                "protocols loaded",
+                monet.PROTOCOLS_PATH or "(built-in defaults — no file loaded)",
+            )
+        )
+        lines.append(
+            row(
+                "config path list",
+                os.environ.get("MONET_CONFIG_PATHS", "(unset)"),
+            )
+        )
+        lines.append(
+            row(
+                "protocol path list",
+                os.environ.get("MONET_PROTOCOL_PATHS", "(unset)"),
+            )
+        )
+        lines.append(row("user data dir", sc.user_config_dir()))
+        lines.append(row("log file", self._log_path()))
+        lines.append(
+            row("microscopes", ", ".join(sorted(monet.CONFIGS)) or "(none)")
+        )
+        lines.append("")
+
+        lines.append("[ Calibration server ]")
+        if not self._server_url:
+            lines.append(
+                "  No server configured — microscopes use local database "
+                "files."
+            )
+            return "\n".join(lines)
+        lines.append(row("database url", self._server_url))
+        st = self._server_status
+        if st is None:
+            lines.append("  (checking… click 'Re-check server')")
+        elif st.get("error"):
+            lines.append(row("reachable", "no"))
+            lines.append(row("error", st["error"]))
+        else:
+            lines.append(row("reachable", flag(st.get("reachable"))))
+            lines.append(row("auth enabled", flag(st.get("auth_enabled"))))
+            lines.append(row("token present", flag(st.get("token_present"))))
+            lines.append(row("authenticated", flag(st.get("authenticated"))))
+            scope = st.get("scope")
+            label = st.get("label")
+            if scope or label:
+                lines.append(
+                    row("scope / label", "{} / {}".format(scope, label))
+                )
+            lines.append(row("verdict", "OK" if st.get("ok") else "NOT OK"))
+            if st.get("detail"):
+                lines.append(row("detail", st["detail"]))
+        return "\n".join(lines)
+
+    def _render(self):
+        self._view.setPlainText(self.report_text())
+
+
 # ---------------------------------------------------------------------------
 # Main window
 # ---------------------------------------------------------------------------
@@ -5001,6 +5222,7 @@ class MonetWidget(QWidget):
         "calibrate": ("Calibrate", CalibrateTab),
         "database": ("Database", DatabaseTab),
         "adjust": ("Adjust", AdjustTab),
+        "doctor": ("Doctor", DoctorTab),
     }
 
     def __init__(
@@ -5294,7 +5516,13 @@ class MonetMainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("{} — Laser Power Calibration".format(_TITLE_BASE))
         self.resize(1200, 850)
-        self._widget = MonetWidget(self, initial_microscope=initial_microscope)
+        # The standalone app includes the Doctor (diagnostics) tab; embedders
+        # keep MonetWidget's slimmer default tab set.
+        self._widget = MonetWidget(
+            self,
+            tabs=("set_power", "calibrate", "database", "doctor"),
+            initial_microscope=initial_microscope,
+        )
         self.setCentralWidget(self._widget)
         self._widget.status_changed.connect(self.statusBar().showMessage)
         self._widget.connected.connect(self._on_connected_title)
@@ -5309,6 +5537,94 @@ class MonetMainWindow(QMainWindow):
         action = QAction("Setup Wizard…", self)
         action.triggered.connect(self._run_setup_wizard)
         setup_menu.addAction(action)
+
+        help_menu = self.menuBar().addMenu("&Help")
+        act_update = QAction("Check for Updates…", self)
+        act_update.triggered.connect(self._check_for_updates)
+        help_menu.addAction(act_update)
+        help_menu.addSeparator()
+        act_license = QAction("License", self)
+        act_license.triggered.connect(self._show_license)
+        help_menu.addAction(act_license)
+        act_about = QAction("About Monet", self)
+        act_about.triggered.connect(self._show_about)
+        help_menu.addAction(act_about)
+
+    # ---- Help menu -----------------------------------------------------
+    def _check_for_updates(self):
+        """Query GitHub for the latest release (threaded) and report back."""
+        if getattr(self, "_update_worker", None) is not None:
+            return
+        self.statusBar().showMessage("Checking for updates…")
+        worker = GenericWorker(updates.check_for_update)
+        worker.result.connect(self._on_update_result)
+        worker.error.connect(
+            lambda msg: self._on_update_result({"error": msg})
+        )
+        worker.finished.connect(self._update_check_done)
+        self._update_worker = worker
+        worker.start()
+
+    def _update_check_done(self):
+        self._update_worker = None
+
+    def _on_update_result(self, result):
+        self.statusBar().showMessage("Update check complete", 4000)
+        if result.get("error"):
+            QMessageBox.warning(
+                self,
+                "Check for Updates",
+                "Could not check for updates:\n\n{}\n\nSee the releases page:\n"
+                "{}".format(result["error"], updates.RELEASES_URL),
+            )
+            return
+        if result.get("update_available"):
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Icon.Information)
+            box.setWindowTitle("Update available")
+            box.setText(
+                "A newer version of Monet is available.\n\n"
+                "Installed: {}\nLatest: {}".format(
+                    result["current"], result["latest"]
+                )
+            )
+            box.setInformativeText(
+                "Download the new installer from:\n{}".format(result["url"])
+            )
+            box.exec()
+        else:
+            QMessageBox.information(
+                self,
+                "Check for Updates",
+                "Monet is up to date (version {}).".format(result["current"]),
+            )
+
+    def _show_license(self):
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Monet — License")
+        dlg.resize(640, 480)
+        lay = QVBoxLayout(dlg)
+        view = QTextEdit()
+        view.setReadOnly(True)
+        view.setFont(QFont("Monospace"))
+        view.setPlainText(_license_text())
+        lay.addWidget(view)
+        btn = QPushButton("Close")
+        btn.clicked.connect(dlg.accept)
+        lay.addWidget(btn)
+        dlg.exec()
+
+    def _show_about(self):
+        QMessageBox.about(
+            self,
+            "About Monet",
+            "<b>Monet</b> — laser-power calibration &amp; control<br>"
+            "Version {}<br><br>"
+            "© Jungmann Lab, Max Planck Institute of Biochemistry.<br>"
+            "Author: Heinrich Grabmayr.<br><br>"
+            '<a href="https://github.com/jungmannlab/monet">'
+            "github.com/jungmannlab/monet</a>".format(_monet_version),
+        )
 
     def _maybe_run_setup(self):
         try:

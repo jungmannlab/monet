@@ -502,7 +502,11 @@ def _run_upgrade(local_scopes, env_file):
         protocols_path = getattr(monet, "PROTOCOLS_PATH", "") or os.path.join(
             os.path.dirname(configs_path or "."), "protocols.yaml"
         )
-        _step_author_microscope(configs_path, protocols_path, server_url)
+        name = _step_author_microscope(
+            configs_path, protocols_path, server_url
+        )
+        if name:
+            sc.write_env({sc.ENV_MICROSCOPE: name}, env_path=env_file)
     return 0
 
 
@@ -538,6 +542,10 @@ def run(env_file=None):
     print("\nSaved server/path settings to {}".format(env_file))
 
     name = _step_author_microscope(configs_path, protocols_path, server_url)
+    if name:
+        # Record it as the GUI's default microscope so the installed build,
+        # launched without a CLI argument, connects to it automatically.
+        sc.write_env({sc.ENV_MICROSCOPE: name}, env_path=env_file)
 
     print("\nSetup complete.")
     if name:

@@ -97,6 +97,8 @@ class TestSetupWizard(unittest.TestCase):
 
         env = sc.read_env(self.env_file)
         self.assertIn(sc.ENV_CONFIG_PATHS, env)
+        # The authored microscope is recorded as the GUI's default microscope.
+        self.assertEqual(env[sc.ENV_MICROSCOPE], "wiz_sim")
         with open(configs_path) as f:
             configs = yaml.full_load(f)
         self.assertIn("wiz_sim", configs)

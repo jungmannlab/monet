@@ -87,6 +87,9 @@ class TestConnectExistingAndAuthor(unittest.TestCase):
             env[sc.ENV_CONFIG_PATHS], sc.paths_to_env([configs_path])
         )
         self.assertIn(sc.ENV_PROTOCOL_PATHS, env)
+        # The authored microscope becomes the GUI's default (connected to on a
+        # no-argument, Start-menu launch of the installed build).
+        self.assertEqual(env[sc.ENV_MICROSCOPE], "wiz_sim")
 
         with open(configs_path) as f:
             configs = yaml.full_load(f)
