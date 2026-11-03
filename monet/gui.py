@@ -77,7 +77,7 @@ _TITLE_BASE = (
 logger = logging.getLogger(__name__)
 
 _LICENSE_FALLBACK = (
-    "Copyright (c) 2022, Heinrich Grabmayr — Jungmann Lab, MPI of "
+    "Copyright (c) 2022-2026, Heinrich Grabmayr — Jungmann Lab, MPI of "
     "Biochemistry.\n\nmonet is distributed under a BSD-style license. The full "
     "text ships as LICENSE.md with the source distribution:\n"
     "https://github.com/jungmannlab/monet/blob/master/LICENSE.md"
@@ -5568,30 +5568,44 @@ class MonetMainWindow(QMainWindow):
     def _update_check_done(self):
         self._update_worker = None
 
+    def _message_with_links(self, title, html, icon=None):
+        """Show a rich-text message box whose ``<a href>`` links open in the
+        browser.
+
+        QMessageBox renders rich text, but its text labels don't follow
+        external links by default — enable it on the labels so a URL in the
+        message is actually clickable.
+        """
+        box = QMessageBox(self)
+        box.setIcon(icon or QMessageBox.Icon.Information)
+        box.setWindowTitle(title)
+        box.setTextFormat(Qt.TextFormat.RichText)
+        box.setText(html)
+        for label in box.findChildren(QLabel):
+            label.setOpenExternalLinks(True)
+        box.exec()
+
     def _on_update_result(self, result):
         self.statusBar().showMessage("Update check complete", 4000)
+        url = result.get("url") or updates.RELEASES_URL
+        link = '<a href="{0}">{0}</a>'.format(url)
         if result.get("error"):
-            QMessageBox.warning(
-                self,
+            self._message_with_links(
                 "Check for Updates",
-                "Could not check for updates:\n\n{}\n\nSee the releases page:\n"
-                "{}".format(result["error"], updates.RELEASES_URL),
+                "Could not check for updates:<br><br>{}<br><br>"
+                "See the releases page:<br>{}".format(result["error"], link),
+                icon=QMessageBox.Icon.Warning,
             )
             return
         if result.get("update_available"):
-            box = QMessageBox(self)
-            box.setIcon(QMessageBox.Icon.Information)
-            box.setWindowTitle("Update available")
-            box.setText(
-                "A newer version of Monet is available.\n\n"
-                "Installed: {}\nLatest: {}".format(
-                    result["current"], result["latest"]
-                )
+            self._message_with_links(
+                "Update available",
+                "A newer version of Monet is available.<br><br>"
+                "Installed: <b>{}</b><br>Latest: <b>{}</b><br><br>"
+                "Download the new installer from:<br>{}".format(
+                    result["current"], result["latest"], link
+                ),
             )
-            box.setInformativeText(
-                "Download the new installer from:\n{}".format(result["url"])
-            )
-            box.exec()
         else:
             QMessageBox.information(
                 self,
@@ -5615,8 +5629,7 @@ class MonetMainWindow(QMainWindow):
         dlg.exec()
 
     def _show_about(self):
-        QMessageBox.about(
-            self,
+        self._message_with_links(
             "About Monet",
             "<b>Monet</b> — laser-power calibration &amp; control<br>"
             "Version {}<br><br>"
