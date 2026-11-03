@@ -1,5 +1,5 @@
 
-Copyright (c) 2022, Heinrich
+Copyright (c) 2022, Heinrich Grabmayr
 All rights reserved.
 
 Redistribution and use in source and binary forms, with or without
