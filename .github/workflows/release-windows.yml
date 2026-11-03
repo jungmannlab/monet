@@ -64,20 +64,28 @@ jobs:
           ./dist/monet-gui.exe --selfcheck
 
       - name: Build the Windows installer (Inno Setup)
-        shell: bash
+        # PowerShell, not bash: Git-Bash's MSYS path conversion mangles the
+        # leading-slash ``/DMyAppVersion=...`` flag into a second filename, which
+        # ISCC rejects ("You may not specify more than one script filename").
+        shell: pwsh
         run: |
           # Version for the installer filename / Add-Remove-Programs entry:
           # the tag on a release run, else the bundled version.
-          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
-            ver="${GITHUB_REF_NAME#v}"
-          else
-            ver=$(python -c "import monet; print(monet.__version__)")
-          fi
-          echo "installer version: $ver"
+          if ($env:GITHUB_REF -like 'refs/tags/*') {
+            $ver = $env:GITHUB_REF_NAME -replace '^v', ''
+          } else {
+            $ver = (python -c "import monet; print(monet.__version__)").Trim()
+          }
+          Write-Host "installer version: $ver"
+          # Inno Setup 6 ships on windows-latest; install to be robust to image
+          # changes (a no-op "already installed" otherwise).
           choco install innosetup --no-progress -y
-          iscc="/c/Program Files (x86)/Inno Setup 6/ISCC.exe"
-          "$iscc" "/DMyAppVersion=$ver" packaging/monet-gui.iss
-          test -f "dist/Monet-Setup-$ver.exe"
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          & $iscc "/DMyAppVersion=$ver" "packaging\monet-gui.iss"
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed ($LASTEXITCODE)" }
+          if (-not (Test-Path "dist\Monet-Setup-$ver.exe")) {
+            throw "installer not found: dist\Monet-Setup-$ver.exe"
+          }
 
       - name: Upload exe + installer as build artifacts (always)
         uses: actions/upload-artifact@v6
