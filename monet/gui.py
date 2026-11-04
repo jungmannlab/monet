@@ -223,7 +223,8 @@ class ConnectWorker(QThread):
     """Connects to a microscope configuration in a background thread."""
 
     connected = pyqtSignal(object)  # calibration protocol object
-    warning = pyqtSignal(str)  # non-fatal warning (e.g. no powermeter)
+    # Power meter probed after connect: (pc, available, message). See run().
+    powermeter_resolved = pyqtSignal(object, bool, str)
     error = pyqtSignal(str)
 
     def __init__(self, name, config, protocol, old_pc=None):
@@ -250,29 +251,40 @@ class ConnectWorker(QThread):
                         "old connection teardown failed", exc_info=True
                     )
 
+            # Build WITHOUT opening the power meter: an absent meter makes the
+            # vendor driver block on a hardware scan (seconds), and we don't
+            # want that on the connect's critical path. The meter is probed
+            # right after, below, so the GUI is usable immediately.
             if self._protocol:
-                pc = mca.CalibrationProtocol2D(self._config, self._protocol)
+                pc = mca.CalibrationProtocol2D(
+                    self._config, self._protocol, load_powermeter=False
+                )
             else:
-                pc = mca.CalibrationProtocol1D(self._config)
+                pc = mca.CalibrationProtocol1D(
+                    self._config, load_powermeter=False
+                )
             # Remember the CONFIGS key so tabs can persist config changes
             # (e.g. Apply best model) back to the right microscope entry.
             pc._microscope_name = self._name
-            # Emit `connected` first so the main thread fully binds the tabs
-            # before any modal warning dialog runs. Emitting the warning first
-            # would pop a modal whose event loop re-enters and processes
-            # `connected` mid-dialog — fragile, and it delays the UI setup.
             self.connected.emit(pc)
-            if not getattr(pc, "powermeter_available", True):
-                msg = (
-                    "PowerMeter not available — calibration and power "
-                    "measurement disabled."
-                )
-                detail = getattr(pc, "powermeter_error", None)
-                if detail:
-                    msg += "\n\nReason: " + detail
-                self.warning.emit(msg)
         except Exception as exc:
             self.error.emit(str(exc))
+            return
+
+        # Now probe the power meter (may block on a hardware scan). The GUI is
+        # already up; it enables/greys the power-dependent controls when this
+        # resolves.
+        available = pc.load_powermeter()
+        msg = ""
+        if not available:
+            msg = (
+                "PowerMeter not available — calibration and power "
+                "measurement disabled."
+            )
+            detail = getattr(pc, "powermeter_error", None)
+            if detail:
+                msg += "\n\nReason: " + detail
+        self.powermeter_resolved.emit(pc, bool(available), msg)
 
 
 class GenericWorker(QThread):
@@ -5420,7 +5432,9 @@ class MonetWidget(QWidget):
             name, config, protocol, old_pc=self._pc
         )
         self._connect_worker.connected.connect(self._on_connected)
-        self._connect_worker.warning.connect(self._on_connect_warning)
+        self._connect_worker.powermeter_resolved.connect(
+            self._on_powermeter_resolved
+        )
         self._connect_worker.error.connect(self._on_connect_error)
         self._connect_worker.finished.connect(self._on_connect_finished)
         self._connect_worker.start()
@@ -5506,16 +5520,42 @@ class MonetWidget(QWidget):
                 w.set_pc(pc)
             except Exception:
                 logger.exception("Tab %r failed to bind the connection", key)
-        powermeter_ok = getattr(pc, "powermeter_available", True)
-        self._apply_powermeter_state(powermeter_ok)
-        status = "Connected to {}.".format(name)
-        if not powermeter_ok:
-            status += "  [PowerMeter unavailable]"
+        # powermeter_available is None here on the toolbar path: the meter is
+        # probed in the background (ConnectWorker) and resolved in
+        # _on_powermeter_resolved. A host-built pc bound via set_pc already has
+        # a concrete True/False.
+        available = getattr(pc, "powermeter_available", True)
+        self._apply_powermeter_state(available)
+        if available is None:
+            status = "Connected to {} — checking power meter…".format(name)
+        else:
+            status = "Connected to {}.".format(name)
+            if not available:
+                status += "  [PowerMeter unavailable]"
         self.status_changed.emit(status, 0)
         self.connected.emit(pc)
 
+    def _on_powermeter_resolved(self, pc, available, msg):
+        """Background power-meter probe finished — enable/grey the dependent
+        controls and, if it's unavailable, say so (once)."""
+        if pc is not self._pc:
+            return  # a newer connection superseded this probe
+        self._apply_powermeter_state(available)
+        name = self.current_microscope or ""
+        status = "Connected to {}.".format(name)
+        if not available:
+            status += "  [PowerMeter unavailable]"
+        self.status_changed.emit(status, 0)
+        if not available and msg:
+            QMessageBox.warning(self, "PowerMeter unavailable", msg)
+
     def _apply_powermeter_state(self, available):
-        """Grey out calibrate tab and feedback controls when no powermeter."""
+        """Grey out calibrate tab and feedback controls when no powermeter.
+
+        ``available`` may be ``None`` (meter not yet probed) — treated as "not
+        usable yet" so calibration can't be started before the probe confirms a
+        meter."""
+        available = bool(available)
         cal = self._tab_widgets.get("calibrate")
         if cal is not None:
             self._tabs.setTabEnabled(self._tabs.indexOf(cal), available)
@@ -5523,9 +5563,6 @@ class MonetWidget(QWidget):
         sp = self._tab_widgets.get("set_power")
         if sp is not None:
             sp.set_powermeter_available(available)
-
-    def _on_connect_warning(self, msg):
-        QMessageBox.warning(self, "PowerMeter unavailable", msg)
 
     def _on_connect_error(self, msg):
         self.connect_error.emit(msg)
