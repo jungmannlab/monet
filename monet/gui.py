@@ -5770,6 +5770,9 @@ class MonetMainWindow(QMainWindow):
         action = QAction("Setup Wizard…", self)
         action.triggered.connect(self._run_setup_wizard)
         setup_menu.addAction(action)
+        act_edit = QAction("Edit configuration…", self)
+        act_edit.triggered.connect(self._run_edit_config)
+        setup_menu.addAction(act_edit)
         act_migrate = QAction("Migrate Excel database → server…", self)
         act_migrate.triggered.connect(self._run_migrate_dialog)
         setup_menu.addAction(act_migrate)
@@ -5917,6 +5920,11 @@ class MonetMainWindow(QMainWindow):
         from monet.setup_wizard_qt import open_migrate_dialog
 
         open_migrate_dialog(self)
+
+    def _run_edit_config(self):
+        from monet.setup_wizard_qt import open_edit_config
+
+        open_edit_config(self)
 
     def set_status(self, msg, timeout_ms=0):
         """Back-compat shim: forward to the status bar."""

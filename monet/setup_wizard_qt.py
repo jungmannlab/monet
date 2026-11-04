@@ -210,6 +210,33 @@ class _DriverForm(QWidget):
                 kwargs[name] = sc.coerce_value(raw, f.type)
         return {"class": self.current_name(), "init_kwargs": kwargs}
 
+    def load(self, section):
+        """Pre-select the driver and fill the fields from a saved ``section``.
+
+        ``section`` is a config dict with ``classpath`` (or ``class``) and
+        ``init_kwargs``. Sets :meth:`loaded_ok` False when the classpath isn't
+        in the driver registry (so callers can preserve the original rather than
+        silently rewrite it to a different driver).
+        """
+        classpath = section.get("classpath") or section.get("class")
+        self._loaded_ok = False
+        for name, drv in sc.DRIVERS[self.category].items():
+            if classpath in (drv.classpath, name):
+                idx = self.combo.findData(name)
+                if idx >= 0:
+                    self.combo.setCurrentIndex(idx)  # rebuilds field widgets
+                self._rebuild()
+                self._loaded_ok = True
+                break
+        kwargs = section.get("init_kwargs") or {}
+        for fname, (f, edit) in self._widgets.items():
+            if fname in kwargs and kwargs[fname] is not None:
+                edit.setText(str(kwargs[fname]))
+
+    def loaded_ok(self):
+        """True if the last :meth:`load` matched a registered driver."""
+        return getattr(self, "_loaded_ok", True)
+
 
 # ──────────────────────────────────────────────────────────────────────────
 # Pages
@@ -1281,6 +1308,185 @@ class _MigratePage(QWizardPage):
     def _finished(self):
         self._worker = None
         self.import_btn.setEnabled(True)
+
+
+class EditConfigDialog(QDialog):
+    """Edit a microscope's saved config + protocol (GUI Setup menu).
+
+    Loads the saved values and lets you edit the core sections — database, index,
+    and the power-meter / attenuator / curve-model drivers — plus the protocol's
+    per-laser power set-points. Lasers, beam-path devices and any other keys are
+    **preserved as-is** (structural changes still go through the setup wizard).
+    Writes back to configs.yaml / protocols.yaml (each backed up). A restart is
+    needed for monet to pick up the change.
+    """
+
+    def __init__(self, parent=None, configs_path=None, protocols_path=None):
+        super().__init__(parent)
+        import monet
+
+        self.setWindowTitle("Edit microscope configuration")
+        self.resize(640, 640)
+        self._configs_path = configs_path or (
+            getattr(monet, "CONFIGS_PATH", "") or ""
+        )
+        self._protocols_path = protocols_path or (
+            getattr(monet, "PROTOCOLS_PATH", "") or ""
+        )
+        self._entry = {}
+        self._protocol = {}
+        self._power_edits = {}
+
+        lay = QVBoxLayout(self)
+        top = QHBoxLayout()
+        top.addWidget(QLabel("Microscope:"))
+        self._combo = QComboBox()
+        for name in sc.existing_entry_names(self._configs_path):
+            self._combo.addItem(name, name)
+        self._combo.currentIndexChanged.connect(self._load_selected)
+        top.addWidget(self._combo, 1)
+        lay.addLayout(top)
+
+        form = QFormLayout()
+        self._db_edit = QLineEdit()
+        form.addRow("Database (server URL or .xlsx)", self._db_edit)
+        self._wl_spin = QSpinBox()
+        self._wl_spin.setRange(1, 10000)
+        form.addRow("Index wavelength [nm]", self._wl_spin)
+        self._lp_spin = QSpinBox()
+        self._lp_spin.setRange(0, 100000)
+        form.addRow("Index laser_power [mW]", self._lp_spin)
+        self._pm_form = _DriverForm("powermeter")
+        self._at_form = _DriverForm("attenuation")
+        self._an_form = _DriverForm("analysis")
+        form.addRow("Power meter", self._pm_form)
+        form.addRow("Attenuator", self._at_form)
+        form.addRow("Curve model", self._an_form)
+        lay.addLayout(form)
+
+        self._proto_box = QGroupBox(
+            "Protocol — power set-points [mW] per laser (comma-separated)"
+        )
+        self._proto_host = QFormLayout(self._proto_box)
+        lay.addWidget(self._proto_box)
+
+        self._status = QLabel("")
+        self._status.setWordWrap(True)
+        lay.addWidget(self._status)
+
+        row = QHBoxLayout()
+        self._btn_save = QPushButton("Save")
+        self._btn_save.clicked.connect(self._save)
+        btn_close = QPushButton("Close")
+        btn_close.clicked.connect(self.accept)
+        row.addWidget(self._btn_save)
+        row.addStretch()
+        row.addWidget(btn_close)
+        lay.addLayout(row)
+
+        if self._combo.count():
+            self._load_selected()
+        else:
+            self._status.setText(
+                "No microscopes found in {}.".format(
+                    self._configs_path or "(no config file loaded)"
+                )
+            )
+            self._btn_save.setEnabled(False)
+
+    def _name(self):
+        return self._combo.currentData()
+
+    def _load_selected(self):
+        name = self._name()
+        if not name:
+            return
+        self._entry = sc.read_microscope_entry(name, self._configs_path) or {}
+        self._db_edit.setText(str(self._entry.get("database", "")))
+        index = self._entry.get("index", {}) or {}
+        self._wl_spin.setValue(int(index.get("wavelength [nm]", 488) or 488))
+        self._lp_spin.setValue(int(index.get("laser_power [mW]", 100) or 100))
+        unknown = []
+        for cat, frm in (
+            ("powermeter", self._pm_form),
+            ("attenuation", self._at_form),
+            ("analysis", self._an_form),
+        ):
+            sec = self._entry.get(cat)
+            if sec:
+                frm.load(sec)
+                if not frm.loaded_ok():
+                    unknown.append(cat)
+        self._protocol = (
+            sc.read_protocol_entry(name, self._protocols_path) or {}
+        )
+        self._rebuild_protocol()
+        if unknown:
+            self._status.setText(
+                "Note: unrecognized driver for {} — it is kept unchanged on "
+                "save.".format(", ".join(unknown))
+            )
+        else:
+            self._status.setText("")
+
+    def _rebuild_protocol(self):
+        while self._proto_host.rowCount():
+            self._proto_host.removeRow(0)
+        self._power_edits = {}
+        powers = (self._protocol or {}).get("laser_powers") or {}
+        self._proto_box.setVisible(bool(powers))
+        for laser in sorted(powers):
+            edit = QLineEdit(", ".join(str(p) for p in powers[laser]))
+            self._proto_host.addRow("{} nm".format(laser), edit)
+            self._power_edits[laser] = edit
+
+    def _save(self):
+        name = self._name()
+        if not name:
+            return
+        entry = dict(self._entry)  # preserve lasers / beampath / other keys
+        entry["database"] = self._db_edit.text().strip()
+        idx = dict(entry.get("index", {}) or {})
+        idx["name"] = name
+        idx["wavelength [nm]"] = self._wl_spin.value()
+        idx["laser_power [mW]"] = self._lp_spin.value()
+        entry["index"] = idx
+        for cat, frm in (
+            ("powermeter", self._pm_form),
+            ("attenuation", self._at_form),
+            ("analysis", self._an_form),
+        ):
+            if not frm.loaded_ok() and cat in self._entry:
+                continue  # keep the original (unrecognized) driver as-is
+            sec = frm.section()
+            entry[cat] = {
+                "classpath": sc.classpath_for(cat, sec["class"]),
+                "init_kwargs": sec["init_kwargs"],
+            }
+        try:
+            sc.write_microscope_config(name, entry, self._configs_path)
+            msgs = ["Saved '{}' to {}".format(name, self._configs_path)]
+            if self._power_edits and self._protocols_path:
+                proto = dict(self._protocol)
+                powers = dict(proto.get("laser_powers") or {})
+                for laser, edit in self._power_edits.items():
+                    vals = sc.parse_number_list(edit.text())
+                    if vals:
+                        powers[laser] = vals
+                proto["laser_powers"] = powers
+                sc.write_protocol_entry(name, proto, self._protocols_path)
+                msgs.append("protocol to {}".format(self._protocols_path))
+            self._entry = entry
+            self._status.setText(
+                "; ".join(msgs) + ". Restart monet to use the changes."
+            )
+        except Exception as exc:
+            self._status.setText("Save failed: {}".format(exc))
+
+
+def open_edit_config(parent=None):
+    """Open the standalone config/protocol editor (GUI Setup menu)."""
+    EditConfigDialog(parent).exec()
 
 
 class SetupWizard(QWizard):
