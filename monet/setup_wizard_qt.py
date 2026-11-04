@@ -23,6 +23,7 @@ from PyQt6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
     QComboBox,
+    QDialog,
     QFileDialog,
     QFormLayout,
     QGroupBox,
@@ -30,6 +31,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QRadioButton,
     QSpinBox,
@@ -69,6 +71,41 @@ class _SshInstallWorker(QThread):
             self.failed.emit(str(exc))
             return
         self.done.emit(result)
+
+
+class MigrateWorker(QThread):
+    """Runs an Excel→server migration off the GUI thread.
+
+    Streams per-row ``progress(done, total)``; emits ``done(inserted, skipped)``
+    on success or ``failed(message)``. Shared by the standalone migrate dialog
+    and the setup wizard's import step.
+    """
+
+    progress = pyqtSignal(int, int)  # done, total
+    done = pyqtSignal(int, int)  # inserted, skipped
+    failed = pyqtSignal(str)
+
+    def __init__(self, excel_path, server_url, dry_run=False, parent=None):
+        super().__init__(parent)
+        self._excel_path = excel_path
+        self._server_url = server_url
+        self._dry_run = dry_run
+
+    def run(self):
+        try:
+            from monet.migrate import migrate_excel_to_server
+
+            inserted, skipped = migrate_excel_to_server(
+                self._excel_path,
+                self._server_url,
+                dry_run=self._dry_run,
+                progress_callback=lambda d, t: self.progress.emit(d, t),
+            )
+        except Exception as exc:
+            logger.exception("Excel→server migration failed")
+            self.failed.emit(str(exc))
+            return
+        self.done.emit(inserted, skipped)
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -913,6 +950,260 @@ class _SummaryPage(QWizardPage):
 # ──────────────────────────────────────────────────────────────────────────
 # Wizard
 # ──────────────────────────────────────────────────────────────────────────
+class MigrateDialog(QDialog):
+    """Standalone "merge an Excel database into a monet server" dialog.
+
+    Reads an Excel calibration DB and uploads its rows to the server, skipping
+    any already present (dedup on microscope / wavelength / power / date / time),
+    so it safely MERGES into a server that already holds data. Reachable from
+    the GUI's Setup menu; the engine is shared with the wizard import step.
+    """
+
+    def __init__(self, parent=None, default_server=None):
+        super().__init__(parent)
+        self.setWindowTitle("Migrate Excel database → server")
+        self.resize(560, 360)
+        self._worker = None
+        self._dry = False
+
+        lay = QVBoxLayout(self)
+        intro = QLabel(
+            "Upload an existing Excel calibration database to a monet server. "
+            "Rows already on the server (same microscope, wavelength, power, "
+            "date and time) are skipped, so this safely merges into a server "
+            "that already has data. Use Preview first to see what would change."
+        )
+        intro.setWordWrap(True)
+        lay.addWidget(intro)
+
+        form = QFormLayout()
+        file_row = QHBoxLayout()
+        self._file_edit = QLineEdit()
+        self._file_edit.setPlaceholderText("path to power_database.xlsx")
+        browse = QPushButton("Browse…")
+        browse.clicked.connect(self._browse)
+        file_row.addWidget(self._file_edit)
+        file_row.addWidget(browse)
+        file_host = QWidget()
+        file_host.setLayout(file_row)
+        form.addRow("Excel file", file_host)
+
+        self._url_edit = QLineEdit()
+        self._url_edit.setPlaceholderText("http://server:8000")
+        if default_server:
+            self._url_edit.setText(default_server)
+        form.addRow("Server URL", self._url_edit)
+
+        self._repoint_combo = QComboBox()
+        self._repoint_combo.addItem("— don't change configs —", None)
+        import monet
+
+        if getattr(monet, "CONFIGS_PATH", ""):
+            for scope in sorted(monet.CONFIGS):
+                self._repoint_combo.addItem(scope, scope)
+        self._repoint_combo.setToolTip(
+            "Optionally point a microscope's config at this server after the "
+            "import, so it reads/writes calibrations there (takes effect on "
+            "the next monet restart)."
+        )
+        form.addRow("Re-point microscope", self._repoint_combo)
+        lay.addLayout(form)
+
+        self._progress = QProgressBar()
+        self._progress.setVisible(False)
+        lay.addWidget(self._progress)
+        self._result = QLabel("")
+        self._result.setWordWrap(True)
+        lay.addWidget(self._result)
+
+        btn_row = QHBoxLayout()
+        self._btn_preview = QPushButton("Preview")
+        self._btn_preview.clicked.connect(lambda: self._start(dry_run=True))
+        self._btn_migrate = QPushButton("Migrate")
+        self._btn_migrate.clicked.connect(lambda: self._start(dry_run=False))
+        btn_close = QPushButton("Close")
+        btn_close.clicked.connect(self.accept)
+        btn_row.addWidget(self._btn_preview)
+        btn_row.addWidget(self._btn_migrate)
+        btn_row.addStretch()
+        btn_row.addWidget(btn_close)
+        lay.addLayout(btn_row)
+
+    def _browse(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select Excel database", "", "Excel (*.xlsx *.xls)"
+        )
+        if path:
+            self._file_edit.setText(path)
+
+    def _inputs(self):
+        xlsx = self._file_edit.text().strip()
+        url = self._url_edit.text().strip()
+        if not xlsx or not os.path.isfile(xlsx):
+            self._result.setText("Choose an existing Excel file.")
+            return None
+        if not url:
+            self._result.setText("Enter the server URL.")
+            return None
+        return xlsx, url
+
+    def _start(self, dry_run):
+        if self._worker is not None:
+            return
+        got = self._inputs()
+        if not got:
+            return
+        xlsx, url = got
+        self._dry = dry_run
+        self._btn_preview.setEnabled(False)
+        self._btn_migrate.setEnabled(False)
+        self._progress.setVisible(True)
+        self._progress.setRange(0, 0)  # indeterminate until first row
+        self._result.setText("Previewing…" if dry_run else "Migrating…")
+        worker = MigrateWorker(xlsx, url, dry_run=dry_run)
+        worker.progress.connect(self._on_progress)
+        worker.done.connect(self._on_done)
+        worker.failed.connect(self._on_failed)
+        worker.finished.connect(self._on_finished)
+        self._worker = worker
+        worker.start()
+
+    def _on_progress(self, done, total):
+        self._progress.setRange(0, max(total, 1))
+        self._progress.setValue(done)
+
+    def _on_done(self, inserted, skipped):
+        if self._dry:
+            self._result.setText(
+                "Preview: {} new record(s) would be uploaded; {} already on "
+                "the server.".format(inserted, skipped)
+            )
+            return
+        msg = "Migrated {} new record(s); {} already present.".format(
+            inserted, skipped
+        )
+        name = self._repoint_combo.currentData()
+        if name:
+            import monet
+
+            try:
+                path = sc.repoint_microscope_to_server(
+                    name,
+                    self._url_edit.text().strip(),
+                    getattr(monet, "CONFIGS_PATH", "") or "",
+                )
+                if path:
+                    msg += (
+                        "\nPointed '{}' at the server in {} — restart monet to "
+                        "use it.".format(name, path)
+                    )
+            except Exception as exc:
+                msg += "\nCould not re-point '{}': {}".format(name, exc)
+        self._result.setText(msg)
+
+    def _on_failed(self, err):
+        self._result.setText("Migration failed: {}".format(err))
+
+    def _on_finished(self):
+        self._worker = None
+        self._btn_preview.setEnabled(True)
+        self._btn_migrate.setEnabled(True)
+        if self._progress.maximum() == 0:  # never got a progress tick
+            self._progress.setVisible(False)
+
+
+class _MigratePage(QWizardPage):
+    """Optional wizard step: seed/merge the new server from an Excel database."""
+
+    def __init__(self):
+        super().__init__()
+        self.setTitle("Import existing data (optional)")
+        self.setSubTitle(
+            "If this lab already has an Excel calibration database, upload it "
+            "to the server now. You can also do this later from the GUI's "
+            "Setup ▸ Migrate Excel database → server."
+        )
+        lay = QVBoxLayout(self)
+        self.enable_cb = QCheckBox("Import an existing Excel database")
+        lay.addWidget(self.enable_cb)
+
+        self.body = QWidget()
+        blay = QVBoxLayout(self.body)
+        blay.setContentsMargins(0, 0, 0, 0)
+        file_row = QHBoxLayout()
+        self.file_edit = QLineEdit()
+        self.file_edit.setPlaceholderText("path to power_database.xlsx")
+        browse = QPushButton("Browse…")
+        browse.clicked.connect(self._browse)
+        file_row.addWidget(self.file_edit)
+        file_row.addWidget(browse)
+        file_host = QWidget()
+        file_host.setLayout(file_row)
+        blay.addWidget(file_host)
+        self.import_btn = QPushButton("Import now")
+        self.import_btn.clicked.connect(self._import)
+        blay.addWidget(self.import_btn)
+        self.progress = QProgressBar()
+        self.progress.setVisible(False)
+        blay.addWidget(self.progress)
+        self.result = QLabel("")
+        self.result.setWordWrap(True)
+        blay.addWidget(self.result)
+        lay.addWidget(self.body)
+
+        self.body.setEnabled(False)
+        self.enable_cb.toggled.connect(self.body.setEnabled)
+        self._worker = None
+
+    def _browse(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select Excel database", "", "Excel (*.xlsx *.xls)"
+        )
+        if path:
+            self.file_edit.setText(path)
+
+    def _import(self):
+        if self._worker is not None:
+            return
+        url = getattr(self.wizard(), "server_url", "") or ""
+        xlsx = self.file_edit.text().strip()
+        if not url:
+            self.result.setText(
+                "No server configured on the previous page — nothing to "
+                "import into. (Single-computer labs keep the Excel file.)"
+            )
+            return
+        if not xlsx or not os.path.isfile(xlsx):
+            self.result.setText("Choose an existing Excel file.")
+            return
+        self.import_btn.setEnabled(False)
+        self.progress.setVisible(True)
+        self.progress.setRange(0, 0)
+        self.result.setText("Importing…")
+        worker = MigrateWorker(xlsx, url, dry_run=False)
+        worker.progress.connect(self._on_progress)
+        worker.done.connect(self._on_done)
+        worker.failed.connect(lambda e: self.result.setText("Failed: " + e))
+        worker.finished.connect(self._finished)
+        self._worker = worker
+        worker.start()
+
+    def _on_progress(self, done, total):
+        self.progress.setRange(0, max(total, 1))
+        self.progress.setValue(done)
+
+    def _on_done(self, inserted, skipped):
+        self.result.setText(
+            "Imported {} new record(s); {} already present.".format(
+                inserted, skipped
+            )
+        )
+
+    def _finished(self):
+        self._worker = None
+        self.import_btn.setEnabled(True)
+
+
 class SetupWizard(QWizard):
     """Guided onboarding wizard (GUI twin of ``monet setup``)."""
 
@@ -941,6 +1232,9 @@ class SetupWizard(QWizard):
         self.addPage(_CentralFolderPage())
         self.addPage(_MicroscopePage())
         self.addPage(_ProtocolPage())
+        # Optional "seed the server from an Excel database" step, near the end
+        # (it only needs the server URL from _ServerPage).
+        self.addPage(_MigratePage())
         self.addPage(_SummaryPage(self.env_file))
 
     def commit(self, env_file):
@@ -998,3 +1292,15 @@ def maybe_run_setup(parent=None, force=False):
     wiz = SetupWizard(parent)
     wiz.exec()
     return True
+
+
+def open_migrate_dialog(parent=None):
+    """Open the standalone Excel→server migration dialog (GUI Setup menu).
+
+    Prefills the server URL from the first server-backed microscope config, if
+    any, so the common "merge this rig's Excel into our server" case is one
+    file-pick away.
+    """
+    state = sc.detect_state(probe_server=False)
+    dlg = MigrateDialog(parent, default_server=state.server_url)
+    dlg.exec()
