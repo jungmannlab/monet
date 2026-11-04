@@ -11,6 +11,7 @@ laser/attenuator adjustment, power setting, and database management.
 """
 
 import logging
+import sys
 
 import numpy as np
 
@@ -77,11 +78,50 @@ _TITLE_BASE = (
 logger = logging.getLogger(__name__)
 
 _LICENSE_FALLBACK = (
-    "Copyright (c) 2022, Heinrich Grabmayr — Jungmann Lab, MPI of "
+    "Copyright (c) 2022-2026, Heinrich Grabmayr — Jungmann Lab, MPI of "
     "Biochemistry.\n\nmonet is distributed under a BSD-style license. The full "
     "text ships as LICENSE.md with the source distribution:\n"
     "https://github.com/jungmannlab/monet/blob/master/LICENSE.md"
 )
+
+
+def install_excepthook():
+    """Route uncaught exceptions to a dialog + the log, not a silent abort.
+
+    PyQt6 terminates the process (``abort()``) when a Python exception
+    propagates out of a slot — e.g. a signal handler run by the event loop —
+    which to the user looks like the app simply closing with no message. That
+    is exactly what a hardware-connect handler hitting an unexpected error on a
+    rig does. Installing a ``sys.excepthook`` makes PyQt call this instead of
+    aborting: it logs the full traceback (to ``monet.log``) and shows it, so
+    failures are visible and the app stays up. Idempotent.
+    """
+    if getattr(sys.excepthook, "_monet_hook", False):
+        return
+    import traceback
+
+    def _hook(exc_type, exc, tb):
+        if issubclass(exc_type, KeyboardInterrupt):
+            sys.__excepthook__(exc_type, exc, tb)
+            return
+        detail = "".join(traceback.format_exception(exc_type, exc, tb))
+        logger.error("Unhandled exception:\n%s", detail)
+        try:
+            from PyQt6.QtWidgets import QApplication, QMessageBox
+
+            if QApplication.instance() is not None:
+                QMessageBox.critical(
+                    None,
+                    "Monet — unexpected error",
+                    "An unexpected error occurred:\n\n{}: {}\n\nThe full "
+                    "traceback was written to monet.log. You may need to "
+                    "reconnect or restart.".format(exc_type.__name__, exc),
+                )
+        except Exception:
+            logger.debug("could not show error dialog", exc_info=True)
+
+    _hook._monet_hook = True
+    sys.excepthook = _hook
 
 
 def _license_text():
@@ -183,7 +223,8 @@ class ConnectWorker(QThread):
     """Connects to a microscope configuration in a background thread."""
 
     connected = pyqtSignal(object)  # calibration protocol object
-    warning = pyqtSignal(str)  # non-fatal warning (e.g. no powermeter)
+    # Power meter probed after connect: (pc, available, message). See run().
+    powermeter_resolved = pyqtSignal(object, bool, str)
     error = pyqtSignal(str)
 
     def __init__(self, name, config, protocol, old_pc=None):
@@ -210,25 +251,49 @@ class ConnectWorker(QThread):
                         "old connection teardown failed", exc_info=True
                     )
 
+            # Build WITHOUT opening the power meter: an absent meter makes the
+            # vendor driver block on a hardware scan (seconds), and we don't
+            # want that on the connect's critical path. The meter is probed
+            # right after, below, so the GUI is usable immediately.
             if self._protocol:
-                pc = mca.CalibrationProtocol2D(self._config, self._protocol)
+                pc = mca.CalibrationProtocol2D(
+                    self._config, self._protocol, load_powermeter=False
+                )
             else:
-                pc = mca.CalibrationProtocol1D(self._config)
+                pc = mca.CalibrationProtocol1D(
+                    self._config, load_powermeter=False
+                )
             # Remember the CONFIGS key so tabs can persist config changes
             # (e.g. Apply best model) back to the right microscope entry.
             pc._microscope_name = self._name
-            if not getattr(pc, "powermeter_available", True):
-                msg = (
-                    "PowerMeter not available — calibration and power "
-                    "measurement disabled."
-                )
-                detail = getattr(pc, "powermeter_error", None)
-                if detail:
-                    msg += "\n\nReason: " + detail
-                self.warning.emit(msg)
             self.connected.emit(pc)
         except Exception as exc:
             self.error.emit(str(exc))
+            return
+
+        # Now probe the power meter (may block on a hardware scan). The GUI is
+        # already up; it enables/greys the power-dependent controls when this
+        # resolves. load_powermeter() swallows the expected driver failures, but
+        # guard the whole probe so an *unexpected* error still resolves the
+        # pending state — otherwise the UI is stuck on "checking power meter…".
+        try:
+            available = pc.load_powermeter()
+        except Exception as exc:
+            logging.getLogger(__name__).exception("power-meter probe failed")
+            pc.powermeter = None
+            pc.powermeter_available = False
+            pc.powermeter_error = "{}: {}".format(type(exc).__name__, exc)
+            available = False
+        msg = ""
+        if not available:
+            msg = (
+                "PowerMeter not available — calibration and power "
+                "measurement disabled."
+            )
+            detail = getattr(pc, "powermeter_error", None)
+            if detail:
+                msg += "\n\nReason: " + detail
+        self.powermeter_resolved.emit(pc, bool(available), msg)
 
 
 class GenericWorker(QThread):
@@ -865,11 +930,31 @@ class CalibrationPlots(QWidget):
 
 
 # ---------------------------------------------------------------------------
+# Tab base class
+# ---------------------------------------------------------------------------
+
+
+class _MonetTab(QWidget):
+    """Base for the tabs embedded in :class:`MonetWidget`.
+
+    ``MonetWidget`` calls ``set_pc(pc)`` on *every* tab when a microscope
+    connects, so a tab that ignores the live connection (e.g. the Doctor tab)
+    must still provide the method — otherwise the connect slot raises and PyQt6
+    aborts the process. The default is a no-op; tabs that use the connection
+    override it. This makes the tab/connection contract structural rather than
+    a per-class convention.
+    """
+
+    def set_pc(self, pc):
+        """Bind (or re-bind) the calibration-protocol object; no-op default."""
+
+
+# ---------------------------------------------------------------------------
 # Tab 1 — Calibrate
 # ---------------------------------------------------------------------------
 
 
-class CalibrateTab(QWidget):
+class CalibrateTab(_MonetTab):
     """Tab for running calibration protocols."""
 
     # Status messages are emitted via the `status` signal so the tab can be
@@ -1607,11 +1692,18 @@ class CalibrateTab(QWidget):
         worker.start()
 
     def set_powermeter_available(self, available):
-        """Enable or disable calibration controls per powermeter state."""
-        self._pm_available = available
-        self._btn_start.setEnabled(available)
+        """Enable or disable calibration controls per powermeter state.
+
+        ``available`` is tri-state: ``True`` / ``False`` / ``None`` (not yet
+        probed). Controls are disabled for both ``None`` and ``False``, but the
+        log warning is only emitted for a *confirmed* ``False`` — logging it
+        during the pending ``None`` window would leave a spurious warning on
+        every successful connect (the probe usually resolves to available)."""
+        enabled = bool(available)
+        self._pm_available = enabled
+        self._btn_start.setEnabled(enabled)
         self._update_verify_enabled()
-        if not available:
+        if available is False:
             self._log.append(
                 "WARNING: PowerMeter not available. Calibration is disabled."
             )
@@ -1949,7 +2041,7 @@ class CalibrateTab(QWidget):
 # ---------------------------------------------------------------------------
 
 
-class AdjustTab(QWidget):
+class AdjustTab(_MonetTab):
     """Tab for direct attenuator and laser power adjustment.
 
     No laser selector — operations act on whichever laser is currently
@@ -2245,7 +2337,7 @@ class AdjustTab(QWidget):
 # ---------------------------------------------------------------------------
 
 
-class SetPowerTab(QWidget):
+class SetPowerTab(_MonetTab):
     """Tab for setting output power using calibration data."""
 
     status = pyqtSignal(str, int)
@@ -3786,10 +3878,14 @@ class SetPowerTab(QWidget):
             self._feedback_cb.setChecked(False)
 
     def set_powermeter_available(self, available):
-        """Enable or disable powermeter-dependent controls."""
-        self._btn_measure.setEnabled(available)
-        self._btn_backlash.setEnabled(available)
-        self._btn_pin.setEnabled(available)
+        """Enable or disable powermeter-dependent controls.
+
+        ``available`` is tri-state (True/False/None); None (not yet probed) and
+        False both disable, so a plain bool coercion is right here."""
+        enabled = bool(available)
+        self._btn_measure.setEnabled(enabled)
+        self._btn_backlash.setEnabled(enabled)
+        self._btn_pin.setEnabled(enabled)
         self._update_feedback_enabled()
 
     def _on_all_on(self):
@@ -4252,7 +4348,7 @@ class RunPairDialog(QDialog):
             self._canvas.draw_idle()
 
 
-class DatabaseTab(QWidget):
+class DatabaseTab(_MonetTab):
     """Tab for exploring calibration runs and objective transmission factors.
 
     The left table lists 2D calibration *runs* (grouped from the database by
@@ -4974,7 +5070,7 @@ class DatabaseTab(QWidget):
         worker.start()
 
 
-class DoctorTab(QWidget):
+class DoctorTab(_MonetTab):
     """Read-only diagnostics: where monet reads its configuration and whether
     the calibration server is reachable + authenticated.
 
@@ -4991,10 +5087,19 @@ class DoctorTab(QWidget):
         self._worker = None
         self._server_status = None
         self._server_url = None
+        self._probed = False
         self._build_ui()
         self._render()
-        # Probe the server once the event loop is running (non-blocking).
-        QTimer.singleShot(0, self._recheck)
+
+    def showEvent(self, event):
+        # Probe the server lazily — the first time the tab is actually shown,
+        # not eagerly on construction. A standalone GUI launch where the user
+        # never opens the Doctor tab then pays no unsolicited network probe (and
+        # no timeout on an offline/slow-LAN rig).
+        super().showEvent(event)
+        if not self._probed:
+            self._probed = True
+            QTimer.singleShot(0, self._recheck)
 
     def _build_ui(self):
         layout = QVBoxLayout(self)
@@ -5025,8 +5130,12 @@ class DoctorTab(QWidget):
     def _recheck(self):
         if self._worker is not None:
             return
+        # Don't post to the shared status bar: this probe runs automatically on
+        # startup, and its result would overwrite the "Connecting to <rig>…"
+        # message a simultaneous connect is showing. The Doctor tab reports its
+        # own result into its text view (and the button shows progress).
         self._btn_recheck.setEnabled(False)
-        self.status.emit("Checking server…", 0)
+        self._btn_recheck.setText("Checking…")
         from monet import setup_core as sc
 
         worker = GenericWorker(lambda: sc.detect_state(probe_server=True))
@@ -5040,16 +5149,15 @@ class DoctorTab(QWidget):
         self._server_url = getattr(state, "server_url", None)
         self._server_status = getattr(state, "server_status", None)
         self._render()
-        self.status.emit("Server check complete", 4000)
 
     def _on_probe_error(self, msg):
         self._server_status = {"error": msg}
         self._render()
-        self.status.emit("Server check failed: {}".format(msg), 6000)
 
     def _probe_done(self):
         self._worker = None
         self._btn_recheck.setEnabled(True)
+        self._btn_recheck.setText("Re-check server")
 
     # ---- report assembly ------------------------------------------------
     def _copy(self):
@@ -5060,12 +5168,11 @@ class DoctorTab(QWidget):
 
     @staticmethod
     def _log_path():
-        import os
+        # Single source of truth, shared with the logging setup, so the
+        # reported path can't drift from where monet actually writes.
+        import monet
 
-        log_file = os.environ.get("MONET_LOG_FILE") or os.path.join(
-            os.environ.get("MONET_LOG_DIR", ""), "monet.log"
-        )
-        return os.path.abspath(log_file)
+        return monet.log_file_path()
 
     def report_text(self):
         """The full diagnostics report as plain text (also used by tests)."""
@@ -5339,6 +5446,20 @@ class MonetWidget(QWidget):
     def connect_microscope(self, name=None):
         """Start a ``ConnectWorker`` for ``name`` (or the currently selected
         microscope). Emits ``connect_error`` on failure."""
+        # Ignore a re-entrant request while a connect is already running:
+        # rebinding self._connect_worker would drop the only reference to the
+        # still-running QThread (now longer-lived, since it also probes the
+        # power meter), and Qt aborts if a running QThread is garbage-collected.
+        # The toolbar disables its button during connect, but this guards the
+        # programmatic entry point (hosts / tests) too.
+        if (
+            self._connect_worker is not None
+            and self._connect_worker.isRunning()
+        ):
+            logger.debug(
+                "connect already in progress; ignoring re-entrant call"
+            )
+            return
         if name is not None and self._scope_combo is not None:
             self.set_microscope(name)
         if name is None:
@@ -5366,7 +5487,9 @@ class MonetWidget(QWidget):
             name, config, protocol, old_pc=self._pc
         )
         self._connect_worker.connected.connect(self._on_connected)
-        self._connect_worker.warning.connect(self._on_connect_warning)
+        self._connect_worker.powermeter_resolved.connect(
+            self._on_powermeter_resolved
+        )
         self._connect_worker.error.connect(self._on_connect_error)
         self._connect_worker.finished.connect(self._on_connect_finished)
         self._connect_worker.start()
@@ -5390,6 +5513,13 @@ class MonetWidget(QWidget):
         exposing ``.instrument`` (an ``IlluminationLaserControl``),
         ``.powermeter``, and ``.protocol``. Skips the in-widget
         ``ConnectWorker``.
+
+        The ``pc`` must be *fully built* — in particular its power meter must
+        already be opened (``powermeter_available`` is ``True``/``False``, not
+        ``None``). Unlike the toolbar path, ``set_pc`` does no background probe,
+        so a pc built with ``load_powermeter=False`` would leave the Calibrate
+        tab greyed with nothing to ever re-enable it. Call
+        ``pc.load_powermeter()`` before binding.
         """
         self._pc = pc
         # Tag the pc with its CONFIGS key (if known) so the Calibrate tab can
@@ -5445,28 +5575,58 @@ class MonetWidget(QWidget):
         self._pc = pc
         name = self.current_microscope or ""
         self.status_changed.emit("Loading data for {}…".format(name), 0)
-        for w in self._tab_widgets.values():
-            w.set_pc(pc)
-        powermeter_ok = getattr(pc, "powermeter_available", True)
-        self._apply_powermeter_state(powermeter_ok)
-        status = "Connected to {}.".format(name)
-        if not powermeter_ok:
-            status += "  [PowerMeter unavailable]"
+        for key, w in self._tab_widgets.items():
+            # Isolate each tab: a failure binding one tab (e.g. a driver quirk
+            # on a rig with no power meter) must not abort the whole connect.
+            try:
+                w.set_pc(pc)
+            except Exception:
+                logger.exception("Tab %r failed to bind the connection", key)
+        # powermeter_available is None here on the toolbar path: the meter is
+        # probed in the background (ConnectWorker) and resolved in
+        # _on_powermeter_resolved. A host-built pc bound via set_pc already has
+        # a concrete True/False.
+        available = getattr(pc, "powermeter_available", True)
+        self._apply_powermeter_state(available)
+        if available is None:
+            status = "Connected to {} — checking power meter…".format(name)
+        else:
+            status = "Connected to {}.".format(name)
+            if not available:
+                status += "  [PowerMeter unavailable]"
         self.status_changed.emit(status, 0)
         self.connected.emit(pc)
 
+    def _on_powermeter_resolved(self, pc, available, msg):
+        """Background power-meter probe finished — enable/grey the dependent
+        controls and, if it's unavailable, say so (once)."""
+        if pc is not self._pc:
+            return  # a newer connection superseded this probe
+        self._apply_powermeter_state(available)
+        name = self.current_microscope or ""
+        status = "Connected to {}.".format(name)
+        if not available:
+            status += "  [PowerMeter unavailable]"
+        self.status_changed.emit(status, 0)
+        if not available and msg:
+            QMessageBox.warning(self, "PowerMeter unavailable", msg)
+
     def _apply_powermeter_state(self, available):
-        """Grey out calibrate tab and feedback controls when no powermeter."""
+        """Grey out calibrate tab and feedback controls when no powermeter.
+
+        ``available`` is tri-state and passed through to the tabs unchanged:
+        ``True`` (meter ready), ``False`` (probed, absent) or ``None`` (not yet
+        probed — the deferred window). Both ``None`` and ``False`` disable the
+        controls, but only ``False`` is a *confirmed* failure the tabs should
+        announce; ``None`` must stay quiet so a normal connect doesn't flash a
+        spurious "not available" warning before the probe resolves."""
         cal = self._tab_widgets.get("calibrate")
         if cal is not None:
-            self._tabs.setTabEnabled(self._tabs.indexOf(cal), available)
+            self._tabs.setTabEnabled(self._tabs.indexOf(cal), bool(available))
             cal.set_powermeter_available(available)
         sp = self._tab_widgets.get("set_power")
         if sp is not None:
             sp.set_powermeter_available(available)
-
-    def _on_connect_warning(self, msg):
-        QMessageBox.warning(self, "PowerMeter unavailable", msg)
 
     def _on_connect_error(self, msg):
         self.connect_error.emit(msg)
@@ -5514,6 +5674,10 @@ class MonetMainWindow(QMainWindow):
 
     def __init__(self, initial_microscope=None):
         super().__init__()
+        # Turn an unhandled exception in any slot into a logged, visible error
+        # instead of a silent PyQt6 process abort (e.g. a hardware-connect
+        # handler hitting an unexpected rig error).
+        install_excepthook()
         self.setWindowTitle("{} — Laser Power Calibration".format(_TITLE_BASE))
         self.resize(1200, 850)
         # The standalone app includes the Doctor (diagnostics) tab; embedders
@@ -5537,6 +5701,9 @@ class MonetMainWindow(QMainWindow):
         action = QAction("Setup Wizard…", self)
         action.triggered.connect(self._run_setup_wizard)
         setup_menu.addAction(action)
+        act_migrate = QAction("Migrate Excel database → server…", self)
+        act_migrate.triggered.connect(self._run_migrate_dialog)
+        setup_menu.addAction(act_migrate)
 
         help_menu = self.menuBar().addMenu("&Help")
         act_update = QAction("Check for Updates…", self)
@@ -5568,30 +5735,44 @@ class MonetMainWindow(QMainWindow):
     def _update_check_done(self):
         self._update_worker = None
 
+    def _message_with_links(self, title, html, icon=None):
+        """Show a rich-text message box whose ``<a href>`` links open in the
+        browser.
+
+        QMessageBox renders rich text, but its text labels don't follow
+        external links by default — enable it on the labels so a URL in the
+        message is actually clickable.
+        """
+        box = QMessageBox(self)
+        box.setIcon(icon or QMessageBox.Icon.Information)
+        box.setWindowTitle(title)
+        box.setTextFormat(Qt.TextFormat.RichText)
+        box.setText(html)
+        for label in box.findChildren(QLabel):
+            label.setOpenExternalLinks(True)
+        box.exec()
+
     def _on_update_result(self, result):
         self.statusBar().showMessage("Update check complete", 4000)
+        url = result.get("url") or updates.RELEASES_URL
+        link = '<a href="{0}">{0}</a>'.format(url)
         if result.get("error"):
-            QMessageBox.warning(
-                self,
+            self._message_with_links(
                 "Check for Updates",
-                "Could not check for updates:\n\n{}\n\nSee the releases page:\n"
-                "{}".format(result["error"], updates.RELEASES_URL),
+                "Could not check for updates:<br><br>{}<br><br>"
+                "See the releases page:<br>{}".format(result["error"], link),
+                icon=QMessageBox.Icon.Warning,
             )
             return
         if result.get("update_available"):
-            box = QMessageBox(self)
-            box.setIcon(QMessageBox.Icon.Information)
-            box.setWindowTitle("Update available")
-            box.setText(
-                "A newer version of Monet is available.\n\n"
-                "Installed: {}\nLatest: {}".format(
-                    result["current"], result["latest"]
-                )
+            self._message_with_links(
+                "Update available",
+                "A newer version of Monet is available.<br><br>"
+                "Installed: <b>{}</b><br>Latest: <b>{}</b><br><br>"
+                "Download the new installer from:<br>{}".format(
+                    result["current"], result["latest"], link
+                ),
             )
-            box.setInformativeText(
-                "Download the new installer from:\n{}".format(result["url"])
-            )
-            box.exec()
         else:
             QMessageBox.information(
                 self,
@@ -5615,8 +5796,7 @@ class MonetMainWindow(QMainWindow):
         dlg.exec()
 
     def _show_about(self):
-        QMessageBox.about(
-            self,
+        self._message_with_links(
             "About Monet",
             "<b>Monet</b> — laser-power calibration &amp; control<br>"
             "Version {}<br><br>"
@@ -5638,6 +5818,11 @@ class MonetMainWindow(QMainWindow):
         from monet.setup_wizard_qt import maybe_run_setup
 
         maybe_run_setup(self, force=True)
+
+    def _run_migrate_dialog(self):
+        from monet.setup_wizard_qt import open_migrate_dialog
+
+        open_migrate_dialog(self)
 
     def set_status(self, msg, timeout_ms=0):
         """Back-compat shim: forward to the status bar."""

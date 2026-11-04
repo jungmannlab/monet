@@ -47,6 +47,26 @@ _SELFCHECK_MODULES = (
     "monet.control",
 )
 
+# Hardware SDK packages the drivers lazy-import at connect time. These are
+# bundled from the [hardware] extra; verifying they import proves the bundle is
+# complete so a real rig doesn't fail with ModuleNotFoundError. Split in two:
+#   * _fatal: PyPI-pinned, pure-Python SDKs that import cleanly with no
+#     instrument/DLL present, so a failure here means the bundle is genuinely
+#     broken and the release should fail.
+#   * _best_effort: SDKs that may touch a vendor runtime at import on some
+#     machines, OR are sourced from an unpinned VCS ref (pycobolt is
+#     `git+…` with no pin — an upstream change must never be able to block a
+#     monet release). A failure on the headless CI runner is reported but does
+#     not fail the build (collect_submodules in the .spec still bundles them).
+_SELFCHECK_HW_FATAL = ("msl.equipment", "pyvisa")
+_SELFCHECK_HW_BEST_EFFORT = (
+    "nidaqmx",
+    "pycobolt",
+    "microscope",
+    "pycromanager",
+    "ThorlabsPM100",
+)
+
 
 def _selfcheck():
     """Import the GUI + all dynamically-loaded drivers; print OK and exit(0).
@@ -57,7 +77,7 @@ def _selfcheck():
     import importlib
 
     try:
-        for name in _SELFCHECK_MODULES:
+        for name in _SELFCHECK_MODULES + _SELFCHECK_HW_FATAL:
             importlib.import_module(name)
         import monet
 
@@ -67,6 +87,18 @@ def _selfcheck():
         # from the frozen bundle, and exit non-zero so the release fails.
         print("monet selfcheck FAILED: {}".format(exc), file=sys.stderr)
         sys.exit(1)
+
+    # Best-effort: report (don't fail on) SDKs that may need a vendor runtime at
+    # import — they're still bundled, just not import-verifiable on CI.
+    for name in _SELFCHECK_HW_BEST_EFFORT:
+        try:
+            importlib.import_module(name)
+        except Exception as exc:
+            print(
+                "monet selfcheck note: {} not import-verifiable here "
+                "({})".format(name, exc),
+                file=sys.stderr,
+            )
     sys.exit(0)
 
 

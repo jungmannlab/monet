@@ -193,6 +193,48 @@ class TestMigrateToServer(unittest.TestCase):
         )
         self.assertEqual((inserted2, skipped2), (0, 2))
 
+    def test_dry_run_counts_without_posting(self):
+        from monet.migrate import migrate_excel_to_server
+
+        inserted, skipped = migrate_excel_to_server(
+            self.excel_path, "http://localhost:8000", dry_run=True
+        )
+        self.assertEqual((inserted, skipped), (2, 0))
+        # Nothing was actually written: the server is still empty (the query
+        # endpoint 404s when there are no matching records).
+        resp = self.client.post(
+            "/calibrations/query", json={"index": {}, "time_idx": "all"}
+        )
+        self.assertEqual(resp.status_code, 404)
+
+    def test_empty_server_import_has_no_duplicate_warning(self):
+        # Init-populating a fresh (empty) server must not warn about possible
+        # duplicates (the dedup query 404s on an empty server — that's empty,
+        # not a failure).
+        import io as _io
+        from contextlib import redirect_stderr
+
+        from monet.migrate import migrate_excel_to_server
+
+        buf = _io.StringIO()
+        with redirect_stderr(buf):
+            inserted, skipped = migrate_excel_to_server(
+                self.excel_path, "http://localhost:8000"
+            )
+        self.assertEqual((inserted, skipped), (2, 0))
+        self.assertNotIn("may create duplicates", buf.getvalue())
+
+    def test_progress_callback_reports_each_row(self):
+        from monet.migrate import migrate_excel_to_server
+
+        calls = []
+        migrate_excel_to_server(
+            self.excel_path,
+            "http://localhost:8000",
+            progress_callback=lambda d, t: calls.append((d, t)),
+        )
+        self.assertEqual(calls, [(1, 2), (2, 2)])
+
 
 if __name__ == "__main__":
     unittest.main()

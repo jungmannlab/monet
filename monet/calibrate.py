@@ -52,7 +52,7 @@ class CalibrationProtocol1D:
                 'address': 'find connection'}},
     """
 
-    def __init__(self, config, load_instrument=True):
+    def __init__(self, config, load_instrument=True, load_powermeter=True):
         """Initialize the analyzer, powermeter and attenuator from config.
 
         Parameters
@@ -63,6 +63,13 @@ class CalibrationProtocol1D:
         load_instrument : bool
             Whether to load the instrument hardware. For inheriting classes
             this option should be disabled.
+        load_powermeter : bool
+            Whether to open the power meter now. When ``False`` the meter is
+            left unprobed (``powermeter_available`` is ``None``) and the caller
+            is expected to run :meth:`load_powermeter` later — e.g. the GUI
+            does this in a background thread so a slow or absent meter (whose
+            vendor driver blocks on a hardware scan) does not delay the
+            connect.
         """
         # load analysis and attenuation
         if load_instrument:
@@ -72,7 +79,24 @@ class CalibrationProtocol1D:
         # reset_saved_calibrations(); lets a caller undo a whole run.
         self.saved_calibrations = []
 
-        pwrconfig = config["powermeter"]
+        # Kept so load_powermeter() can build the meter later (deferred path).
+        self._powermeter_config = config["powermeter"]
+        if load_powermeter:
+            self.load_powermeter()
+        else:
+            self.powermeter = None
+            self.powermeter_available = None  # None == not yet probed
+            self.powermeter_error = None
+
+    def load_powermeter(self):
+        """Open the power meter from config, recording its availability.
+
+        Sets ``powermeter`` (the driver or ``None``), ``powermeter_available``
+        (``True``/``False``) and ``powermeter_error`` (the reason string on
+        failure). Safe to call once, from ``__init__`` or later on the deferred
+        path. Returns the resulting ``powermeter_available`` bool.
+        """
+        pwrconfig = self._powermeter_config
         try:
             self.powermeter = load_class(
                 pwrconfig["classpath"], pwrconfig["init_kwargs"]
@@ -93,6 +117,7 @@ class CalibrationProtocol1D:
                 self.powermeter_error,
                 exc_info=True,
             )
+        return self.powermeter_available
 
     def reset_saved_calibrations(self):
         """Forget which calibrations were written, starting a fresh run."""
@@ -837,7 +862,7 @@ class CalibrationProtocol1D:
 class CalibrationProtocol2D(CalibrationProtocol1D):
     """Calibrate different lasers at different power settings."""
 
-    def __init__(self, config, protocol):
+    def __init__(self, config, protocol, load_powermeter=True):
         """Initialize the 2D calibration protocol.
 
         Parameters
@@ -878,7 +903,9 @@ class CalibrationProtocol2D(CalibrationProtocol1D):
             or k == "end_calibrate"
         }
 
-        super().__init__(config, load_instrument=False)
+        super().__init__(
+            config, load_instrument=False, load_powermeter=load_powermeter
+        )
 
     def run_protocol(
         self,

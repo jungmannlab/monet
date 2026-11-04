@@ -153,6 +153,40 @@ class TestCalibration(unittest.TestCase):
 
         pc.powermeter.read = flaky_read
 
+    def test_01b_powermeter_loads_by_default(self):
+        """Default construction opens the meter (available True)."""
+        pc = mca.CalibrationProtocol1D(self._config_1d())
+        self.assertTrue(pc.powermeter_available)
+        self.assertIsNotNone(pc.powermeter)
+
+    def test_01c_powermeter_can_be_deferred(self):
+        """load_powermeter=False leaves the meter unprobed until asked.
+
+        This is the path the GUI uses so a slow/absent meter can't block the
+        connect: the meter is opened later, off the critical path.
+        """
+        pc = mca.CalibrationProtocol1D(
+            self._config_1d(), load_powermeter=False
+        )
+        self.assertIsNone(pc.powermeter_available)  # None == not yet probed
+        self.assertIsNone(pc.powermeter)
+        # Now open it explicitly (what the GUI's background worker does).
+        available = pc.load_powermeter()
+        self.assertTrue(available)
+        self.assertTrue(pc.powermeter_available)
+        self.assertIsNotNone(pc.powermeter)
+
+    def test_01d_deferred_powermeter_records_failure(self):
+        """A failing deferred load sets available False + an error reason."""
+        cfg = self._config_1d()
+        cfg["powermeter"]["classpath"] = "monet.powermeter.NoSuchMeter"
+        pc = mca.CalibrationProtocol1D(cfg, load_powermeter=False)
+        self.assertIsNone(pc.powermeter_available)
+        available = pc.load_powermeter()
+        self.assertFalse(available)
+        self.assertFalse(pc.powermeter_available)
+        self.assertIsNotNone(pc.powermeter_error)
+
     def test_02_Calibrator1D_drops_nonfinite(self):
         """By default a non-finite reading is dropped and the fit proceeds.
 

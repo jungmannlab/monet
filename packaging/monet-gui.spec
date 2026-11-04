@@ -26,7 +26,11 @@ Notes
 
 import os
 
-from PyInstaller.utils.hooks import collect_data_files, collect_submodules
+from PyInstaller.utils.hooks import (
+    collect_data_files,
+    collect_submodules,
+    copy_metadata,
+)
 
 # SPECPATH is injected by PyInstaller = the directory holding this spec, so the
 # build works regardless of the invocation CWD.
@@ -56,6 +60,51 @@ hiddenimports = [
 datas = [(_examples, "docs/examples")]
 datas += collect_data_files("matplotlib")
 
+# Hardware SDK packages (the [hardware] extra). monet's drivers lazy-import
+# these by name *inside methods* (e.g. attenuation.py's KinesisAttenuator does
+# `from msl.equipment import ...` only when it connects), and several resolve
+# submodules dynamically — msl-equipment's resource backends
+# (`msl.equipment.resources.thorlabs`), nidaqmx — so PyInstaller's static
+# analysis would miss them and a real rig would fail at connect time with
+# ModuleNotFoundError. Pull each in explicitly.
+#
+# One table, two keys, so there is a single place to edit when an SDK is
+# added/renamed (avoids the import-name vs distribution-name drift that let the
+# `nitypes` metadata go missing once):
+#   * import_name  → collect_submodules / collect_data_files (bundle the code)
+#   * dist_name    → copy_metadata(recursive=True) (bundle the .dist-info some
+#                    packages read via importlib.metadata at import; e.g.
+#                    nidaqmx → nitypes `version("nitypes")`)
+# Either may be None. All best-effort: a package absent from a given build
+# (e.g. a [gui]-only build) just contributes nothing instead of failing.
+_HARDWARE_SDKS = (
+    # (import_name, distribution_name)
+    ("msl", "msl-equipment"),
+    ("pyvisa", "PyVISA"),
+    ("nidaqmx", "nidaqmx"),
+    (None, "nitypes"),  # nidaqmx dep; code pulled by analysis, metadata not
+    ("pycobolt", "pycobolt"),
+    ("microscope", "microscope"),
+    ("pycromanager", "pycromanager"),
+    ("ThorlabsPM100", "ThorlabsPM100"),
+    ("serial", None),  # pyserial — base dep, imported dynamically by drivers
+)
+for _imp, _dist in _HARDWARE_SDKS:
+    if _imp:
+        try:
+            hiddenimports += collect_submodules(_imp)
+        except Exception:
+            pass
+        try:
+            datas += collect_data_files(_imp)
+        except Exception:
+            pass
+    if _dist:
+        try:
+            datas += copy_metadata(_dist, recursive=True)
+        except Exception:
+            pass
+
 a = Analysis(
     [_launcher],
     pathex=[],
@@ -65,9 +114,11 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    # Trim heavyweight libs that are only needed for the [hardware]/[server]
-    # extras and are not part of the GUI build, so the exe stays smaller.
-    excludes=["tkinter", "fastapi", "uvicorn", "nidaqmx", "pycromanager"],
+    # Trim libs that aren't part of this build: the [server] web stack (the GUI
+    # never imports it) and tkinter (matplotlib's Qt backend is used, not Tk).
+    # nidaqmx / pycromanager are NO LONGER excluded — the installer now bundles
+    # the [hardware] extra so a real rig can connect.
+    excludes=["tkinter", "fastapi", "uvicorn"],
     noarchive=False,
 )
 pyz = PYZ(a.pure)

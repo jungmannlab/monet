@@ -10,6 +10,62 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
+## [0.6.4] - 2026-11-04
+
+### Added
+- **Excel → server migration in the GUI.** A new **Setup ▸ Migrate Excel
+  database → server…** dialog uploads an existing Excel calibration database
+  to a monet server, with a **Preview** (dry-run) that reports how many records
+  are new vs. already present, a progress bar, and an optional "re-point this
+  microscope at the server" step. It safely **merges** into a server that
+  already holds data — rows with the same microscope/wavelength/power/date/time
+  are skipped. The setup wizard gains a matching optional **"Import existing
+  data"** step to seed a freshly stood-up server. Both reuse the existing
+  `monet migrate` engine (now with a progress callback and a `dry_run`
+  preview); init-populating a fresh server no longer prints a spurious
+  "may create duplicates" warning.
+
+### Fixed
+- **Windows installer now bundles the hardware SDKs.** The frozen build was
+  `[gui]`-only, so connecting a real rig raised `ModuleNotFoundError` for the
+  driver's vendor SDK (e.g. `msl` for the Thorlabs `KinesisAttenuator`). The
+  build now installs the `[hardware]` extra and the PyInstaller spec collects
+  each SDK's submodules (msl-equipment, pyvisa, nidaqmx, pycobolt,
+  python-microscope, pycromanager, ThorlabsPM100), so a rig can connect with no
+  separate Python install. Vendor DLLs/runtimes (Thorlabs Kinesis, NI-DAQmx,
+  Micro-Manager) still have to be installed on the acquisition PC. `--selfcheck`
+  now also verifies the core SDKs import, to catch an incomplete bundle at
+  release time.
+- GUI **Help ▸ Check for Updates…**: when a newer release is found, the
+  download URL is now a clickable link (the update, update-error, and About
+  dialogs all follow their links to the browser).
+- **GUI no longer crashes on connect.** Binding a connection called `set_pc`
+  on every tab, but the new Doctor tab didn't implement it, so a successful
+  connect raised and PyQt6 aborted the process with no message. The Doctor tab
+  now implements `set_pc`, each tab is isolated during bind, and a global
+  `sys.excepthook` turns any unhandled GUI error into a logged, visible dialog
+  instead of a silent abort.
+- **"Connecting to <rig>…" is shown again.** The Doctor tab's background
+  server check was posting to the shared status bar and overwriting the connect
+  status; it now reports only in its own view.
+- **Connecting is responsive when the power meter is absent.** The power meter
+  is now opened in the background *after* the GUI comes up, instead of on the
+  connect's critical path — so an absent meter (whose vendor driver blocks on a
+  hardware scan) no longer delays the whole connect. The power-dependent
+  controls grey out / enable when the probe resolves. The deferred probe no
+  longer logs a spurious "PowerMeter not available" warning during its pending
+  window, and always resolves (never leaves the GUI stuck on "checking…").
+- Connect/robustness hardening (code-review follow-ups): re-entrant connects
+  can't drop a running worker thread; a shared base `Tab` class makes the
+  tab/connection contract structural; the Doctor tab probes the server lazily
+  (first view) instead of on every launch; the log-file path has one source of
+  truth; and the Windows selfcheck won't let an unpinned SDK (pycobolt) block a
+  release.
+
+### Changed
+- License copyright line now spans **2022-2026** (was 2022), in `LICENSE.md`
+  (the installer's license page + GUI Help ▸ License).
+
 ## [0.6.3] - 2026-11-03
 
 ### Fixed

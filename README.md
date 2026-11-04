@@ -69,9 +69,15 @@ The same Release also carries the **portable `monet-gui.exe`** for anyone who
 prefers to run it without installing. Both are built by CI
 (`.github/workflows/release-windows.yml`): the exe from
 `packaging/monet-gui.spec` (PyInstaller) and the installer from
-`packaging/monet-gui.iss` (Inno Setup). Real-instrument SDKs (NI-DAQ, Thorlabs
-TLPM/Kinesis, pyvisa, …) still require their vendor drivers installed on the
-machine; the bundled GUI drives whatever is present.
+`packaging/monet-gui.iss` (Inno Setup).
+
+The build bundles the `[hardware]` extra, so the **vendor SDK Python packages**
+(msl-equipment, pyvisa, nidaqmx, pycobolt, python-microscope, pycromanager,
+ThorlabsPM100) ship inside the exe — a real rig can connect without a separate
+Python install. What the exe **cannot** carry is each vendor's **DLL/runtime**:
+Thorlabs Kinesis (`C:/Program Files/Thorlabs/Kinesis`), the NI-DAQmx runtime,
+Micro-Manager, etc. must still be installed on the acquisition PC; the bundled
+GUI drives whatever is present.
 
 Once installed, **Help ▸ Check for Updates…** compares the running version
 against the latest GitHub release, and the GUI's **Doctor** tab shows where
@@ -102,6 +108,16 @@ The wizard also records the microscope it authored as **`MONET_MICROSCOPE`** in
 the `.env` — the microscope the GUI connects to when launched without a `<Name>`
 argument (e.g. from the installed build's Start-menu shortcut). A command-line
 name still overrides it: `python -m monet gui OtherScope`.
+
+**Moving an Excel database onto a server.** If a rig already has an Excel
+calibration database and you're adopting the central server, use
+**Setup ▸ Migrate Excel database → server…** in the GUI (or the setup wizard's
+optional *Import existing data* step, or the CLI `python -m monet migrate
+--source power_database.xlsx --url http://server:8000`). It uploads the Excel
+records to the server and **merges** into whatever is already there —
+rows with the same microscope / wavelength / power / date / time are skipped,
+so it's safe to re-run and to point several rigs' databases at one server.
+Use the dialog's **Preview** to see how many records are new before committing.
 
 ### Single-microscope setup (Excel database)
 

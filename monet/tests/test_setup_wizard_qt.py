@@ -186,5 +186,44 @@ class TestSetupWizard(unittest.TestCase):
         )
 
 
+class TestMigrateUI(unittest.TestCase):
+    def test_wizard_includes_import_page(self):
+        wiz = swq.SetupWizard()
+        titles = [wiz.page(i).title() for i in wiz.pageIds()]
+        self.assertTrue(
+            any("Import existing data" in t for t in titles), titles
+        )
+
+    def test_migrate_page_body_follows_checkbox(self):
+        page = swq._MigratePage()
+        self.assertFalse(page.body.isEnabled())
+        page.enable_cb.setChecked(True)
+        self.assertTrue(page.body.isEnabled())
+
+    def test_migrate_dialog_prefills_server(self):
+        dlg = swq.MigrateDialog(default_server="http://srv:8000")
+        self.assertEqual(dlg._url_edit.text(), "http://srv:8000")
+
+    def test_migrate_dialog_rejects_missing_inputs(self):
+        dlg = swq.MigrateDialog()
+        # no file, no url -> validation returns None and does not start a worker
+        self.assertIsNone(dlg._inputs())
+        dlg._start(dry_run=True)
+        self.assertIsNone(dlg._worker)
+
+    def test_migrate_worker_emits_done(self):
+        # Drive the worker synchronously by patching the engine.
+        from unittest import mock
+
+        with mock.patch(
+            "monet.migrate.migrate_excel_to_server", return_value=(3, 1)
+        ):
+            worker = swq.MigrateWorker("x.xlsx", "http://srv:8000")
+            results = []
+            worker.done.connect(lambda i, s: results.append((i, s)))
+            worker.run()  # run() directly (no thread) for a deterministic test
+        self.assertEqual(results, [(3, 1)])
+
+
 if __name__ == "__main__":
     unittest.main()
