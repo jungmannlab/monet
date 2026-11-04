@@ -10,6 +10,8 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
+## [0.6.4] - 2026-11-04
+
 ### Added
 - **Excel → server migration in the GUI.** A new **Setup ▸ Migrate Excel
   database → server…** dialog uploads an existing Excel calibration database
