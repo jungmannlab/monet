@@ -10,6 +10,21 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
+## [0.6.8] - 2026-11-04
+
+### Added
+- Setup wizard, Microscope page: **pick an existing entry** from the shared
+  `configs.yaml` by name (a dropdown alongside "author a new entry"). Choosing
+  one makes it this rig's default microscope without re-authoring it or its
+  protocol — useful when the lab's microscopes are already defined centrally.
+
+### Changed
+- Packaging: declare the license as the SPDX string `BSD-2-Clause` with
+  `license-files = ["LICENSE.md"]` and drop the deprecated `License ::`
+  classifier (requires `setuptools>=77`). Clears the `project.license`
+  TOML-table and license-classifier deprecation warnings seen when installing
+  monet on the server.
+
 ## [0.6.7] - 2026-11-04
 
 ### Added

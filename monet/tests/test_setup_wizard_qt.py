@@ -186,6 +186,67 @@ class TestSetupWizard(unittest.TestCase):
         )
 
 
+class TestPickExistingMicroscope(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.cfg = os.path.join(self.tmp, "configs.yaml")
+        with open(self.cfg, "w") as f:
+            yaml.dump(
+                {
+                    "Stokes": {"database": "http://s:8000"},
+                    "Voyager": {"database": "./v.xlsx"},
+                },
+                f,
+            )
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _microscope_page(self, wiz):
+        for i in wiz.pageIds():
+            if wiz.page(i).title() == "Microscope":
+                return wiz.page(i)
+        raise AssertionError("no microscope page")
+
+    def test_existing_entries_listed_and_selectable(self):
+        wiz = swq.SetupWizard()
+        wiz.configs_path = self.cfg
+        page = self._microscope_page(wiz)
+        page.initializePage()
+        names = [
+            page.existing_combo.itemText(i)
+            for i in range(page.existing_combo.count())
+        ]
+        self.assertIn("Stokes", names)
+        self.assertIn("Voyager", names)
+
+    def test_picking_existing_sets_default_without_authoring(self):
+        wiz = swq.SetupWizard()
+        wiz.configs_path = self.cfg
+        page = self._microscope_page(wiz)
+        page.initializePage()
+        page.existing_combo.setCurrentIndex(
+            page.existing_combo.findData("Stokes")
+        )
+        # author section greys out; validate reuses the entry as-is
+        self.assertFalse(page.body.isEnabled())
+        self.assertTrue(page.validatePage())
+        self.assertEqual(wiz.microscope_name, "Stokes")
+        self.assertIsNone(wiz.microscope_entry)  # not re-authored
+        self.assertIsNone(wiz.microscope_answers)
+
+    def test_commit_sets_default_microscope_for_existing(self):
+        wiz = swq.SetupWizard()
+        wiz.configs_path = self.cfg
+        wiz.microscope_name = "Stokes"
+        wiz.microscope_entry = None
+        env_file = os.path.join(self.tmp, ".env")
+        summary = wiz.commit(env_file)
+        self.assertIn("Using existing microscope 'Stokes'", summary)
+        env = sc.read_env(env_file)
+        self.assertEqual(env[sc.ENV_MICROSCOPE], "Stokes")
+
+
 class TestPasswordReveal(unittest.TestCase):
     def test_reveal_button_toggles_echo_mode(self):
         from PyQt6.QtWidgets import QLineEdit, QToolButton
