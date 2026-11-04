@@ -11,6 +11,8 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 ## [Unreleased]
 
 ### Added
+- Set Power tab: **auto-off timer** — arm a countdown (default 8 h) after which
+  every laser is switched off automatically, so lasers aren't left on overnight.
 - Help menu: **Server tokens (mint / rotate / revoke)…** — copy-paste SSH
   commands to manage tokens on the server (e.g. mint a read token for the web
   dashboard, a write token for a rig), prefilled with the configured server.

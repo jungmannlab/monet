@@ -634,6 +634,37 @@ class TestConnectReentrancyAndLazyProbe(unittest.TestCase):
                 os.environ["MONET_LOG_FILE"] = old
 
 
+class TestAutoOffTimer(unittest.TestCase):
+    def test_format_countdown(self):
+        self.assertEqual(SetPowerTab._format_countdown(3661), "off in 1:01:01")
+        self.assertEqual(SetPowerTab._format_countdown(0), "off in 0:00:00")
+        self.assertEqual(SetPowerTab._format_countdown(-10), "off in 0:00:00")
+
+    def test_arm_and_cancel(self):
+        tab = SetPowerTab()
+        tab._btn_autooff.setChecked(True)
+        self.assertIsNotNone(tab._autooff_deadline)
+        self.assertFalse(tab._autooff_hours.isEnabled())
+        self.assertEqual(tab._btn_autooff.text(), "Cancel")
+        self.assertTrue(tab._autooff_timer.isActive())
+        tab._btn_autooff.setChecked(False)
+        self.assertIsNone(tab._autooff_deadline)
+        self.assertTrue(tab._autooff_hours.isEnabled())
+        self.assertFalse(tab._autooff_timer.isActive())
+
+    def test_deadline_passed_fires_all_off_and_disarms(self):
+        import time
+        from unittest import mock
+
+        tab = SetPowerTab()
+        tab._btn_autooff.setChecked(True)
+        tab._autooff_deadline = time.monotonic() - 1  # already expired
+        with mock.patch.object(tab, "_on_all_off") as off:
+            tab._autooff_tick()
+        off.assert_called_once()
+        self.assertEqual(tab._btn_autooff.text(), "Arm")  # disarmed
+
+
 class TestExceptHook(unittest.TestCase):
     def test_install_is_idempotent_and_tagged(self):
         orig = sys.excepthook
