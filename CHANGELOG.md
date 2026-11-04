@@ -10,6 +10,8 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
+## [0.6.5] - 2026-11-04
+
 ### Fixed
 - **Installer bundles paramiko (the `[setup]` extra).** The setup wizard's
   automated SSH server install failed on the installed build with "needs
