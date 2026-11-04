@@ -662,6 +662,14 @@ class TestAutoOffTimer(unittest.TestCase):
         self.assertTrue(tab._autooff_hours.isEnabled())
         self.assertFalse(tab._autooff_timer.isActive())
 
+    def test_auto_off_is_expert_only(self):
+        tab = SetPowerTab()
+        self.assertTrue(tab._autooff_group.isHidden())  # normal view
+        tab.set_expert_view(True)
+        self.assertFalse(tab._autooff_group.isHidden())
+        tab.set_expert_view(False)
+        self.assertTrue(tab._autooff_group.isHidden())
+
     def test_disconnect_cancels_armed_auto_off(self):
         tab = SetPowerTab()
         tab._btn_autooff.setChecked(True)

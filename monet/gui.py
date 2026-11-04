@@ -2374,6 +2374,7 @@ class SetPowerTab(_MonetTab):
             self._hw_att_group,
             self._hw_pwr_group,
             self._hw_sep,
+            self._autooff_group,
         ):
             w.setVisible(self._expert)
 
@@ -2397,19 +2398,21 @@ class SetPowerTab(_MonetTab):
         self._btn_alloff.clicked.connect(self._on_all_off)
         laser_row.addWidget(self._btn_alloff)
         laser_row.addStretch()
-        layout.addLayout(laser_row)
 
-        # Safety: automatically switch all lasers off after a set time (e.g. a
-        # full day's session), so lasers aren't left on overnight.
-        auto_row = QHBoxLayout()
-        auto_row.addWidget(QLabel("Auto-off all lasers after:"))
+        # Safety auto-off (expert-only): switch all lasers off after a set time
+        # so they aren't left on overnight. Grouped and added at the right edge
+        # of the laser row (after the stretch), right-aligned with the window.
+        self._autooff_group = QWidget()
+        ao = QHBoxLayout(self._autooff_group)
+        ao.setContentsMargins(0, 0, 0, 0)
+        ao.addWidget(QLabel("Auto-off after:"))
         self._autooff_hours = QDoubleSpinBox()
         self._autooff_hours.setRange(0.1, 24.0)
         self._autooff_hours.setSingleStep(0.5)
         self._autooff_hours.setDecimals(1)
         self._autooff_hours.setValue(8.0)
         self._autooff_hours.setSuffix(" h")
-        auto_row.addWidget(self._autooff_hours)
+        ao.addWidget(self._autooff_hours)
         self._btn_autooff = QPushButton("Arm")
         self._btn_autooff.setCheckable(True)
         self._btn_autooff.setToolTip(
@@ -2417,11 +2420,11 @@ class SetPowerTab(_MonetTab):
             "cut-off). Re-arming resets the countdown."
         )
         self._btn_autooff.toggled.connect(self._on_autooff_toggled)
-        auto_row.addWidget(self._btn_autooff)
+        ao.addWidget(self._btn_autooff)
         self._autooff_label = QLabel("")
-        auto_row.addWidget(self._autooff_label)
-        auto_row.addStretch()
-        layout.addLayout(auto_row)
+        ao.addWidget(self._autooff_label)
+        laser_row.addWidget(self._autooff_group)
+        layout.addLayout(laser_row)
         self._autooff_deadline = None
         self._autooff_timer = QTimer(self)
         self._autooff_timer.setInterval(1000)
