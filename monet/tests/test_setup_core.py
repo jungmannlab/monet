@@ -724,6 +724,57 @@ class TestServerHelpers(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 sc.remote_mint_token("h", "u")
 
+    def test_remote_update_server_over_ssh(self):
+        # In-place upgrade of a running server: re-run setup-server.sh + restart
+        # + health-check, but DON'T mint a token (the rig keeps its own).
+        record = {"channels": [], "connect_kwargs": None}
+        fake = _fake_paramiko(
+            record,
+            {"MONET_IS_ACTIVE": "MONET_IS_ACTIVE=active\n"},
+        )
+        with mock.patch.dict(sys.modules, {"paramiko": fake}):
+            result = sc.remote_update_server(
+                "192.168.0.9", "lab", password="pw", port=9001
+            )
+        self.assertEqual(result, {"url": "http://192.168.0.9:9001"})
+        self.assertNotIn("token", result)
+        cmds = [c.cmd for c in record["channels"]]
+        # It re-ran the installer and restarted, but minted no token.
+        self.assertTrue(any("setup-server.sh" in c for c in cmds))
+        self.assertTrue(any("MONET_PORT=9001" in c for c in cmds))
+        self.assertTrue(any("systemctl restart monet" in c for c in cmds))
+        self.assertFalse(any("token add" in c for c in cmds))
+        sudo_chans = [c for c in record["channels"] if "sudo -S" in c.cmd]
+        self.assertTrue(sudo_chans)
+        for c in sudo_chans:
+            self.assertEqual(c.sent, b"pw\n")
+
+    def test_remote_update_server_fails_if_service_not_active(self):
+        record = {"channels": [], "connect_kwargs": None}
+        fake = _fake_paramiko(
+            record,
+            {
+                "MONET_IS_ACTIVE": "MONET_IS_ACTIVE=failed\n",
+                "status monet": "monet.service: failed\n",
+            },
+        )
+        with mock.patch.dict(sys.modules, {"paramiko": fake}):
+            with self.assertRaises(RuntimeError) as cm:
+                sc.remote_update_server("h", "u", password="p")
+        self.assertIn("did not come up", str(cm.exception))
+
+    def test_remote_update_server_without_paramiko_raises(self):
+        real_import = __import__
+
+        def fake_import(name, *args, **kwargs):
+            if name == "paramiko":
+                raise ModuleNotFoundError("no paramiko")
+            return real_import(name, *args, **kwargs)
+
+        with mock.patch("builtins.__import__", side_effect=fake_import):
+            with self.assertRaises(RuntimeError):
+                sc.remote_update_server("h", "u")
+
 
 class TestFrozenPaths(unittest.TestCase):
     """The standalone (PyInstaller) build must persist .env outside the

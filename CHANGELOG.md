@@ -10,6 +10,18 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
+## [0.6.14] - 2026-11-04
+
+### Added
+- **Setup ▸ Update monet server (SSH)…** — upgrade the server (which runs on
+  its own machine) to the latest release and restart its systemd service, over
+  SSH, from the GUI. "Check for Updates" only updates the GUI itself; this
+  re-runs the idempotent `setup-server.sh` and restarts `monet` **without**
+  minting a new token (the rig keeps its own). Host/port prefill from the
+  configured server URL; you supply SSH credentials. Backed by a new
+  `remote_update_server()` that shares the install path's SSH connect / run /
+  health-poll helpers.
+
 ## [0.6.13] - 2026-11-04
 
 ### Added

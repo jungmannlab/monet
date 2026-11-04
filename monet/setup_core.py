@@ -1220,6 +1220,27 @@ def _token_add_cmd(sudo, rig, scope="write"):
     )
 
 
+def _setup_script_cmd(sudo, git_ref, bind_host, port):
+    """The command that downloads and runs the idempotent setup-server.sh.
+
+    Passes the script's variables via ``env``, not the ``sudo VAR=value
+    command`` form: sudo-rs (the Rust sudo default on recent Ubuntu) does not
+    support setting env vars on the sudo command line, so ``sudo env VAR=value
+    …`` is the portable way to run the script as root with its configuration.
+    """
+    return (
+        "curl -fsSL {url} -o /tmp/setup-server.sh && "
+        + sudo
+        + "env GIT_REF={ref} MONET_HOST={bind} MONET_PORT={port} "
+        "bash /tmp/setup-server.sh"
+    ).format(
+        url=SETUP_SCRIPT_URL.format(ref=git_ref),
+        ref=git_ref,
+        bind=bind_host,
+        port=port,
+    )
+
+
 def _wait_service_active(run, sudo):
     """Poll ``systemctl is-active monet`` for ~15 s after a (re)start.
 
@@ -1297,6 +1318,43 @@ def remote_mint_token(
     return token
 
 
+def remote_update_server(
+    host,
+    user,
+    password=None,
+    key_filename=None,
+    port=8000,
+    ssh_port=22,
+    git_ref=DEFAULT_GIT_REF,
+    bind_host="0.0.0.0",
+    on_output=None,
+    sudo_password=None,
+):
+    """Upgrade an already-installed monet server in place over SSH; restart it.
+
+    Re-runs the idempotent ``deploy/setup-server.sh`` (which pulls the latest
+    code at ``git_ref``) then restarts the service and confirms it came back up.
+    Unlike :func:`remote_install_server` it does NOT mint a token — the rig's
+    existing token is left untouched — so it is safe to run against a live
+    server to pick up a new release. Needs ``paramiko`` and that ``user`` can
+    ``sudo``. Returns ``{'url': ...}``. Raises on any failure.
+
+    ``on_output`` (optional) is called with each command's combined output for
+    live progress display.
+    """
+    client, run = _ssh_connect_and_runner(
+        host, user, password, key_filename, ssh_port, sudo_password, on_output
+    )
+    sudo = "sudo -S "
+    try:
+        run(_setup_script_cmd(sudo, git_ref, bind_host, port), sudo=True)
+        run(sudo + "systemctl restart monet", sudo=True)
+        _wait_service_active(run, sudo)
+    finally:
+        client.close()
+    return {"url": "http://{}:{}".format(host, port)}
+
+
 def remote_install_server(
     host,
     user,
@@ -1339,23 +1397,7 @@ def remote_install_server(
     # password line is fed.
     sudo = "sudo -S "
     try:
-        # Pass the setup-server.sh variables via `env`, not the
-        # `sudo VAR=value command` form: sudo-rs (the Rust sudo default on
-        # recent Ubuntu) does not support setting env vars on the sudo command
-        # line, so `sudo env VAR=value …` is the portable way to run the script
-        # as root with its configuration.
-        install = (
-            "curl -fsSL {url} -o /tmp/setup-server.sh && "
-            + sudo
-            + "env GIT_REF={ref} MONET_HOST={bind} MONET_PORT={port} "
-            "bash /tmp/setup-server.sh"
-        ).format(
-            url=SETUP_SCRIPT_URL.format(ref=git_ref),
-            ref=git_ref,
-            bind=bind_host,
-            port=port,
-        )
-        run(install, sudo=True)
+        run(_setup_script_cmd(sudo, git_ref, bind_host, port), sudo=True)
         token_out = run(_token_add_cmd(sudo, rig), sudo=True)
         run(sudo + "systemctl restart monet", sudo=True)
         _wait_service_active(run, sudo)
