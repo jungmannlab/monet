@@ -576,6 +576,55 @@ class TestConnectRobustness(unittest.TestCase):
         self.assertIs(w._pc, current)
 
 
+class TestConnectReentrancyAndLazyProbe(unittest.TestCase):
+    def test_connect_microscope_ignores_reentrant_call(self):
+        from unittest import mock
+
+        w = MonetWidget(show_toolbar=True, tabs=("set_power",))
+        with mock.patch.object(ConnectWorker, "start", lambda self: None):
+            w.connect_microscope("test")
+        first = w._connect_worker
+        self.assertIsNotNone(first)
+        # A second call while the worker "is running" must not replace it
+        # (rebinding would drop the live QThread → Qt abort).
+        with (
+            mock.patch.object(ConnectWorker, "isRunning", lambda self: True),
+            mock.patch.object(ConnectWorker, "start", lambda self: None),
+        ):
+            w.connect_microscope("test")
+        self.assertIs(w._connect_worker, first)
+
+    def test_doctor_tab_probes_lazily_not_on_construction(self):
+        tab = DoctorTab()
+        self.assertFalse(tab._probed)
+        self.assertIsNone(tab._worker)  # no eager server probe
+        tab.show()  # first show triggers the deferred probe flag
+        self.assertTrue(tab._probed)
+
+    def test_doctor_log_path_matches_shared_helper(self):
+        import monet
+
+        self.assertEqual(DoctorTab._log_path(), monet.log_file_path())
+
+    def test_log_file_path_honors_env(self):
+        import os
+
+        import monet
+
+        old = os.environ.get("MONET_LOG_FILE")
+        os.environ["MONET_LOG_FILE"] = os.path.join("x", "y", "monet.log")
+        try:
+            self.assertEqual(
+                monet.log_file_path(),
+                os.path.abspath(os.path.join("x", "y", "monet.log")),
+            )
+        finally:
+            if old is None:
+                os.environ.pop("MONET_LOG_FILE", None)
+            else:
+                os.environ["MONET_LOG_FILE"] = old
+
+
 class TestExceptHook(unittest.TestCase):
     def test_install_is_idempotent_and_tagged(self):
         orig = sys.excepthook

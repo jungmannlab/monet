@@ -37,7 +37,15 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
   is now opened in the background *after* the GUI comes up, instead of on the
   connect's critical path — so an absent meter (whose vendor driver blocks on a
   hardware scan) no longer delays the whole connect. The power-dependent
-  controls grey out / enable when the probe resolves.
+  controls grey out / enable when the probe resolves. The deferred probe no
+  longer logs a spurious "PowerMeter not available" warning during its pending
+  window, and always resolves (never leaves the GUI stuck on "checking…").
+- Connect/robustness hardening (code-review follow-ups): re-entrant connects
+  can't drop a running worker thread; a shared base `Tab` class makes the
+  tab/connection contract structural; the Doctor tab probes the server lazily
+  (first view) instead of on every launch; the log-file path has one source of
+  truth; and the Windows selfcheck won't let an unpinned SDK (pycobolt) block a
+  release.
 
 ### Changed
 - License copyright line now spans **2022-2026** (was 2022), in `LICENSE.md`

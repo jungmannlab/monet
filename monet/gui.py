@@ -930,11 +930,31 @@ class CalibrationPlots(QWidget):
 
 
 # ---------------------------------------------------------------------------
+# Tab base class
+# ---------------------------------------------------------------------------
+
+
+class _MonetTab(QWidget):
+    """Base for the tabs embedded in :class:`MonetWidget`.
+
+    ``MonetWidget`` calls ``set_pc(pc)`` on *every* tab when a microscope
+    connects, so a tab that ignores the live connection (e.g. the Doctor tab)
+    must still provide the method — otherwise the connect slot raises and PyQt6
+    aborts the process. The default is a no-op; tabs that use the connection
+    override it. This makes the tab/connection contract structural rather than
+    a per-class convention.
+    """
+
+    def set_pc(self, pc):
+        """Bind (or re-bind) the calibration-protocol object; no-op default."""
+
+
+# ---------------------------------------------------------------------------
 # Tab 1 — Calibrate
 # ---------------------------------------------------------------------------
 
 
-class CalibrateTab(QWidget):
+class CalibrateTab(_MonetTab):
     """Tab for running calibration protocols."""
 
     # Status messages are emitted via the `status` signal so the tab can be
@@ -2021,7 +2041,7 @@ class CalibrateTab(QWidget):
 # ---------------------------------------------------------------------------
 
 
-class AdjustTab(QWidget):
+class AdjustTab(_MonetTab):
     """Tab for direct attenuator and laser power adjustment.
 
     No laser selector — operations act on whichever laser is currently
@@ -2317,7 +2337,7 @@ class AdjustTab(QWidget):
 # ---------------------------------------------------------------------------
 
 
-class SetPowerTab(QWidget):
+class SetPowerTab(_MonetTab):
     """Tab for setting output power using calibration data."""
 
     status = pyqtSignal(str, int)
@@ -4328,7 +4348,7 @@ class RunPairDialog(QDialog):
             self._canvas.draw_idle()
 
 
-class DatabaseTab(QWidget):
+class DatabaseTab(_MonetTab):
     """Tab for exploring calibration runs and objective transmission factors.
 
     The left table lists 2D calibration *runs* (grouped from the database by
@@ -5050,7 +5070,7 @@ class DatabaseTab(QWidget):
         worker.start()
 
 
-class DoctorTab(QWidget):
+class DoctorTab(_MonetTab):
     """Read-only diagnostics: where monet reads its configuration and whether
     the calibration server is reachable + authenticated.
 
@@ -5067,17 +5087,19 @@ class DoctorTab(QWidget):
         self._worker = None
         self._server_status = None
         self._server_url = None
+        self._probed = False
         self._build_ui()
         self._render()
-        # Probe the server once the event loop is running (non-blocking).
-        QTimer.singleShot(0, self._recheck)
 
-    def set_pc(self, pc):
-        """Part of the tab interface (``MonetWidget`` calls ``set_pc`` on every
-        tab when a microscope connects). The diagnostics view is about files
-        and server reachability, not the live connection, so this is a no-op —
-        but it must exist, or binding a connection would raise and, via Qt's
-        slot handling, abort the app."""
+    def showEvent(self, event):
+        # Probe the server lazily — the first time the tab is actually shown,
+        # not eagerly on construction. A standalone GUI launch where the user
+        # never opens the Doctor tab then pays no unsolicited network probe (and
+        # no timeout on an offline/slow-LAN rig).
+        super().showEvent(event)
+        if not self._probed:
+            self._probed = True
+            QTimer.singleShot(0, self._recheck)
 
     def _build_ui(self):
         layout = QVBoxLayout(self)
@@ -5146,12 +5168,11 @@ class DoctorTab(QWidget):
 
     @staticmethod
     def _log_path():
-        import os
+        # Single source of truth, shared with the logging setup, so the
+        # reported path can't drift from where monet actually writes.
+        import monet
 
-        log_file = os.environ.get("MONET_LOG_FILE") or os.path.join(
-            os.environ.get("MONET_LOG_DIR", ""), "monet.log"
-        )
-        return os.path.abspath(log_file)
+        return monet.log_file_path()
 
     def report_text(self):
         """The full diagnostics report as plain text (also used by tests)."""
@@ -5425,6 +5446,20 @@ class MonetWidget(QWidget):
     def connect_microscope(self, name=None):
         """Start a ``ConnectWorker`` for ``name`` (or the currently selected
         microscope). Emits ``connect_error`` on failure."""
+        # Ignore a re-entrant request while a connect is already running:
+        # rebinding self._connect_worker would drop the only reference to the
+        # still-running QThread (now longer-lived, since it also probes the
+        # power meter), and Qt aborts if a running QThread is garbage-collected.
+        # The toolbar disables its button during connect, but this guards the
+        # programmatic entry point (hosts / tests) too.
+        if (
+            self._connect_worker is not None
+            and self._connect_worker.isRunning()
+        ):
+            logger.debug(
+                "connect already in progress; ignoring re-entrant call"
+            )
+            return
         if name is not None and self._scope_combo is not None:
             self.set_microscope(name)
         if name is None:
@@ -5478,6 +5513,13 @@ class MonetWidget(QWidget):
         exposing ``.instrument`` (an ``IlluminationLaserControl``),
         ``.powermeter``, and ``.protocol``. Skips the in-widget
         ``ConnectWorker``.
+
+        The ``pc`` must be *fully built* — in particular its power meter must
+        already be opened (``powermeter_available`` is ``True``/``False``, not
+        ``None``). Unlike the toolbar path, ``set_pc`` does no background probe,
+        so a pc built with ``load_powermeter=False`` would leave the Calibrate
+        tab greyed with nothing to ever re-enable it. Call
+        ``pc.load_powermeter()`` before binding.
         """
         self._pc = pc
         # Tag the pc with its CONFIGS key (if known) so the Calibrate tab can

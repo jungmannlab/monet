@@ -22,6 +22,22 @@ except ImportError:  # source tree that was never built/installed, no tag
     __version__ = "unknown"
 
 
+def log_file_path():
+    """Resolve the absolute path of monet's log file.
+
+    Single source of truth so the logger and anything that *reports* the log
+    location (e.g. the GUI Doctor tab) can't drift. Configurable so monet can
+    run from a read-only/unwritable working directory (e.g. a systemd service
+    whose CWD is ``/``): ``MONET_LOG_FILE`` sets the full path; ``MONET_LOG_DIR``
+    sets a directory (file is ``monet.log``); neither set ⇒ ``monet.log`` in
+    the CWD, as before.
+    """
+    log_file = os.environ.get("MONET_LOG_FILE") or os.path.join(
+        os.environ.get("MONET_LOG_DIR", ""), "monet.log"
+    )
+    return os.path.abspath(log_file)
+
+
 # configure logger and log that this shouldn't be done here
 def config_logger():
     logger = logging.getLogger(__name__)
@@ -29,13 +45,7 @@ def config_logger():
     formatter = logging.Formatter(
         "%(asctime)s | %(name)s | %(levelname)s -> %(message)s"
     )
-    # Log-file location is configurable so monet can run from a read-only or
-    # unwritable working directory (e.g. a systemd service whose CWD is `/`):
-    # MONET_LOG_FILE sets the full path; MONET_LOG_DIR sets a directory (file
-    # is monet.log). Neither set ⇒ ``monet.log`` in the CWD, as before.
-    log_file = os.environ.get("MONET_LOG_FILE") or os.path.join(
-        os.environ.get("MONET_LOG_DIR", ""), "monet.log"
-    )
+    log_file = log_file_path()
     # Idempotent: if a rotating handler for this same file is already attached
     # (config_logger() re-run after import, or a second entry point — e.g.
     # `python -m monet` — calling it again), don't open a *second* OS handle on
