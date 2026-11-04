@@ -5809,6 +5809,9 @@ class MonetMainWindow(QMainWindow):
         act_migrate = QAction("Migrate Excel database → server…", self)
         act_migrate.triggered.connect(self._run_migrate_dialog)
         setup_menu.addAction(act_migrate)
+        act_update_srv = QAction("Update monet server (SSH)…", self)
+        act_update_srv.triggered.connect(self._run_update_server)
+        setup_menu.addAction(act_update_srv)
 
         help_menu = self.menuBar().addMenu("&Help")
         act_update = QAction("Check for Updates…", self)
@@ -5953,6 +5956,11 @@ class MonetMainWindow(QMainWindow):
         from monet.setup_wizard_qt import open_migrate_dialog
 
         open_migrate_dialog(self)
+
+    def _run_update_server(self):
+        from monet.setup_wizard_qt import open_update_server
+
+        open_update_server(self)
 
     def _run_edit_config(self):
         from monet.setup_wizard_qt import open_edit_config

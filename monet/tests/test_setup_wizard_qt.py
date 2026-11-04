@@ -164,6 +164,45 @@ class TestSetupWizard(unittest.TestCase):
         page._mint_existing()
         self.assertEqual(page.token_edit.text(), "")
 
+    def test_update_server_dialog_prefills_and_runs(self):
+        # The update-server dialog prefills host/port from the URL and runs the
+        # in-place update over SSH (no token minted).
+        dlg = swq.UpdateServerDialog(server_url="http://srv.lab:9001")
+        self.assertEqual(dlg.host_edit.text(), "srv.lab")
+        self.assertEqual(dlg.port_spin.value(), 9001)
+        dlg.ssh_user.setText("lab")
+        dlg.ssh_pw.setText("pw")
+
+        captured = {}
+
+        class _FakeUpdateWorker(swq.QThread):
+            output = swq.pyqtSignal(str)
+            done = swq.pyqtSignal(object)
+            failed = swq.pyqtSignal(str)
+
+            def __init__(self, kwargs, parent=None):
+                super().__init__(parent)
+                captured["kwargs"] = kwargs
+
+            def isRunning(self):
+                return False
+
+            def start(self):
+                self.done.emit({"url": "http://srv.lab:9001"})
+
+        with mock.patch.object(swq, "_SshUpdateWorker", _FakeUpdateWorker):
+            dlg._update()
+
+        self.assertEqual(captured["kwargs"]["host"], "srv.lab")
+        self.assertEqual(captured["kwargs"]["user"], "lab")
+        self.assertEqual(captured["kwargs"]["port"], 9001)
+        self.assertTrue(dlg.btn_update.isEnabled())
+
+    def test_update_server_dialog_needs_host_and_user(self):
+        dlg = swq.UpdateServerDialog(server_url=None)
+        dlg._update()  # nothing entered -> guarded, button stays enabled
+        self.assertTrue(dlg.btn_update.isEnabled())
+
     def test_protocol_page_authors_from_cfg(self):
         cfg_path = os.path.join(self.tmp, "scope.cfg")
         with open(cfg_path, "w") as f:
