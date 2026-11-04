@@ -711,16 +711,30 @@ def migrate_local_db_to_server(xlsx_path, server_url):
     return migrate_excel_to_server(xlsx_path, server_url)
 
 
+def read_microscope_entry(name, configs_path):
+    """Return the config entry for ``name`` read from the ``configs_path`` file.
+
+    Unlike the in-memory :data:`monet.CONFIGS` (loaded once at import), this
+    reads the file on disk — so it sees an entry the wizard just wrote this
+    session. Returns ``None`` if the file or entry is absent.
+    """
+    return _load_yaml(configs_path).get(name)
+
+
 def repoint_microscope_to_server(name, server_url, configs_path):
     """Set an existing microscope's ``database`` to ``server_url`` and persist.
 
-    Loads the entry from the in-memory config, swaps only its ``database``, and
-    rewrites ``configs_path`` (backed up, other entries preserved). Returns the
-    path written, or ``None`` if the microscope is unknown.
+    Reads the entry from the ``configs_path`` file (falling back to in-memory
+    :data:`monet.CONFIGS`), swaps only its ``database``, and rewrites
+    ``configs_path`` (backed up, other entries preserved). Returns the path
+    written, or ``None`` if the microscope is unknown.
     """
-    cfg = dict((getattr(monet, "CONFIGS", {}) or {}).get(name, {}))
+    cfg = read_microscope_entry(name, configs_path)
+    if not cfg:
+        cfg = (getattr(monet, "CONFIGS", {}) or {}).get(name)
     if not cfg:
         return None
+    cfg = dict(cfg)
     cfg["database"] = server_url
     return write_microscope_config(name, cfg, configs_path)
 
@@ -1019,6 +1033,63 @@ def guided_server_instructions(host="<linux-server>", port=8000, rig=None):
     ).format(
         host=host, port=port, rig=rig, env=SERVER_ENV_FILE, url=script_url
     )
+
+
+def server_token_help(server_url=None):
+    """Copy-paste commands to mint / list / rotate / revoke server tokens.
+
+    Tokens live on the SERVER (in :data:`SERVER_ENV_FILE`), so they are managed
+    over SSH as the ``monet`` service user — e.g. to mint a READ token so a
+    browser can open the web dashboard, or a WRITE token for a new rig. Shown by
+    the GUI's Help ▸ Server tokens dialog; ``server_url`` (if known) fills in the
+    host and dashboard URL.
+    """
+    from urllib.parse import urlparse
+
+    host = (urlparse(server_url).hostname if server_url else None) or (
+        "<server-host>"
+    )
+    dash = (
+        server_url.rstrip("/") + "/dashboard"
+        if server_url
+        else "http://<server>:8000/dashboard"
+    )
+    env = SERVER_ENV_FILE
+    return (
+        "Tokens live on the SERVER, in {env}, and are managed over SSH as the\n"
+        "monet service user. A READ token lets a browser open the web\n"
+        "dashboard; a WRITE token lets a microscope read AND write\n"
+        "calibrations.\n"
+        "\n"
+        "1) Connect to the server:\n"
+        "     ssh <you>@{host}\n"
+        "\n"
+        "2) Mint a READ token (for the web dashboard):\n"
+        "     sudo -u monet monet token add --scope read --label dashboard \\\n"
+        "         --env-file {env}\n"
+        "   ...or a WRITE token for a rig:\n"
+        "     sudo -u monet monet token add --scope write --label <rig-name> \\\n"
+        "         --env-file {env}\n"
+        "\n"
+        "3) List tokens (labels + scopes, not the secret values):\n"
+        "     sudo -u monet monet token list --env-file {env}\n"
+        "\n"
+        "4) Rotate a token (new value, same label):\n"
+        "     sudo -u monet monet token rotate --label <label> "
+        "--env-file {env}\n"
+        "\n"
+        "5) Revoke a token:\n"
+        "     sudo -u monet monet token revoke --label <label> "
+        "--env-file {env}\n"
+        "\n"
+        "After add / rotate / revoke, apply it:\n"
+        "     sudo systemctl restart monet\n"
+        "\n"
+        "`token add` prints the new value once — copy it immediately. For the\n"
+        "web dashboard, open  {dash}  and paste the read token.\n"
+        "(sudo -u monet runs as the service user; prefix with the login "
+        "password if sudo asks.)"
+    ).format(env=env, host=host, dash=dash)
 
 
 def parse_token_line(stdout):

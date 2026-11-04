@@ -434,6 +434,39 @@ class TestServerHelpers(unittest.TestCase):
     def test_parse_token_line_absent(self):
         self.assertIsNone(sc.parse_token_line("no token here\n"))
 
+    def test_server_token_help_lists_commands(self):
+        text = sc.server_token_help("http://srv.lab:8000")
+        for frag in (
+            "token add",
+            "token list",
+            "token rotate",
+            "token revoke",
+            "--scope read",
+            "--scope write",
+            sc.SERVER_ENV_FILE,
+            "srv.lab",
+            "/dashboard",
+            "systemctl restart monet",
+        ):
+            self.assertIn(frag, text)
+
+    def test_repoint_reads_from_file_not_only_memory(self):
+        # repoint must work on an entry the wizard just wrote to the file even
+        # if it isn't in the import-time monet.CONFIGS.
+        import yaml
+
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, True)
+        cfg = os.path.join(tmp, "configs.yaml")
+        with open(cfg, "w") as f:
+            yaml.dump({"Rig": {"database": "./r.xlsx"}}, f)
+        path = sc.repoint_microscope_to_server("Rig", "http://h:8000", cfg)
+        self.assertEqual(path, cfg)
+        with open(cfg) as f:
+            self.assertEqual(
+                yaml.full_load(f)["Rig"]["database"], "http://h:8000"
+            )
+
     def test_guided_instructions_mentions_params(self):
         text = sc.guided_server_instructions(
             host="srv.lab", port=9001, rig="scope-a"

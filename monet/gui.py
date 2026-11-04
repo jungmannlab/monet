@@ -5709,6 +5709,9 @@ class MonetMainWindow(QMainWindow):
         act_update = QAction("Check for Updates…", self)
         act_update.triggered.connect(self._check_for_updates)
         help_menu.addAction(act_update)
+        act_tokens = QAction("Server tokens (mint / rotate / revoke)…", self)
+        act_tokens.triggered.connect(self._show_token_help)
+        help_menu.addAction(act_tokens)
         help_menu.addSeparator()
         act_license = QAction("License", self)
         act_license.triggered.connect(self._show_license)
@@ -5789,6 +5792,28 @@ class MonetMainWindow(QMainWindow):
         view.setReadOnly(True)
         view.setFont(QFont("Monospace"))
         view.setPlainText(_license_text())
+        lay.addWidget(view)
+        btn = QPushButton("Close")
+        btn.clicked.connect(dlg.accept)
+        lay.addWidget(btn)
+        dlg.exec()
+
+    def _show_token_help(self):
+        from monet import setup_core as sc
+
+        try:
+            server_url = sc.detect_state(probe_server=False).server_url
+        except Exception:
+            server_url = None
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Monet — Server tokens")
+        dlg.resize(720, 520)
+        lay = QVBoxLayout(dlg)
+        view = QTextEdit()
+        view.setReadOnly(True)
+        view.setFont(QFont("Monospace"))
+        view.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
+        view.setPlainText(sc.server_token_help(server_url))
         lay.addWidget(view)
         btn = QPushButton("Close")
         btn.clicked.connect(dlg.accept)

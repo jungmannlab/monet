@@ -440,6 +440,15 @@ class TestMainWindowChrome(unittest.TestCase):
         menus = [a.text() for a in win.menuBar().actions()]
         self.assertIn("&Help", menus)
         self.assertIn("&Setup", menus)
+        help_actions = [
+            a.text()
+            for m in win.menuBar().actions()
+            if m.text() == "&Help"
+            for a in m.menu().actions()
+        ]
+        self.assertTrue(
+            any("Server tokens" in a for a in help_actions), help_actions
+        )
 
     def test_update_available_dialog_has_clickable_link(self):
         """When an update is found, the download URL is a browser link."""
