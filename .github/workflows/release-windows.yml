@@ -58,16 +58,17 @@ jobs:
             fi
           fi
 
-      - name: Build monet-gui.exe
+      - name: Build monet-gui (onedir)
         run: pyinstaller --clean --noconfirm packaging/monet-gui.spec
 
       - name: Smoke-check the artifact (bundle contains monet + drivers)
         shell: bash
         run: |
-          test -f dist/monet-gui.exe
+          # Onedir: the exe lives inside the dist/monet-gui/ folder.
+          test -f dist/monet-gui/monet-gui.exe
           # Headless import check: fails the release if a dynamically-loaded
           # driver module didn't make it into the frozen bundle.
-          ./dist/monet-gui.exe --selfcheck
+          ./dist/monet-gui/monet-gui.exe --selfcheck
 
       - name: Build the Windows installer (Inno Setup)
         # PowerShell, not bash: Git-Bash's MSYS path conversion mangles the
@@ -92,24 +93,27 @@ jobs:
           if (-not (Test-Path "dist\Monet-Setup-$ver.exe")) {
             throw "installer not found: dist\Monet-Setup-$ver.exe"
           }
+          # Zip the onedir folder as the portable artifact (the onefile exe is
+          # gone — onedir avoids the per-launch temp-extraction DLL-load issue).
+          Compress-Archive -Path dist\monet-gui -DestinationPath "dist\monet-gui-portable-$ver.zip" -Force
 
-      - name: Upload exe + installer as build artifacts (always)
+      - name: Upload installer + portable zip as build artifacts (always)
         uses: actions/upload-artifact@v6
         with:
           name: monet-gui-windows
           path: |
-            dist/monet-gui.exe
             dist/Monet-Setup-*.exe
+            dist/monet-gui-portable-*.zip
           if-no-files-found: error
 
-      - name: Attach exe + installer to the GitHub Release (tag runs only)
+      - name: Attach installer + portable zip to the GitHub Release (tag only)
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v3
         with:
           # Attaches to the Release for this tag, creating it if it does not
           # exist yet and updating it (without clobbering notes) if it does.
-          # Both the one-click installer and the portable exe are shipped.
+          # The one-click installer plus a zip of the portable onedir folder.
           files: |
             dist/Monet-Setup-*.exe
-            dist/monet-gui.exe
+            dist/monet-gui-portable-*.zip
           fail_on_unmatched_files: true

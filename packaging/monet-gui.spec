@@ -7,9 +7,10 @@ Build (on Windows, with the package + PyInstaller installed):
     pip install ".[gui]" pyinstaller
     pyinstaller --clean --noconfirm packaging/monet-gui.spec
 
-Produces ``dist/monet-gui.exe`` (onefile, windowed). The CI release workflow
-(.github/workflows/release-windows.yml) runs exactly this on a ``v*`` tag and
-attaches the exe to the GitHub Release.
+Produces a ONEDIR bundle ``dist/monet-gui/`` (with ``monet-gui.exe`` inside),
+windowed. The CI release workflow (.github/workflows/release-windows.yml) runs
+exactly this on a ``v*`` tag; the Inno Setup installer packages the folder and a
+zip of it is attached to the GitHub Release as the portable artifact.
 
 Notes
 -----
@@ -137,12 +138,19 @@ a = Analysis(
 )
 pyz = PYZ(a.pure)
 
+# ONEDIR build (exclude_binaries=True + COLLECT), not onefile. A onefile exe
+# unpacks the whole bundle — ~270 MB with the hardware SDKs — to %TEMP%\_MEIxxxx
+# on *every* launch and loads python3xx.dll from there; antivirus scanning that
+# freshly-extracted DLL races the load and fails it ("Failed to load Python
+# DLL ... _MEI...\python312.dll") and the big extraction is slow. A onedir
+# folder (laid down once by the installer) has no per-launch extraction, so it
+# avoids the DLL-load failure and starts fast. The installer ships the folder;
+# a zip of it is the portable artifact.
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.datas,
     [],
+    exclude_binaries=True,
     name="monet-gui",
     debug=False,
     bootloader_ignore_signals=False,
@@ -150,12 +158,19 @@ exe = EXE(
     # UPX is known to corrupt PyQt6's Qt6 DLLs on Windows (crash on launch), and
     # the size win isn't worth that risk for a lab tool.
     upx=False,
-    upx_exclude=[],
-    runtime_tmpdir=None,
     console=False,  # windowed GUI app — no console window
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+)
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.datas,
+    strip=False,
+    upx=False,
+    upx_exclude=[],
+    name="monet-gui",  # -> dist/monet-gui/monet-gui.exe + dependencies
 )
