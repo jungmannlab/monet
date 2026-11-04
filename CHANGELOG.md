@@ -10,6 +10,19 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
+### Added
+- **Excel → server migration in the GUI.** A new **Setup ▸ Migrate Excel
+  database → server…** dialog uploads an existing Excel calibration database
+  to a monet server, with a **Preview** (dry-run) that reports how many records
+  are new vs. already present, a progress bar, and an optional "re-point this
+  microscope at the server" step. It safely **merges** into a server that
+  already holds data — rows with the same microscope/wavelength/power/date/time
+  are skipped. The setup wizard gains a matching optional **"Import existing
+  data"** step to seed a freshly stood-up server. Both reuse the existing
+  `monet migrate` engine (now with a progress callback and a `dry_run`
+  preview); init-populating a fresh server no longer prints a spurious
+  "may create duplicates" warning.
+
 ### Fixed
 - **Windows installer now bundles the hardware SDKs.** The frozen build was
   `[gui]`-only, so connecting a real rig raised `ModuleNotFoundError` for the

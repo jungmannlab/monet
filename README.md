@@ -109,6 +109,16 @@ the `.env` — the microscope the GUI connects to when launched without a `<Name
 argument (e.g. from the installed build's Start-menu shortcut). A command-line
 name still overrides it: `python -m monet gui OtherScope`.
 
+**Moving an Excel database onto a server.** If a rig already has an Excel
+calibration database and you're adopting the central server, use
+**Setup ▸ Migrate Excel database → server…** in the GUI (or the setup wizard's
+optional *Import existing data* step, or the CLI `python -m monet migrate
+--source power_database.xlsx --url http://server:8000`). It uploads the Excel
+records to the server and **merges** into whatever is already there —
+rows with the same microscope / wavelength / power / date / time are skipped,
+so it's safe to re-run and to point several rigs' databases at one server.
+Use the dialog's **Preview** to see how many records are new before committing.
+
 ### Single-microscope setup (Excel database)
 
 Place the power meter head above the objective, connect the power meter, and switch on the laser.
