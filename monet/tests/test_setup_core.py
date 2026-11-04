@@ -12,7 +12,9 @@ import importlib
 import os
 import shutil
 import stat
+import sys
 import tempfile
+import types
 import unittest
 from unittest import mock
 
@@ -452,6 +454,92 @@ class TestServerHelpers(unittest.TestCase):
         with mock.patch("builtins.__import__", side_effect=fake_import):
             with self.assertRaises(RuntimeError):
                 sc.remote_install_server("h", "u")
+
+    def test_remote_install_feeds_sudo_password_over_ssh(self):
+        # Regression: sudo over an exec channel must be fed its password on
+        # stdin (sudo -S), or the install fails with "sudo: Authentication
+        # failed". Drive it against a fake paramiko.
+        record = {"channels": [], "connect_kwargs": None}
+
+        class _Chan:
+            def __init__(self, outputs):
+                self._outputs = outputs
+                self.cmd = None
+                self.sent = b""
+                self._buf = b""
+                self._read = False
+
+            def set_combine_stderr(self, v):
+                pass
+
+            def exec_command(self, cmd):
+                self.cmd = cmd
+                out = ""
+                for key, val in self._outputs.items():
+                    if key in cmd:
+                        out = val
+                        break
+                self._buf = out.encode()
+
+            def sendall(self, data):
+                self.sent += data
+
+            def shutdown_write(self):
+                pass
+
+            def recv(self, n):
+                if self._read:
+                    return b""
+                self._read = True
+                return self._buf
+
+            def recv_exit_status(self):
+                return 0
+
+            def close(self):
+                pass
+
+        outputs = {"token add": "PAINT_MONET_TOKEN=tok-xyz\n"}
+
+        class _Transport:
+            def open_session(self):
+                ch = _Chan(outputs)
+                record["channels"].append(ch)
+                return ch
+
+        class _Client:
+            def set_missing_host_key_policy(self, p):
+                pass
+
+            def connect(self, **kw):
+                record["connect_kwargs"] = kw
+
+            def get_transport(self):
+                return _Transport()
+
+            def close(self):
+                pass
+
+        fake_paramiko = types.SimpleNamespace(
+            SSHClient=lambda: _Client(),
+            AutoAddPolicy=lambda: object(),
+        )
+        with mock.patch.dict(sys.modules, {"paramiko": fake_paramiko}):
+            result = sc.remote_install_server(
+                "192.168.0.5", "linuxmp", password="secret", rig="scope-a"
+            )
+
+        self.assertEqual(
+            result, {"url": "http://192.168.0.5:8000", "token": "tok-xyz"}
+        )
+        # Password-only auth was forced (no agent/default-key probing).
+        self.assertFalse(record["connect_kwargs"]["look_for_keys"])
+        self.assertFalse(record["connect_kwargs"]["allow_agent"])
+        # Every sudo command used `sudo -S` and was fed the password on stdin.
+        sudo_chans = [c for c in record["channels"] if "sudo -S" in c.cmd]
+        self.assertTrue(sudo_chans)
+        for c in sudo_chans:
+            self.assertEqual(c.sent, b"secret\n")
 
 
 class TestFrozenPaths(unittest.TestCase):
