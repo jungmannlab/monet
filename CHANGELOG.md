@@ -12,6 +12,10 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [0.6.7] - 2026-11-04
 
+### Added
+- GUI setup wizard: **show/hide (eye) toggle** on the password fields (SSH
+  password, server tokens) so you can check what you typed.
+
 ### Fixed
 - **Automated SSH server install works under sudo-rs.** The install passed the
   setup script's configuration as `sudo GIT_REF=… MONET_HOST=… bash …`, but
@@ -19,6 +23,13 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
   environment variables on the sudo command line, so the install would fail
   right after sudo authenticated. The variables are now passed via `env`
   (`sudo -S env GIT_REF=… bash …`), which is portable across sudo and sudo-rs.
+- **No more "Failed to load Python DLL" on first launch.** The Windows build is
+  now a PyInstaller **onedir** bundle (a folder the installer lays down) instead
+  of a onefile exe. A onefile exe unpacked the whole ~270 MB bundle to
+  `%TEMP%\_MEIxxxx` on every launch and loaded `python3xx.dll` from there, which
+  antivirus scanning could race and fail; onedir has no per-launch extraction,
+  so it fixes that and starts faster. The portable download is now a zip of the
+  folder (`monet-gui-portable-<version>.zip`).
 
 ## [0.6.6] - 2026-11-04
 
