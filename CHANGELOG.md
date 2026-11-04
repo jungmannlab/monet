@@ -10,6 +10,24 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
+## [0.6.9] - 2026-11-04
+
+### Added
+- Set Power tab: **auto-off timer** — arm a countdown (default 8 h) after which
+  every laser is switched off automatically, so lasers aren't left on overnight.
+- Help menu: **Server tokens (mint / rotate / revoke)…** — copy-paste SSH
+  commands to manage tokens on the server (e.g. mint a read token for the web
+  dashboard, a write token for a rig), prefilled with the configured server.
+
+### Fixed
+- Setup wizard: picking an **existing microscope** when a server is configured
+  now **re-points its `database` to the server** if it still pointed at a local
+  `.xlsx` — so after migrating that file to the server, the GUI reads the
+  migrated calibrations from the server instead of a stale/absent local file
+  (which is why the Database tab showed nothing). `repoint_microscope_to_server`
+  also now reads the entry from the configs file, so it works on a microscope
+  the wizard just wrote this session.
+
 ## [0.6.8] - 2026-11-04
 
 ### Added

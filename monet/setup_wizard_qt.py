@@ -1334,12 +1334,37 @@ class SetupWizard(QWizard):
                 )
             )
         elif self.microscope_name:
-            # Reusing an existing entry: nothing written, just made default.
-            lines.append(
-                "Using existing microscope '{}' (configs.yaml unchanged).".format(
-                    self.microscope_name
+            # Reusing an existing entry: nothing authored. But if this rig now
+            # has a server and the entry still points at a local database file
+            # (the common case after migrating that file to the server), re-point
+            # it to the server — otherwise the GUI keeps reading the stale/absent
+            # local .xlsx and shows no calibrations.
+            repointed = False
+            if self.server_url and self.configs_path:
+                try:
+                    entry = sc.read_microscope_entry(
+                        self.microscope_name, self.configs_path
+                    )
+                    db = (entry or {}).get("database")
+                    if db is not None and not sc.is_server_database(db):
+                        sc.repoint_microscope_to_server(
+                            self.microscope_name,
+                            self.server_url,
+                            self.configs_path,
+                        )
+                        repointed = True
+                except Exception:
+                    logger.debug("re-point to server skipped", exc_info=True)
+            if repointed:
+                lines.append(
+                    "Re-pointed existing microscope '{}' database to the "
+                    "server {}.".format(self.microscope_name, self.server_url)
                 )
-            )
+            else:
+                lines.append(
+                    "Using existing microscope '{}' (configs.yaml "
+                    "unchanged).".format(self.microscope_name)
+                )
         else:
             lines.append(
                 "Add a microscope entry to {} (ONBOARDING Part 3).".format(
