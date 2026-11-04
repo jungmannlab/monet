@@ -10,6 +10,8 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
+## [0.6.9] - 2026-11-04
+
 ### Added
 - Set Power tab: **auto-off timer** — arm a countdown (default 8 h) after which
   every laser is switched off automatically, so lasers aren't left on overnight.
