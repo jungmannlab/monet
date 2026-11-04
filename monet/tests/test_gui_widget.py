@@ -517,6 +517,49 @@ class TestConnectRobustness(unittest.TestCase):
             w.connect_microscope("test")
         self.assertTrue(any("Connecting to test" in m for m in msgs))
 
+    def test_connected_shows_checking_while_powermeter_pending(self):
+        """On the deferred path the meter is probed in the background, so a
+        freshly-connected pc reports 'checking power meter…', not unavailable.
+        """
+
+        class _PendingPC:
+            powermeter_available = None  # not yet probed
+
+        w = MonetWidget(show_toolbar=True, tabs=("calibrate",))
+        msgs = []
+        w.status_changed.connect(lambda m, t: msgs.append(m))
+        w._on_connected(_PendingPC())
+        self.assertTrue(any("checking power meter" in m for m in msgs))
+        # Calibrate must stay disabled until a meter is confirmed.
+        cal = w.tab("calibrate")
+        self.assertFalse(w._tabs.isTabEnabled(w._tabs.indexOf(cal)))
+
+    def test_powermeter_resolved_available_enables_calibrate(self):
+        class _PC:
+            powermeter_available = None
+
+        w = MonetWidget(show_toolbar=True, tabs=("calibrate",))
+        pc = _PC()
+        w._on_connected(pc)
+        w._on_powermeter_resolved(pc, True, "")
+        cal = w.tab("calibrate")
+        self.assertTrue(w._tabs.isTabEnabled(w._tabs.indexOf(cal)))
+
+    def test_powermeter_resolved_ignored_for_superseded_pc(self):
+        """A probe for an old pc must not touch the current connection."""
+
+        class _PC:
+            powermeter_available = None
+
+        w = MonetWidget(show_toolbar=True, tabs=("calibrate",))
+        current = _PC()
+        w._on_connected(current)
+        # Resolve an *old* pc as unavailable — must be ignored (no dialog, no
+        # state change for the current connection).
+        stale = _PC()
+        w._on_powermeter_resolved(stale, False, "nope")
+        self.assertIs(w._pc, current)
+
 
 class TestExceptHook(unittest.TestCase):
     def test_install_is_idempotent_and_tagged(self):

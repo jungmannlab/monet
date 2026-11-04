@@ -24,6 +24,20 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 - GUI **Help ▸ Check for Updates…**: when a newer release is found, the
   download URL is now a clickable link (the update, update-error, and About
   dialogs all follow their links to the browser).
+- **GUI no longer crashes on connect.** Binding a connection called `set_pc`
+  on every tab, but the new Doctor tab didn't implement it, so a successful
+  connect raised and PyQt6 aborted the process with no message. The Doctor tab
+  now implements `set_pc`, each tab is isolated during bind, and a global
+  `sys.excepthook` turns any unhandled GUI error into a logged, visible dialog
+  instead of a silent abort.
+- **"Connecting to <rig>…" is shown again.** The Doctor tab's background
+  server check was posting to the shared status bar and overwriting the connect
+  status; it now reports only in its own view.
+- **Connecting is responsive when the power meter is absent.** The power meter
+  is now opened in the background *after* the GUI comes up, instead of on the
+  connect's critical path — so an absent meter (whose vendor driver blocks on a
+  hardware scan) no longer delays the whole connect. The power-dependent
+  controls grey out / enable when the probe resolves.
 
 ### Changed
 - License copyright line now spans **2022-2026** (was 2022), in `LICENSE.md`
