@@ -10,6 +10,37 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
+## [0.6.13] - 2026-11-04
+
+### Added
+- Setup wizard ▸ **Connect to an existing server**: a *Mint a token over SSH*
+  box that SSHes into the already-running server, runs `monet token add` for
+  this rig, restarts the service and fills in the token — so onboarding a new
+  rig against an existing server no longer needs a manual SSH session. The
+  server host is taken from the URL.
+
+### Changed
+- Set Power tab: the laser **auto-off timer** now shows only in Expert view,
+  grouped at the right edge of the laser row (right-aligned with the window). It
+  stays visible while *armed* so the countdown and Cancel remain reachable even
+  after leaving Expert view.
+
+### Fixed
+- Database tab (review follow-ups): in an *annotated* database a calibration row
+  with a missing/unrecognized `powermeter_type` is now **skipped** rather than
+  mislabelled BFP (so it can't be wrongly paired); a database with **no**
+  `powermeter_type` column at all (migrated from Excel) is still treated as
+  all-BFP so its calibrations appear.
+- Automated SSH server install: the post-restart health check **polls** for the
+  service to become active (up to ~15 s) instead of a single 2 s sample, so a
+  slow-starting server isn't falsely reported as failed; the result is parsed
+  from a marked line, robust to shell/stderr noise.
+- Edit configuration dialog: clearing a driver field now actually **removes**
+  that `init_kwarg` (it was being resurrected from the old value); a driver
+  section the config lacks is shown **disabled** (previously, editing it was
+  silently discarded on save). A finishing Set-Power worker no longer nulls the
+  reference to a newer in-flight worker.
+
 ## [0.6.12] - 2026-11-04
 
 ### Fixed
@@ -30,6 +61,8 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 ### Changed
 - **Setup ▸ Edit configuration…** pre-selects the microscope the GUI is
   connected to (falling back to the `.env` default).
+
+## [0.6.11] - 2026-11-04
 
 ### Fixed
 - **Edit configuration dialog no longer corrupts entries** (code-review fixes):

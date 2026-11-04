@@ -602,7 +602,8 @@ class TestServerHelpers(unittest.TestCase):
 
         outputs = {
             "token add": "PAINT_MONET_TOKEN=tok-xyz\n",
-            "is-active": "active\n",  # service came up after restart
+            # service came up after restart (health-check probe marker)
+            "MONET_IS_ACTIVE": "MONET_IS_ACTIVE=active\n",
         }
 
         class _Transport:
@@ -660,7 +661,7 @@ class TestServerHelpers(unittest.TestCase):
             record,
             {
                 "token add": "PAINT_MONET_TOKEN=tok\n",
-                "is-active": "failed\n",
+                "MONET_IS_ACTIVE": "MONET_IS_ACTIVE=failed\n",
                 "status monet": "monet.service: failed\n",
             },
         )
@@ -668,6 +669,60 @@ class TestServerHelpers(unittest.TestCase):
             with self.assertRaises(RuntimeError) as cm:
                 sc.remote_install_server("h", "u", password="p")
         self.assertIn("did not come up", str(cm.exception))
+
+    def test_remote_mint_token_over_ssh(self):
+        # Onboarding a rig against an already-running server: mint a token over
+        # SSH WITHOUT reinstalling anything.
+        record = {"channels": [], "connect_kwargs": None}
+        fake = _fake_paramiko(
+            record,
+            {
+                "token add": "PAINT_MONET_TOKEN=minted-tok\n",
+                "MONET_IS_ACTIVE": "MONET_IS_ACTIVE=active\n",
+            },
+        )
+        with mock.patch.dict(sys.modules, {"paramiko": fake}):
+            token = sc.remote_mint_token(
+                "192.168.0.9", "lab", password="pw", rig="rigA"
+            )
+        self.assertEqual(token, "minted-tok")
+        cmds = [c.cmd for c in record["channels"]]
+        # It minted a token for the rig and restarted — but did NOT reinstall.
+        self.assertTrue(any("token add" in c and "rigA" in c for c in cmds))
+        self.assertTrue(any("systemctl restart monet" in c for c in cmds))
+        self.assertFalse(any("setup-server" in c for c in cmds))
+        # Every sudo command was fed the password on stdin.
+        sudo_chans = [c for c in record["channels"] if "sudo -S" in c.cmd]
+        self.assertTrue(sudo_chans)
+        for c in sudo_chans:
+            self.assertEqual(c.sent, b"pw\n")
+
+    def test_remote_mint_token_fails_if_service_not_active(self):
+        record = {"channels": [], "connect_kwargs": None}
+        fake = _fake_paramiko(
+            record,
+            {
+                "token add": "PAINT_MONET_TOKEN=tok\n",
+                "MONET_IS_ACTIVE": "MONET_IS_ACTIVE=failed\n",
+                "status monet": "monet.service: failed\n",
+            },
+        )
+        with mock.patch.dict(sys.modules, {"paramiko": fake}):
+            with self.assertRaises(RuntimeError) as cm:
+                sc.remote_mint_token("h", "u", password="p")
+        self.assertIn("did not come up", str(cm.exception))
+
+    def test_remote_mint_token_without_paramiko_raises(self):
+        real_import = __import__
+
+        def fake_import(name, *args, **kwargs):
+            if name == "paramiko":
+                raise ModuleNotFoundError("no paramiko")
+            return real_import(name, *args, **kwargs)
+
+        with mock.patch("builtins.__import__", side_effect=fake_import):
+            with self.assertRaises(RuntimeError):
+                sc.remote_mint_token("h", "u")
 
 
 class TestFrozenPaths(unittest.TestCase):

@@ -11,6 +11,7 @@ import os
 import shutil
 import tempfile
 import unittest
+from unittest import mock
 
 import pytest
 import yaml
@@ -122,6 +123,46 @@ class TestSetupWizard(unittest.TestCase):
         self.assertTrue(page.validatePage())
         self.assertEqual(wiz.server_url, "")
         self.assertNotIn(sc.ENV_CLIENT_TOKEN, wiz.updates)
+
+    def test_existing_server_mint_fills_token(self):
+        # The existing-server page can mint this rig's token over SSH and drop
+        # it into the token field (host taken from the URL).
+        page = swq._ServerPage()
+        page.url_edit.setText("http://host:8000")
+        page.ex_ssh_user.setText("lab")
+        page.ex_ssh_pw.setText("pw")
+
+        captured = {}
+
+        class _FakeMintWorker(swq.QThread):
+            output = swq.pyqtSignal(str)
+            done = swq.pyqtSignal(str)
+            failed = swq.pyqtSignal(str)
+
+            def __init__(self, kwargs, parent=None):
+                super().__init__(parent)
+                captured["kwargs"] = kwargs
+
+            def isRunning(self):
+                return False
+
+            def start(self):
+                self.done.emit("minted-xyz")
+
+        with mock.patch.object(swq, "_SshMintWorker", _FakeMintWorker):
+            page._mint_existing()
+
+        self.assertEqual(page.token_edit.text(), "minted-xyz")
+        self.assertEqual(captured["kwargs"]["host"], "host")
+        self.assertEqual(captured["kwargs"]["user"], "lab")
+        self.assertEqual(captured["kwargs"]["password"], "pw")
+        self.assertEqual(captured["kwargs"]["rig"], "acquisition-rig")
+
+    def test_existing_server_mint_needs_url_and_user(self):
+        # No URL / SSH user yet -> guarded: no worker runs, token stays empty.
+        page = swq._ServerPage()
+        page._mint_existing()
+        self.assertEqual(page.token_edit.text(), "")
 
     def test_protocol_page_authors_from_cfg(self):
         cfg_path = os.path.join(self.tmp, "scope.cfg")
@@ -394,6 +435,38 @@ class TestEditConfigDialog(unittest.TestCase):
         with open(self.cfg) as f:
             kw = yaml.full_load(f)["Stokes"]["powermeter"]["init_kwargs"]
         self.assertEqual(kw.get("legacy"), 7)
+
+    def test_clearing_a_modeled_kwarg_removes_it_keeps_unmodeled(self):
+        data = yaml.full_load(open(self.cfg))
+        data["Stokes"]["attenuation"] = {
+            "classpath": "monet.attenuation.KinesisAttenuator",
+            "init_kwargs": {"serial": "27257033", "legacy_extra": 9},
+        }
+        with open(self.cfg, "w") as f:
+            yaml.dump(data, f)
+        d = swq.EditConfigDialog(
+            configs_path=self.cfg, protocols_path=self.proto
+        )
+        self.assertEqual(d._at_form.current_name(), "KinesisAttenuator")
+        for fname, (f, edit) in d._at_form._widgets.items():
+            if fname == "serial":
+                edit.setText("")  # user clears the serial
+        d._save()
+        with open(self.cfg) as fh:
+            kw = yaml.full_load(fh)["Stokes"]["attenuation"]["init_kwargs"]
+        self.assertNotIn("serial", kw)  # cleared modeled field removed
+        self.assertEqual(kw.get("legacy_extra"), 9)  # unmodeled key preserved
+
+    def test_absent_section_form_is_disabled(self):
+        data = yaml.full_load(open(self.cfg))
+        del data["Stokes"]["analysis"]
+        with open(self.cfg, "w") as f:
+            yaml.dump(data, f)
+        d = swq.EditConfigDialog(
+            configs_path=self.cfg, protocols_path=self.proto
+        )
+        self.assertFalse(d._an_form.isEnabled())  # absent -> disabled
+        self.assertTrue(d._pm_form.isEnabled())  # present -> editable
 
     def test_bad_power_input_writes_nothing(self):
         d = swq.EditConfigDialog(
