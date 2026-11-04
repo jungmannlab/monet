@@ -1157,10 +1157,15 @@ def remote_install_server(
     # password line is fed.
     sudo = "sudo -S "
     try:
+        # Pass the setup-server.sh variables via `env`, not the
+        # `sudo VAR=value command` form: sudo-rs (the Rust sudo default on
+        # recent Ubuntu) does not support setting env vars on the sudo command
+        # line, so `sudo env VAR=value …` is the portable way to run the script
+        # as root with its configuration.
         install = (
             "curl -fsSL {url} -o /tmp/setup-server.sh && "
             + sudo
-            + "GIT_REF={ref} MONET_HOST={bind} MONET_PORT={port} "
+            + "env GIT_REF={ref} MONET_HOST={bind} MONET_PORT={port} "
             "bash /tmp/setup-server.sh"
         ).format(
             url=SETUP_SCRIPT_URL.format(ref=git_ref),

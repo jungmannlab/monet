@@ -10,6 +10,16 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
+## [0.6.7] - 2026-11-04
+
+### Fixed
+- **Automated SSH server install works under sudo-rs.** The install passed the
+  setup script's configuration as `sudo GIT_REF=… MONET_HOST=… bash …`, but
+  sudo-rs (the Rust sudo default on recent Ubuntu) doesn't accept setting
+  environment variables on the sudo command line, so the install would fail
+  right after sudo authenticated. The variables are now passed via `env`
+  (`sudo -S env GIT_REF=… bash …`), which is portable across sudo and sudo-rs.
+
 ## [0.6.6] - 2026-11-04
 
 ### Fixed

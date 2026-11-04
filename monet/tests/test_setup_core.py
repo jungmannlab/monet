@@ -540,6 +540,13 @@ class TestServerHelpers(unittest.TestCase):
         self.assertTrue(sudo_chans)
         for c in sudo_chans:
             self.assertEqual(c.sent, b"secret\n")
+        # The install passes the script's config via `env` (sudo-rs doesn't
+        # accept `sudo VAR=value command`), not on the sudo command line.
+        install_cmds = [
+            c.cmd for c in record["channels"] if "setup-server" in c.cmd
+        ]
+        self.assertTrue(install_cmds)
+        self.assertIn("sudo -S env GIT_REF=", install_cmds[0])
 
 
 class TestFrozenPaths(unittest.TestCase):
