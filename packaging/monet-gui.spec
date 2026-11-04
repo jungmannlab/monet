@@ -105,6 +105,20 @@ for _imp, _dist in _HARDWARE_SDKS:
         except Exception:
             pass
 
+# The optional [setup] extra: paramiko powers the setup wizard's automated SSH
+# server install. It is lazy-imported (setup_core.remote_install_server), so
+# pull it in explicitly; its binary dependencies (cryptography, bcrypt, pynacl)
+# are handled by PyInstaller's bundled hooks. copy_metadata(recursive) ships the
+# .dist-info several of these read at import.
+try:
+    hiddenimports += collect_submodules("paramiko")
+except Exception:
+    pass
+try:
+    datas += copy_metadata("paramiko", recursive=True)
+except Exception:
+    pass
+
 a = Analysis(
     [_launcher],
     pathex=[],

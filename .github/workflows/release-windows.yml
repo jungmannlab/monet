@@ -33,14 +33,16 @@ jobs:
           python-version: '3.12'
           cache: pip
 
-      - name: Install monet (GUI + hardware extras) + PyInstaller
+      - name: Install monet (GUI + hardware + setup extras) + PyInstaller
         # [hardware] as well as [gui]: the frozen build bundles the vendor SDK
         # *Python* packages (msl-equipment, pyvisa, nidaqmx, pycobolt, …) so a
         # real rig can connect. The vendor DLLs/runtimes (Thorlabs Kinesis,
         # NI-DAQmx, Micro-Manager) still have to be installed on the rig PC.
+        # [setup] bundles paramiko so the wizard's automated SSH server install
+        # works from the installed exe (no separate `pip install monet[setup]`).
         run: |
           python -m pip install --upgrade pip
-          python -m pip install ".[gui,hardware]" pyinstaller
+          python -m pip install ".[gui,hardware,setup]" pyinstaller
 
       - name: Confirm the bundled version matches the tag
         shell: bash

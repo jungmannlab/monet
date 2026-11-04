@@ -65,6 +65,10 @@ _SELFCHECK_HW_BEST_EFFORT = (
     "microscope",
     "pycromanager",
     "ThorlabsPM100",
+    # [setup] extra — paramiko for the wizard's automated SSH server install.
+    # Best-effort: it pulls cryptography's binary extensions, so verify it's
+    # bundled without letting a headless-import quirk block a release.
+    "paramiko",
 )
 
 
