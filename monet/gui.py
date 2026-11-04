@@ -273,8 +273,17 @@ class ConnectWorker(QThread):
 
         # Now probe the power meter (may block on a hardware scan). The GUI is
         # already up; it enables/greys the power-dependent controls when this
-        # resolves.
-        available = pc.load_powermeter()
+        # resolves. load_powermeter() swallows the expected driver failures, but
+        # guard the whole probe so an *unexpected* error still resolves the
+        # pending state — otherwise the UI is stuck on "checking power meter…".
+        try:
+            available = pc.load_powermeter()
+        except Exception as exc:
+            logging.getLogger(__name__).exception("power-meter probe failed")
+            pc.powermeter = None
+            pc.powermeter_available = False
+            pc.powermeter_error = "{}: {}".format(type(exc).__name__, exc)
+            available = False
         msg = ""
         if not available:
             msg = (
@@ -1663,11 +1672,18 @@ class CalibrateTab(QWidget):
         worker.start()
 
     def set_powermeter_available(self, available):
-        """Enable or disable calibration controls per powermeter state."""
-        self._pm_available = available
-        self._btn_start.setEnabled(available)
+        """Enable or disable calibration controls per powermeter state.
+
+        ``available`` is tri-state: ``True`` / ``False`` / ``None`` (not yet
+        probed). Controls are disabled for both ``None`` and ``False``, but the
+        log warning is only emitted for a *confirmed* ``False`` — logging it
+        during the pending ``None`` window would leave a spurious warning on
+        every successful connect (the probe usually resolves to available)."""
+        enabled = bool(available)
+        self._pm_available = enabled
+        self._btn_start.setEnabled(enabled)
         self._update_verify_enabled()
-        if not available:
+        if available is False:
             self._log.append(
                 "WARNING: PowerMeter not available. Calibration is disabled."
             )
@@ -3842,10 +3858,14 @@ class SetPowerTab(QWidget):
             self._feedback_cb.setChecked(False)
 
     def set_powermeter_available(self, available):
-        """Enable or disable powermeter-dependent controls."""
-        self._btn_measure.setEnabled(available)
-        self._btn_backlash.setEnabled(available)
-        self._btn_pin.setEnabled(available)
+        """Enable or disable powermeter-dependent controls.
+
+        ``available`` is tri-state (True/False/None); None (not yet probed) and
+        False both disable, so a plain bool coercion is right here."""
+        enabled = bool(available)
+        self._btn_measure.setEnabled(enabled)
+        self._btn_backlash.setEnabled(enabled)
+        self._btn_pin.setEnabled(enabled)
         self._update_feedback_enabled()
 
     def _on_all_on(self):
@@ -5552,13 +5572,15 @@ class MonetWidget(QWidget):
     def _apply_powermeter_state(self, available):
         """Grey out calibrate tab and feedback controls when no powermeter.
 
-        ``available`` may be ``None`` (meter not yet probed) — treated as "not
-        usable yet" so calibration can't be started before the probe confirms a
-        meter."""
-        available = bool(available)
+        ``available`` is tri-state and passed through to the tabs unchanged:
+        ``True`` (meter ready), ``False`` (probed, absent) or ``None`` (not yet
+        probed — the deferred window). Both ``None`` and ``False`` disable the
+        controls, but only ``False`` is a *confirmed* failure the tabs should
+        announce; ``None`` must stay quiet so a normal connect doesn't flash a
+        spurious "not available" warning before the probe resolves."""
         cal = self._tab_widgets.get("calibrate")
         if cal is not None:
-            self._tabs.setTabEnabled(self._tabs.indexOf(cal), available)
+            self._tabs.setTabEnabled(self._tabs.indexOf(cal), bool(available))
             cal.set_powermeter_available(available)
         sp = self._tab_widgets.get("set_power")
         if sp is not None:

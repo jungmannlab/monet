@@ -545,6 +545,21 @@ class TestConnectRobustness(unittest.TestCase):
         cal = w.tab("calibrate")
         self.assertTrue(w._tabs.isTabEnabled(w._tabs.indexOf(cal)))
 
+    def test_pending_does_not_log_spurious_powermeter_warning(self):
+        """The deferred (None) window must not write the 'not available'
+        warning to the Calibrate log — only a confirmed False does."""
+        tab = CalibrateTab()
+        # pending: disabled, but no warning logged
+        tab.set_powermeter_available(None)
+        self.assertFalse(tab._btn_start.isEnabled())
+        self.assertNotIn("PowerMeter not available", tab._log.toPlainText())
+        # confirmed available: still no warning
+        tab.set_powermeter_available(True)
+        self.assertNotIn("PowerMeter not available", tab._log.toPlainText())
+        # confirmed absent: now the warning appears
+        tab.set_powermeter_available(False)
+        self.assertIn("PowerMeter not available", tab._log.toPlainText())
+
     def test_powermeter_resolved_ignored_for_superseded_pc(self):
         """A probe for an old pc must not touch the current connection."""
 
