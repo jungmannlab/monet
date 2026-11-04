@@ -120,6 +120,28 @@ class _SshMintWorker(QThread):
         self.done.emit(token)
 
 
+class _SshUpdateWorker(QThread):
+    """Runs ``remote_update_server`` off the GUI thread; streams via signals."""
+
+    output = pyqtSignal(str)
+    done = pyqtSignal(object)  # the {'url'} result
+    failed = pyqtSignal(str)
+
+    def __init__(self, kwargs, parent=None):
+        super().__init__(parent)
+        self._kwargs = kwargs
+
+    def run(self):
+        try:
+            result = sc.remote_update_server(
+                on_output=self.output.emit, **self._kwargs
+            )
+        except Exception as exc:
+            self.failed.emit(str(exc))
+            return
+        self.done.emit(result)
+
+
 class MigrateWorker(QThread):
     """Runs an Excel→server migration off the GUI thread.
 
@@ -1805,4 +1827,131 @@ def open_migrate_dialog(parent=None):
     """
     state = sc.detect_state(probe_server=False)
     dlg = MigrateDialog(parent, default_server=state.server_url)
+    dlg.exec()
+
+
+class UpdateServerDialog(QDialog):
+    """Upgrade an already-installed monet server in place over SSH.
+
+    The GUI's "Check for Updates" only updates the GUI itself; the server runs
+    on another machine. This dialog SSHes in, re-runs the idempotent
+    ``setup-server.sh`` (pulling the latest release) and restarts the systemd
+    service — without touching the rig's token.
+    """
+
+    def __init__(self, parent=None, server_url=None):
+        super().__init__(parent)
+        self.setWindowTitle("Monet — Update server")
+        self.resize(640, 460)
+        self._worker = None
+        lay = QVBoxLayout(self)
+
+        intro = QLabel(
+            "Upgrade the monet <b>server</b> (on its own machine) to the "
+            "latest release and restart its service. 'Check for Updates' only "
+            "updates this GUI. Your rig's token is left untouched."
+        )
+        intro.setWordWrap(True)
+        lay.addWidget(intro)
+
+        form = QFormLayout()
+        host, port = _split_server_url(server_url)
+        self.host_edit = QLineEdit(host or "")
+        self.host_edit.setPlaceholderText("linux-server.lab")
+        form.addRow("Server host", self.host_edit)
+        self.port_spin = QSpinBox()
+        self.port_spin.setRange(1, 65535)
+        self.port_spin.setValue(port or 8000)
+        form.addRow("Port", self.port_spin)
+        self.ssh_user = QLineEdit()
+        form.addRow("SSH user", self.ssh_user)
+        self.ssh_key = QLineEdit()
+        self.ssh_key.setPlaceholderText("private-key file (blank = password)")
+        form.addRow("SSH key file", self.ssh_key)
+        self.ssh_pw = QLineEdit()
+        self.ssh_pw.setEchoMode(QLineEdit.EchoMode.Password)
+        form.addRow("SSH password", _with_reveal(self.ssh_pw))
+        self.sudo_pw = QLineEdit()
+        self.sudo_pw.setEchoMode(QLineEdit.EchoMode.Password)
+        self.sudo_pw.setPlaceholderText("blank = use the SSH password")
+        self.sudo_pw.setToolTip(
+            "Only needed if the user's sudo password differs from the SSH "
+            "login password (e.g. key-based login). The update runs as root "
+            "via sudo."
+        )
+        form.addRow("sudo password", _with_reveal(self.sudo_pw))
+        lay.addLayout(form)
+
+        self.btn_update = QPushButton("Update server over SSH")
+        self.btn_update.clicked.connect(self._update)
+        lay.addWidget(self.btn_update)
+
+        self.log = QTextEdit()
+        self.log.setReadOnly(True)
+        lay.addWidget(self.log)
+
+        btn_close = QPushButton("Close")
+        btn_close.clicked.connect(self.accept)
+        lay.addWidget(btn_close)
+
+    def _update(self):
+        host = self.host_edit.text().strip()
+        user = self.ssh_user.text().strip()
+        if not host or not user:
+            self.log.append("Enter the server host and SSH user first.\n")
+            return
+        if self._worker is not None and self._worker.isRunning():
+            self.log.append("Update already running…")
+            return
+        self.log.append("Updating monet server on {}@{} …".format(user, host))
+        self.btn_update.setEnabled(False)
+        self.setCursor(Qt.CursorShape.WaitCursor)
+        self._worker = _SshUpdateWorker(
+            dict(
+                host=host,
+                user=user,
+                password=self.ssh_pw.text() or None,
+                key_filename=self.ssh_key.text().strip() or None,
+                # Defaults to the SSH password in remote_update_server; only
+                # pass a distinct sudo password when the user entered one.
+                sudo_password=self.sudo_pw.text() or None,
+                port=self.port_spin.value(),
+            )
+        )
+        self._worker.output.connect(lambda s: self.log.append(s.rstrip("\n")))
+        self._worker.done.connect(self._on_done)
+        self._worker.failed.connect(self._on_failed)
+        self._worker.start()
+
+    def _on_done(self, result):
+        self.unsetCursor()
+        self.btn_update.setEnabled(True)
+        self.log.append(
+            "Done — server updated and the service restarted and came up."
+        )
+
+    def _on_failed(self, msg):
+        self.unsetCursor()
+        self.btn_update.setEnabled(True)
+        self.log.append("Failed: {}".format(msg))
+
+
+def _split_server_url(server_url):
+    """Return ``(host, port)`` parsed from a server URL, or ``(None, None)``."""
+    if not server_url:
+        return None, None
+    probe = server_url if "://" in server_url else "http://" + server_url
+    parsed = urlparse(probe)
+    return parsed.hostname, parsed.port
+
+
+def open_update_server(parent=None, server_url=None):
+    """Open the standalone server-update dialog (GUI Setup menu).
+
+    Prefills the host/port from ``server_url`` (or the first server-backed
+    microscope config) so the common case is just SSH credentials away.
+    """
+    if server_url is None:
+        server_url = sc.detect_state(probe_server=False).server_url
+    dlg = UpdateServerDialog(parent, server_url=server_url)
     dlg.exec()
