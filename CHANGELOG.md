@@ -10,6 +10,21 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
+## [0.6.6] - 2026-11-04
+
+### Fixed
+- **Automated SSH server install now authenticates sudo.** The wizard's "set up
+  a new server over SSH" ran its install commands with `sudo` over a
+  non-interactive exec channel and never fed the password, so it failed with
+  "sudo: Authentication failed" even though the SSH login itself succeeded. It
+  now runs each command under `sudo -S` and feeds the password on stdin
+  (defaulting to the SSH login password; `sudo_password` can override it, or
+  give the user passwordless sudo). `-p ''` is avoided for sudo-rs
+  compatibility, and a failed-sudo error now explains the fix. SSH login also
+  forces password auth when a password is given (no key), so paramiko can't
+  exhaust the server's `MaxAuthTries` on agent keys and fail before trying the
+  password.
+
 ## [0.6.5] - 2026-11-04
 
 ### Fixed

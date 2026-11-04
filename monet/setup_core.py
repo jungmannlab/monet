@@ -1048,6 +1048,7 @@ def remote_install_server(
     git_ref=DEFAULT_GIT_REF,
     bind_host="0.0.0.0",
     on_output=None,
+    sudo_password=None,
 ):
     """Install/upgrade the monet server on ``host`` over SSH and mint a token.
 
@@ -1056,6 +1057,11 @@ def remote_install_server(
     dependency (``pip install 'monet[setup]'``) and that ``user`` can ``sudo``.
     Returns ``{'url': ..., 'token': ...}``. Raises on any failure so the caller
     can fall back to :func:`guided_server_instructions`.
+
+    The install commands need root, so they run under ``sudo -S`` with the
+    password fed on stdin. ``sudo_password`` defaults to the SSH ``password``
+    (the login password is usually also the sudo password); for key-based SSH
+    login, pass it explicitly or give ``user`` passwordless sudo (NOPASSWD).
 
     ``on_output`` (optional) is called with each command's combined output for
     live progress display.
@@ -1069,18 +1075,28 @@ def remote_install_server(
         ) from exc
 
     rig = rig or "acquisition-rig"
+    if sudo_password is None:
+        sudo_password = password
 
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    client.connect(
+    connect_kwargs = dict(
         hostname=host,
         port=ssh_port,
         username=user,
         password=password,
         key_filename=key_filename,
     )
+    if password and not key_filename:
+        # Force password auth: otherwise paramiko offers agent / default keys
+        # first and can exhaust the server's MaxAuthTries — failing with
+        # "Authentication failed" before it ever tries the password the user
+        # typed (which works fine manually).
+        connect_kwargs["look_for_keys"] = False
+        connect_kwargs["allow_agent"] = False
+    client.connect(**connect_kwargs)
 
-    def run(cmd):
+    def run(cmd, sudo=False):
         # Combine stderr into stdout and drain the channel incrementally: a
         # read-stdout-fully-then-stderr sequence deadlocks once either pipe
         # fills, and setup-server.sh can be chatty.
@@ -1089,6 +1105,13 @@ def remote_install_server(
         chan = client.get_transport().open_session()
         chan.set_combine_stderr(True)
         chan.exec_command(cmd)
+        if sudo:
+            # `sudo -S` reads the password from stdin (there is no tty on an
+            # exec channel, so it can't prompt). Feed it, then signal EOF so
+            # neither sudo nor the script blocks waiting for more input.
+            if sudo_password:
+                chan.sendall((sudo_password + "\n").encode())
+            chan.shutdown_write()
         chunks = []
         while True:
             data = chan.recv(4096)
@@ -1102,15 +1125,42 @@ def remote_install_server(
         chan.close()
         out = "".join(chunks)
         if code != 0:
+            hint = ""
+            low = out.lower()
+            if "sudo" in low and (
+                "authentication fail" in low
+                or "incorrect password" in low
+                or "a password is required" in low
+                or "a terminal is required" in low
+            ):
+                hint = (
+                    "\n\nThe server rejected sudo. The automated install runs "
+                    "commands as root via sudo: make sure the SSH login "
+                    "password is also {user}'s sudo password (it is by "
+                    "default), or give {user} passwordless sudo (NOPASSWD) on "
+                    "the server — otherwise use the manual steps.".format(
+                        user=user
+                    )
+                )
             raise RuntimeError(
-                "remote command failed ({}): {}\n{}".format(code, cmd, out)
+                "remote command failed ({}): {}\n{}{}".format(
+                    code, cmd, out, hint
+                )
             )
         return out
 
+    # `sudo -S` reads the password from stdin (no tty on an exec channel). Use
+    # just `-S` — not `-p ''` — for compatibility with sudo-rs (the Rust sudo
+    # default on recent Ubuntu), which may not accept the prompt flag; its
+    # "[sudo] password" prompt then just appears in the combined output, which
+    # is harmless. Each remote command uses a single sudo, so exactly one
+    # password line is fed.
+    sudo = "sudo -S "
     try:
         install = (
             "curl -fsSL {url} -o /tmp/setup-server.sh && "
-            "sudo GIT_REF={ref} MONET_HOST={bind} MONET_PORT={port} "
+            + sudo
+            + "GIT_REF={ref} MONET_HOST={bind} MONET_PORT={port} "
             "bash /tmp/setup-server.sh"
         ).format(
             url=SETUP_SCRIPT_URL.format(ref=git_ref),
@@ -1118,13 +1168,13 @@ def remote_install_server(
             bind=bind_host,
             port=port,
         )
-        run(install)
+        run(install, sudo=True)
         token_out = run(
-            "sudo -u monet monet token add --scope write --label {rig} "
-            "--env-file {env} && sudo systemctl restart monet".format(
-                rig=rig, env=SERVER_ENV_FILE
-            )
+            sudo + "-u monet monet token add --scope write --label {rig} "
+            "--env-file {env}".format(rig=rig, env=SERVER_ENV_FILE),
+            sudo=True,
         )
+        run(sudo + "systemctl restart monet", sudo=True)
     finally:
         client.close()
 
