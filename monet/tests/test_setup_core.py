@@ -602,7 +602,8 @@ class TestServerHelpers(unittest.TestCase):
 
         outputs = {
             "token add": "PAINT_MONET_TOKEN=tok-xyz\n",
-            "is-active": "active\n",  # service came up after restart
+            # service came up after restart (health-check probe marker)
+            "MONET_IS_ACTIVE": "MONET_IS_ACTIVE=active\n",
         }
 
         class _Transport:
@@ -660,7 +661,7 @@ class TestServerHelpers(unittest.TestCase):
             record,
             {
                 "token add": "PAINT_MONET_TOKEN=tok\n",
-                "is-active": "failed\n",
+                "MONET_IS_ACTIVE": "MONET_IS_ACTIVE=failed\n",
                 "status monet": "monet.service: failed\n",
             },
         )

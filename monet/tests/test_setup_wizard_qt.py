@@ -395,6 +395,38 @@ class TestEditConfigDialog(unittest.TestCase):
             kw = yaml.full_load(f)["Stokes"]["powermeter"]["init_kwargs"]
         self.assertEqual(kw.get("legacy"), 7)
 
+    def test_clearing_a_modeled_kwarg_removes_it_keeps_unmodeled(self):
+        data = yaml.full_load(open(self.cfg))
+        data["Stokes"]["attenuation"] = {
+            "classpath": "monet.attenuation.KinesisAttenuator",
+            "init_kwargs": {"serial": "27257033", "legacy_extra": 9},
+        }
+        with open(self.cfg, "w") as f:
+            yaml.dump(data, f)
+        d = swq.EditConfigDialog(
+            configs_path=self.cfg, protocols_path=self.proto
+        )
+        self.assertEqual(d._at_form.current_name(), "KinesisAttenuator")
+        for fname, (f, edit) in d._at_form._widgets.items():
+            if fname == "serial":
+                edit.setText("")  # user clears the serial
+        d._save()
+        with open(self.cfg) as fh:
+            kw = yaml.full_load(fh)["Stokes"]["attenuation"]["init_kwargs"]
+        self.assertNotIn("serial", kw)  # cleared modeled field removed
+        self.assertEqual(kw.get("legacy_extra"), 9)  # unmodeled key preserved
+
+    def test_absent_section_form_is_disabled(self):
+        data = yaml.full_load(open(self.cfg))
+        del data["Stokes"]["analysis"]
+        with open(self.cfg, "w") as f:
+            yaml.dump(data, f)
+        d = swq.EditConfigDialog(
+            configs_path=self.cfg, protocols_path=self.proto
+        )
+        self.assertFalse(d._an_form.isEnabled())  # absent -> disabled
+        self.assertTrue(d._pm_form.isEnabled())  # present -> editable
+
     def test_bad_power_input_writes_nothing(self):
         d = swq.EditConfigDialog(
             configs_path=self.cfg, protocols_path=self.proto

@@ -1877,8 +1877,11 @@ def list_calibration_runs(
     Returns
     -------
     list of dict
-        One dict per run (see :func:`_make_run`), newest run first. Empty if the
-        database has no ``powermeter_type`` annotation or cannot be read.
+        One dict per run (see :func:`_make_run`), newest run first. A database
+        with no ``powermeter_type`` column at all (e.g. migrated from an old
+        Excel file) is treated as all-BFP so its calibrations still appear; in
+        an annotated database a row with a missing/unrecognized value is
+        skipped. Empty if the database cannot be read.
     """
     index = {DEVICE_TAG: device} if device else {}
     try:
@@ -1896,16 +1899,19 @@ def list_calibration_runs(
     for idx, row in db.iterrows():
         if not isinstance(idx, tuple):
             idx = (idx,)
-        pm = (
-            normalize_powermeter_type(row.get("powermeter_type"))
-            if has_pm
-            else POWERMETER_BFP
-        )
-        if pm not in (POWERMETER_SAMPLE, POWERMETER_BFP):
-            # Legacy calibrations (e.g. migrated from an old Excel database)
-            # predate the powermeter-position annotation; treat them as BFP (the
-            # historical single-meter position) so they still appear and can be
-            # paired, instead of being silently filtered out.
+        if has_pm:
+            # Annotated database: honour the per-row position, and skip a row
+            # whose value is missing/unrecognized — in a *mixed* DB a stray NaN
+            # must NOT be mislabelled BFP and wrongly paired against a real
+            # sample-plane run.
+            pm = normalize_powermeter_type(row.get("powermeter_type"))
+            if pm not in (POWERMETER_SAMPLE, POWERMETER_BFP):
+                continue
+        else:
+            # No powermeter_type column at all: a pre-annotation database (e.g.
+            # migrated from an old Excel file). Treat every calibration as BFP
+            # (the historical single-meter position) so they still appear and
+            # can be paired, instead of the whole tab being empty.
             pm = POWERMETER_BFP
         date = str(idx[3])[:10] if len(idx) > 3 else ""
         time_v = str(idx[4])[:5] if len(idx) > 4 else ""

@@ -237,6 +237,11 @@ class _DriverForm(QWidget):
         """True if the last :meth:`load` matched a registered driver."""
         return getattr(self, "_loaded_ok", True)
 
+    def modeled_fields(self):
+        """Names of the init_kwargs this form has a widget for (the current
+        driver's fields)."""
+        return set(self._widgets.keys())
+
 
 # ──────────────────────────────────────────────────────────────────────────
 # Pages
@@ -1436,23 +1441,40 @@ class EditConfigDialog(QDialog):
         self._wl_spin.setValue(int(index.get("wavelength [nm]", 488) or 488))
         self._lp_spin.setValue(int(index.get("laser_power [mW]", 100) or 100))
         unknown = []
+        absent = []
         for cat, frm in self._driver_forms:
             sec = self._entry.get(cat)
+            # Disable a section the config doesn't have: this dialog edits
+            # existing sections (saving never ADDS one), so a form the user
+            # can't save would otherwise discard their input silently. Adding a
+            # section is done via the setup wizard.
+            frm.setEnabled(bool(sec))
             if sec:
                 frm.load(sec)
                 if not frm.loaded_ok():
                     unknown.append(cat)
+            else:
+                absent.append(cat)
         self._protocol = (
             sc.read_protocol_entry(name, self._protocols_path) or {}
         )
         self._rebuild_protocol()
+        notes = []
         if unknown:
-            self._status.setText(
-                "Note: unrecognized driver for {} — it is kept unchanged on "
-                "save.".format(", ".join(unknown))
+            notes.append(
+                "unrecognized driver for {} (kept unchanged on save)".format(
+                    ", ".join(unknown)
+                )
             )
-        else:
-            self._status.setText("")
+        if absent:
+            notes.append(
+                "{} not in this config (disabled — add via the wizard)".format(
+                    ", ".join(absent)
+                )
+            )
+        self._status.setText(
+            "Note: " + "; ".join(notes) + "." if notes else ""
+        )
 
     def _rebuild_protocol(self):
         while self._proto_host.rowCount():
@@ -1503,13 +1525,19 @@ class EditConfigDialog(QDialog):
             block = sc._section(cat, frm.section())
             classpath = block["classpath"]
             kwargs = block["init_kwargs"]
-            # If the driver is unchanged, overlay the edited fields onto the
-            # original init_kwargs so any kwarg the form doesn't model (a legacy
-            # / extra key) is preserved rather than silently dropped.
+            # If the driver is unchanged, carry over only the original kwargs
+            # the form has NO widget for (legacy/extra keys) — the form's own
+            # values win for modeled fields, so a field the user cleared is
+            # actually removed rather than resurrected from the old value.
             if (self._entry.get(cat) or {}).get("classpath") == classpath:
-                preserved = dict(
-                    (self._entry[cat] or {}).get("init_kwargs") or {}
-                )
+                modeled = frm.modeled_fields()
+                preserved = {
+                    k: v
+                    for k, v in (
+                        (self._entry[cat] or {}).get("init_kwargs") or {}
+                    ).items()
+                    if k not in modeled
+                }
                 preserved.update(kwargs)
                 kwargs = preserved
             entry[cat] = {"classpath": classpath, "init_kwargs": kwargs}

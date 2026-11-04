@@ -670,6 +670,15 @@ class TestAutoOffTimer(unittest.TestCase):
         tab.set_expert_view(False)
         self.assertTrue(tab._autooff_group.isHidden())
 
+    def test_auto_off_stays_visible_while_armed_outside_expert(self):
+        tab = SetPowerTab()
+        tab.set_expert_view(False)
+        self.assertTrue(tab._autooff_group.isHidden())
+        tab._btn_autooff.setChecked(True)  # arm (while in expert in practice)
+        self.assertFalse(tab._autooff_group.isHidden())  # stays reachable
+        tab._btn_autooff.setChecked(False)  # disarm
+        self.assertTrue(tab._autooff_group.isHidden())
+
     def test_disconnect_cancels_armed_auto_off(self):
         tab = SetPowerTab()
         tab._btn_autooff.setChecked(True)

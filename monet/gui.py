@@ -2374,9 +2374,16 @@ class SetPowerTab(_MonetTab):
             self._hw_att_group,
             self._hw_pwr_group,
             self._hw_sep,
-            self._autooff_group,
         ):
             w.setVisible(self._expert)
+        self._update_autooff_visibility()
+
+    def _update_autooff_visibility(self):
+        # Expert-only to arm, but stay visible while armed so the countdown and
+        # Cancel button remain reachable even after leaving expert view.
+        self._autooff_group.setVisible(
+            self._expert or self._btn_autooff.isChecked()
+        )
 
     def _build_ui(self):
         layout = QVBoxLayout(self)
@@ -3087,7 +3094,10 @@ class SetPowerTab(_MonetTab):
 
         def _on_finished():
             self._action_buttons(True)
-            self._active_worker = None
+            # Only clear the "current" worker if this is it — under overlapping
+            # actions an earlier worker finishing mustn't null a newer one.
+            if self._active_worker is worker:
+                self._active_worker = None
             self._hw_workers.discard(worker)
 
         worker.result.connect(_on_success)
@@ -3990,6 +4000,8 @@ class SetPowerTab(_MonetTab):
             self._autooff_hours.setEnabled(True)
             self._btn_autooff.setText("Arm")
             self._autooff_label.setText("")
+        # Keep the group visible while armed even outside expert view.
+        self._update_autooff_visibility()
 
     def _autooff_tick(self):
         if self._autooff_deadline is None:

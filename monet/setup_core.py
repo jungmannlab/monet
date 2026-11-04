@@ -1259,11 +1259,23 @@ def remote_install_server(
         )
         run(sudo + "systemctl restart monet", sudo=True)
         # `systemctl restart` returns 0 even if the unit then crash-loops;
-        # confirm it actually came up before reporting success. (`is-active`
-        # exits non-zero when not active, so `|| true` keeps run() from
-        # raising, and we inspect the printed state.)
-        state = run("sleep 2; systemctl is-active monet || true").strip()
-        active = state.splitlines()[-1].strip() if state else ""
+        # confirm it actually came up before reporting success. Poll for up to
+        # ~15 s (the server can take a few seconds to bind), and emit the result
+        # on a marked line so stderr noise / shell banners don't confuse the
+        # parse. is-active's own stderr is discarded; `|| true` keeps run() from
+        # raising on its non-zero "not active" exit.
+        probe = (
+            "for i in $(seq 1 15); do "
+            "s=$(systemctl is-active monet 2>/dev/null || true); "
+            '[ "$s" = active ] && break; sleep 1; done; '
+            'echo "MONET_IS_ACTIVE=$s"'
+        )
+        out = run(probe)
+        active = ""
+        for line in out.splitlines():
+            line = line.strip()
+            if line.startswith("MONET_IS_ACTIVE="):
+                active = line.split("=", 1)[1]
         if active != "active":
             detail = run(
                 sudo + "systemctl --no-pager -l status monet || true",
@@ -1272,7 +1284,7 @@ def remote_install_server(
             raise RuntimeError(
                 "server installed but the monet service did not come up "
                 "(systemctl is-active = {!r}). Check the server:\n{}".format(
-                    state, detail[-1200:]
+                    active, detail[-1200:]
                 )
             )
     finally:
