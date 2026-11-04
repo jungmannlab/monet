@@ -52,7 +52,9 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription: "Additional shortcuts:"; Flags: unchecked
 
 [Files]
-Source: "..\dist\monet-gui.exe"; DestDir: "{app}"; Flags: ignoreversion
+; Onedir build: install the whole dist\monet-gui\ folder (exe + its _internal
+; dependencies) so there is no per-launch temp extraction.
+Source: "..\dist\monet-gui\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{autoprograms}\Monet GUI"; Filename: "{app}\monet-gui.exe"

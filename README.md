@@ -65,11 +65,14 @@ setup wizard then connects the machine to the calibration server and records the
 default microscope (see `MONET_MICROSCOPE` below), so the Start-menu shortcut
 launches straight into that microscope — no command-line argument needed.
 
-The same Release also carries the **portable `monet-gui.exe`** for anyone who
-prefers to run it without installing. Both are built by CI
-(`.github/workflows/release-windows.yml`): the exe from
-`packaging/monet-gui.spec` (PyInstaller) and the installer from
-`packaging/monet-gui.iss` (Inno Setup).
+The same Release also carries a **portable zip** (`monet-gui-portable-<version>.zip`)
+for anyone who prefers to run it without installing — unzip it and run
+`monet-gui.exe` inside. Both are built by CI
+(`.github/workflows/release-windows.yml`): a PyInstaller **onedir** bundle from
+`packaging/monet-gui.spec` (a folder, not a single exe — so there's no per-launch
+temp extraction, which avoids antivirus-induced "failed to load Python DLL"
+errors and starts faster) and the installer from `packaging/monet-gui.iss`
+(Inno Setup) that lays that folder down.
 
 The build bundles the `[hardware]` extra, so the **vendor SDK Python packages**
 (msl-equipment, pyvisa, nidaqmx, pycobolt, python-microscope, pycromanager,

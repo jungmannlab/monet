@@ -186,6 +186,31 @@ class TestSetupWizard(unittest.TestCase):
         )
 
 
+class TestPasswordReveal(unittest.TestCase):
+    def test_reveal_button_toggles_echo_mode(self):
+        from PyQt6.QtWidgets import QLineEdit, QToolButton
+
+        le = QLineEdit()
+        le.setEchoMode(QLineEdit.EchoMode.Password)
+        host = swq._with_reveal(le)
+        btn = host.findChild(QToolButton)
+        self.assertIsNotNone(btn)
+        self.assertEqual(le.echoMode(), QLineEdit.EchoMode.Password)
+        btn.setChecked(True)
+        self.assertEqual(le.echoMode(), QLineEdit.EchoMode.Normal)
+        btn.setChecked(False)
+        self.assertEqual(le.echoMode(), QLineEdit.EchoMode.Password)
+
+    def test_server_page_password_fields_have_reveal(self):
+        from PyQt6.QtWidgets import QToolButton
+
+        page = swq._ServerPage()
+        # the SSH password + token fields each got an eye toggle
+        for field in (page.ssh_pw, page.new_token, page.token_edit):
+            container = field.parentWidget()
+            self.assertIsNotNone(container.findChild(QToolButton))
+
+
 class TestMigrateUI(unittest.TestCase):
     def test_wizard_includes_import_page(self):
         wiz = swq.SetupWizard()

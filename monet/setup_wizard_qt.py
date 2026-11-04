@@ -37,6 +37,7 @@ from PyQt6.QtWidgets import (
     QSpinBox,
     QStackedWidget,
     QTextEdit,
+    QToolButton,
     QVBoxLayout,
     QWidget,
     QWizard,
@@ -46,6 +47,30 @@ from PyQt6.QtWidgets import (
 from monet import setup_core as sc
 
 logger = logging.getLogger(__name__)
+
+
+def _with_reveal(line_edit):
+    """Wrap a password ``QLineEdit`` with a show/hide (eye) toggle.
+
+    Returns a container widget to place in a form row in place of the line edit
+    itself; the field stays accessible as the original object.
+    """
+    host = QWidget()
+    lay = QHBoxLayout(host)
+    lay.setContentsMargins(0, 0, 0, 0)
+    lay.addWidget(line_edit)
+    btn = QToolButton()
+    btn.setCheckable(True)
+    btn.setText("\N{EYE}")  # 👁 eye glyph
+    btn.setToolTip("Show / hide")
+    btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    btn.toggled.connect(
+        lambda shown: line_edit.setEchoMode(
+            QLineEdit.EchoMode.Normal if shown else QLineEdit.EchoMode.Password
+        )
+    )
+    lay.addWidget(btn)
+    return host
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -258,7 +283,7 @@ class _ServerPage(QWizardPage):
         form.addRow("Server URL", self.url_edit)
         self.token_edit = QLineEdit()
         self.token_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        form.addRow("Token (if required)", self.token_edit)
+        form.addRow("Token (if required)", _with_reveal(self.token_edit))
         btn = QPushButton("Test connection")
         btn.clicked.connect(self._test_existing)
         form.addRow("", btn)
@@ -300,7 +325,7 @@ class _ServerPage(QWizardPage):
         ssh_form.addRow("SSH key file", self.ssh_key)
         self.ssh_pw = QLineEdit()
         self.ssh_pw.setEchoMode(QLineEdit.EchoMode.Password)
-        ssh_form.addRow("SSH password", self.ssh_pw)
+        ssh_form.addRow("SSH password", _with_reveal(self.ssh_pw))
         row = QHBoxLayout()
         btn_install = QPushButton("Install over SSH")
         btn_install.clicked.connect(self._install_ssh)
@@ -314,7 +339,9 @@ class _ServerPage(QWizardPage):
         self.new_token = QLineEdit()
         self.new_token.setEchoMode(QLineEdit.EchoMode.Password)
         tok_form = QFormLayout()
-        tok_form.addRow("Token (paste after install)", self.new_token)
+        tok_form.addRow(
+            "Token (paste after install)", _with_reveal(self.new_token)
+        )
         lay.addLayout(tok_form)
 
         self.log = QTextEdit()
