@@ -10,7 +10,26 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
-## [0.6.11] - 2026-11-04
+## [0.6.12] - 2026-11-04
+
+### Fixed
+- **Database tab now shows legacy / migrated calibrations.** It listed only
+  calibrations annotated with a `powermeter_type` (bfp/sample) and returned
+  nothing when that column was absent — so calibrations migrated from an old
+  Excel database (which predate the annotation) were invisible in the GUI even
+  though the server and web dashboard had them. Such calibrations are now
+  treated as **BFP** (the historical single-meter position) so they appear and
+  can be paired.
+- Code-review follow-ups: a second Set-Power hardware action (e.g. the auto-off
+  timer firing mid-operation) can no longer drop a still-running worker thread;
+  the automated SSH server install now **verifies the service actually came up**
+  after `systemctl restart` (a restart that exits 0 then crash-loops is reported
+  as a failure, not success); and the sudo-failure hint is locale-independent
+  (shown on any sudo-command failure instead of matching English error text).
+
+### Changed
+- **Setup ▸ Edit configuration…** pre-selects the microscope the GUI is
+  connected to (falling back to the `.env` default).
 
 ### Fixed
 - **Edit configuration dialog no longer corrupts entries** (code-review fixes):

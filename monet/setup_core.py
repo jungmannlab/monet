@@ -1205,18 +1205,16 @@ def remote_install_server(
         chan.close()
         out = "".join(chunks)
         if code != 0:
+            # The command ran under sudo (every install command does), so a
+            # sudo-password rejection is a likely cause. Append the hint on any
+            # sudo-command failure rather than matching English error text,
+            # which misses non-English server locales.
             hint = ""
-            low = out.lower()
-            if "sudo" in low and (
-                "authentication fail" in low
-                or "incorrect password" in low
-                or "a password is required" in low
-                or "a terminal is required" in low
-            ):
+            if sudo:
                 hint = (
-                    "\n\nThe server rejected sudo. The automated install runs "
-                    "commands as root via sudo: make sure the SSH login "
-                    "password is also {user}'s sudo password (it is by "
+                    "\n\nThis command ran as root via sudo. If it failed "
+                    "because sudo rejected the password, make sure the SSH "
+                    "login password is also {user}'s sudo password (it is by "
                     "default), or give {user} passwordless sudo (NOPASSWD) on "
                     "the server — otherwise use the manual steps.".format(
                         user=user
@@ -1260,6 +1258,23 @@ def remote_install_server(
             sudo=True,
         )
         run(sudo + "systemctl restart monet", sudo=True)
+        # `systemctl restart` returns 0 even if the unit then crash-loops;
+        # confirm it actually came up before reporting success. (`is-active`
+        # exits non-zero when not active, so `|| true` keeps run() from
+        # raising, and we inspect the printed state.)
+        state = run("sleep 2; systemctl is-active monet || true").strip()
+        active = state.splitlines()[-1].strip() if state else ""
+        if active != "active":
+            detail = run(
+                sudo + "systemctl --no-pager -l status monet || true",
+                sudo=True,
+            )
+            raise RuntimeError(
+                "server installed but the monet service did not come up "
+                "(systemctl is-active = {!r}). Check the server:\n{}".format(
+                    state, detail[-1200:]
+                )
+            )
     finally:
         client.close()
 

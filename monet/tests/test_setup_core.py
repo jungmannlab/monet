@@ -21,6 +21,74 @@ from unittest import mock
 from monet import setup_core as sc
 
 
+def _fake_paramiko(record, outputs, exit_status=0):
+    """A minimal fake `paramiko` module for remote_install_server tests.
+
+    Records opened channels (cmd + what was sent on stdin) in ``record`` and
+    replies with the first ``outputs`` value whose key is a substring of cmd.
+    """
+
+    class _Chan:
+        def __init__(self):
+            self.cmd = None
+            self.sent = b""
+            self._buf = b""
+            self._read = False
+
+        def set_combine_stderr(self, v):
+            pass
+
+        def exec_command(self, cmd):
+            self.cmd = cmd
+            out = ""
+            for key, val in outputs.items():
+                if key in cmd:
+                    out = val
+                    break
+            self._buf = out.encode()
+
+        def sendall(self, data):
+            self.sent += data
+
+        def shutdown_write(self):
+            pass
+
+        def recv(self, n):
+            if self._read:
+                return b""
+            self._read = True
+            return self._buf
+
+        def recv_exit_status(self):
+            return exit_status
+
+        def close(self):
+            pass
+
+    class _Transport:
+        def open_session(self):
+            ch = _Chan()
+            record["channels"].append(ch)
+            return ch
+
+    class _Client:
+        def set_missing_host_key_policy(self, p):
+            pass
+
+        def connect(self, **kw):
+            record["connect_kwargs"] = kw
+
+        def get_transport(self):
+            return _Transport()
+
+        def close(self):
+            pass
+
+    return types.SimpleNamespace(
+        SSHClient=lambda: _Client(), AutoAddPolicy=lambda: object()
+    )
+
+
 def _sim_answers(name="wiz_sim", database="./wiz_power.xlsx"):
     return {
         "name": name,
@@ -532,7 +600,10 @@ class TestServerHelpers(unittest.TestCase):
             def close(self):
                 pass
 
-        outputs = {"token add": "PAINT_MONET_TOKEN=tok-xyz\n"}
+        outputs = {
+            "token add": "PAINT_MONET_TOKEN=tok-xyz\n",
+            "is-active": "active\n",  # service came up after restart
+        }
 
         class _Transport:
             def open_session(self):
@@ -580,6 +651,23 @@ class TestServerHelpers(unittest.TestCase):
         ]
         self.assertTrue(install_cmds)
         self.assertIn("sudo -S env GIT_REF=", install_cmds[0])
+
+    def test_remote_install_fails_if_service_not_active(self):
+        # `systemctl restart` returns 0 but the unit then fails: is-active
+        # reports 'failed' -> the install must NOT report success.
+        record = {"channels": [], "connect_kwargs": None}
+        fake = _fake_paramiko(
+            record,
+            {
+                "token add": "PAINT_MONET_TOKEN=tok\n",
+                "is-active": "failed\n",
+                "status monet": "monet.service: failed\n",
+            },
+        )
+        with mock.patch.dict(sys.modules, {"paramiko": fake}):
+            with self.assertRaises(RuntimeError) as cm:
+                sc.remote_install_server("h", "u", password="p")
+        self.assertIn("did not come up", str(cm.exception))
 
 
 class TestFrozenPaths(unittest.TestCase):

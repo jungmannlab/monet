@@ -2347,6 +2347,10 @@ class SetPowerTab(_MonetTab):
         super().__init__(parent)
         self._pc = None
         self._active_worker = None  # keep alive to prevent GC
+        # All in-flight _run_hw workers, so a second action (e.g. the auto-off
+        # timer firing mid-operation) can't drop the only reference to a still-
+        # running QThread and trigger "QThread destroyed while running".
+        self._hw_workers = set()
         self._cancel_feedback = False
         self._laser_state: dict = {}  # {laser: (pwr_value, mode_data)}
         self._last_bp_positions = None  # last-read beam-path positions
@@ -3081,11 +3085,13 @@ class SetPowerTab(_MonetTab):
         def _on_finished():
             self._action_buttons(True)
             self._active_worker = None
+            self._hw_workers.discard(worker)
 
         worker.result.connect(_on_success)
         worker.error.connect(_on_error)
         worker.finished.connect(_on_finished)
         self._active_worker = worker
+        self._hw_workers.add(worker)
         worker.start()
 
     def _on_toggle_laser(self, checked):
@@ -5936,7 +5942,9 @@ class MonetMainWindow(QMainWindow):
     def _run_edit_config(self):
         from monet.setup_wizard_qt import open_edit_config
 
-        open_edit_config(self)
+        # Pre-select the microscope the GUI is connected to (falls back to the
+        # .env default inside the dialog).
+        open_edit_config(self, current=self._widget.current_microscope)
 
     def set_status(self, msg, timeout_ms=0):
         """Back-compat shim: forward to the status bar."""

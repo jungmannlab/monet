@@ -1888,18 +1888,25 @@ def list_calibration_runs(
         return []
     if not hasattr(db, "iterrows") or db.empty:
         return []
-    if "powermeter_type" not in db.columns:
-        return []
 
+    has_pm = "powermeter_type" in db.columns
     has_comment = "comment" in db.columns
 
     recs = []
     for idx, row in db.iterrows():
         if not isinstance(idx, tuple):
             idx = (idx,)
-        pm = normalize_powermeter_type(row.get("powermeter_type"))
+        pm = (
+            normalize_powermeter_type(row.get("powermeter_type"))
+            if has_pm
+            else POWERMETER_BFP
+        )
         if pm not in (POWERMETER_SAMPLE, POWERMETER_BFP):
-            continue
+            # Legacy calibrations (e.g. migrated from an old Excel database)
+            # predate the powermeter-position annotation; treat them as BFP (the
+            # historical single-meter position) so they still appear and can be
+            # paired, instead of being silently filtered out.
+            pm = POWERMETER_BFP
         date = str(idx[3])[:10] if len(idx) > 3 else ""
         time_v = str(idx[4])[:5] if len(idx) > 4 else ""
         try:

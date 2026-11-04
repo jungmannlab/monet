@@ -788,12 +788,18 @@ class TestCalibrationRuns(unittest.TestCase):
         # And they now appear as stored pairs.
         self.assertEqual(len(mio.load_factor_pairs(self.db)), 2)
 
-    def test_no_powermeter_type_no_runs(self):
+    def test_legacy_no_powermeter_type_shows_as_bfp(self):
+        # Calibrations without a powermeter_type annotation (e.g. migrated from
+        # an old Excel database) must still appear, treated as BFP — otherwise
+        # the Database tab is empty even though the server/web dashboard has the
+        # entries.
         _write_calib_db(
             self.db,
             [("TestScope", 488.0, 100.0, "2024-06-01", "10:00", {"amp": 40})],
         )
-        self.assertEqual(mio.list_calibration_runs(self.db, "TestScope"), [])
+        runs = mio.list_calibration_runs(self.db, "TestScope")
+        self.assertEqual(len(runs), 1)
+        self.assertEqual(runs[0]["powermeter_type"], mio.POWERMETER_BFP)
 
     def test_pair_records_carry_dates(self):
         rows = [
