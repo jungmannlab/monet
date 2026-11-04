@@ -662,11 +662,30 @@ class TestAutoOffTimer(unittest.TestCase):
         self.assertTrue(tab._autooff_hours.isEnabled())
         self.assertFalse(tab._autooff_timer.isActive())
 
+    def test_disconnect_cancels_armed_auto_off(self):
+        tab = SetPowerTab()
+        tab._btn_autooff.setChecked(True)
+        self.assertIsNotNone(tab._autooff_deadline)
+        tab.set_pc(None)  # disconnect
+        self.assertFalse(tab._btn_autooff.isChecked())
+        self.assertIsNone(tab._autooff_deadline)
+
+    def test_deadline_passed_without_pc_does_not_claim_off(self):
+        import time
+
+        tab = SetPowerTab()
+        tab._btn_autooff.setChecked(True)
+        tab._pc = None
+        tab._autooff_deadline = time.monotonic() - 1
+        tab._autooff_tick()
+        self.assertIn("no microscope connected", tab._autooff_label.text())
+
     def test_deadline_passed_fires_all_off_and_disarms(self):
         import time
         from unittest import mock
 
         tab = SetPowerTab()
+        tab._pc = object()  # connected, so the fire path runs
         tab._btn_autooff.setChecked(True)
         tab._autooff_deadline = time.monotonic() - 1  # already expired
         with mock.patch.object(tab, "_on_all_off") as off:

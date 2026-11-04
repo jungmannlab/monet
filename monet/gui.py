@@ -2710,6 +2710,10 @@ class SetPowerTab(_MonetTab):
 
     def set_pc(self, pc):
         self._pc = pc
+        if pc is None and self._btn_autooff.isChecked():
+            # Disconnecting clears the armed auto-off: it can't switch off
+            # hardware that's gone, and a later "lasers off" would be false.
+            self._btn_autooff.setChecked(False)
         self._laser_combo.blockSignals(True)
         self._laser_combo.clear()
         if pc is not None:
@@ -3985,6 +3989,14 @@ class SetPowerTab(_MonetTab):
         if remaining <= 0:
             # Disarm (resets the controls) then fire the shut-off.
             self._btn_autooff.setChecked(False)
+            if self._pc is None:
+                # No controller — be honest, don't claim lasers were switched
+                # off (set_pc normally cancels the timer on disconnect; this is
+                # the belt-and-suspenders path).
+                self._autooff_label.setText(
+                    "Auto-off elapsed — no microscope connected."
+                )
+                return
             self._autooff_label.setText("Auto-off fired — lasers off.")
             self._emit_status("Auto-off: switching all lasers off.", 0)
             self._on_all_off()

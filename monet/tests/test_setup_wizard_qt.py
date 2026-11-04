@@ -353,6 +353,47 @@ class TestEditConfigDialog(unittest.TestCase):
                 [50, 150, 300],
             )
 
+    def test_absent_section_is_not_added_on_save(self):
+        # A config with no 'analysis' section must not gain a default one.
+        data = yaml.full_load(open(self.cfg))
+        del data["Stokes"]["analysis"]
+        with open(self.cfg, "w") as f:
+            yaml.dump(data, f)
+        d = swq.EditConfigDialog(
+            configs_path=self.cfg, protocols_path=self.proto
+        )
+        d._db_edit.setText("http://srv:8000")
+        d._save()
+        with open(self.cfg) as f:
+            entry = yaml.full_load(f)["Stokes"]
+        self.assertNotIn("analysis", entry)
+        self.assertEqual(entry["database"], "http://srv:8000")
+
+    def test_preserves_unmodeled_init_kwarg_on_unchanged_driver(self):
+        data = yaml.full_load(open(self.cfg))
+        data["Stokes"]["powermeter"]["init_kwargs"]["legacy"] = 7
+        with open(self.cfg, "w") as f:
+            yaml.dump(data, f)
+        d = swq.EditConfigDialog(
+            configs_path=self.cfg, protocols_path=self.proto
+        )
+        d._save()  # driver unchanged
+        with open(self.cfg) as f:
+            kw = yaml.full_load(f)["Stokes"]["powermeter"]["init_kwargs"]
+        self.assertEqual(kw.get("legacy"), 7)
+
+    def test_bad_power_input_writes_nothing(self):
+        d = swq.EditConfigDialog(
+            configs_path=self.cfg, protocols_path=self.proto
+        )
+        d._db_edit.setText("http://CHANGED:8000")
+        d._power_edits[488].setText("10, 2o")  # invalid token
+        d._save()
+        with open(self.cfg) as f:
+            entry = yaml.full_load(f)["Stokes"]
+        self.assertEqual(entry["database"], "./s.xlsx")  # NOT written
+        self.assertIn("Invalid power", d._status.text())
+
     def test_unknown_driver_is_preserved_on_save(self):
         # A driver not in the registry must survive an edit+save unchanged.
         import yaml as _yaml
