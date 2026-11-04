@@ -10,6 +10,16 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
+## [0.6.10] - 2026-11-04
+
+### Added
+- **Setup ▸ Edit configuration…** — an editable dialog to change a microscope's
+  saved config (database, index, and the power-meter / attenuator / curve-model
+  drivers) and its protocol's per-laser power set-points, loaded from the saved
+  values. Lasers, beam-path devices and any unrecognized drivers are preserved
+  as-is (structural changes still go through the wizard); writes back to
+  configs.yaml / protocols.yaml with backups.
+
 ## [0.6.9] - 2026-11-04
 
 ### Added
