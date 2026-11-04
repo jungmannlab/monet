@@ -1333,10 +1333,17 @@ class EditConfigDialog(QDialog):
     needed for monet to pick up the change.
     """
 
-    def __init__(self, parent=None, configs_path=None, protocols_path=None):
+    def __init__(
+        self,
+        parent=None,
+        configs_path=None,
+        protocols_path=None,
+        current=None,
+    ):
         super().__init__(parent)
         import monet
 
+        self._current = current or getattr(monet, "DEFAULT_MICROSCOPE", None)
         self.setWindowTitle("Edit microscope configuration")
         self.resize(640, 640)
         self._configs_path = configs_path or (
@@ -1355,6 +1362,11 @@ class EditConfigDialog(QDialog):
         self._combo = QComboBox()
         for name in sc.existing_entry_names(self._configs_path):
             self._combo.addItem(name, name)
+        # Pre-select the currently-connected / default microscope.
+        if self._current:
+            i = self._combo.findData(self._current)
+            if i >= 0:
+                self._combo.setCurrentIndex(i)
         self._combo.currentIndexChanged.connect(self._load_selected)
         top.addWidget(self._combo, 1)
         lay.addLayout(top)
@@ -1486,9 +1498,11 @@ class EditConfigDialog(QDialog):
                 continue
             if not frm.loaded_ok():
                 continue
-            sec = frm.section()
-            classpath = sc.classpath_for(cat, sec["class"])
-            kwargs = dict(sec["init_kwargs"])
+            # Reuse the shared {classpath, init_kwargs} builder (same shape the
+            # wizard's build_microscope_entry uses) rather than re-implementing.
+            block = sc._section(cat, frm.section())
+            classpath = block["classpath"]
+            kwargs = block["init_kwargs"]
             # If the driver is unchanged, overlay the edited fields onto the
             # original init_kwargs so any kwarg the form doesn't model (a legacy
             # / extra key) is preserved rather than silently dropped.
@@ -1517,9 +1531,12 @@ class EditConfigDialog(QDialog):
             self._status.setText("Save failed: {}".format(exc))
 
 
-def open_edit_config(parent=None):
-    """Open the standalone config/protocol editor (GUI Setup menu)."""
-    EditConfigDialog(parent).exec()
+def open_edit_config(parent=None, current=None):
+    """Open the standalone config/protocol editor (GUI Setup menu).
+
+    ``current`` pre-selects that microscope (the one the GUI is connected to).
+    """
+    EditConfigDialog(parent, current=current).exec()
 
 
 class SetupWizard(QWizard):

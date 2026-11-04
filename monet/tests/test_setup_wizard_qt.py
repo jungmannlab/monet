@@ -326,6 +326,19 @@ class TestEditConfigDialog(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
+    def test_current_microscope_is_preselected(self):
+        data = yaml.full_load(open(self.cfg))
+        data["Aaa"] = {"database": "./a.xlsx", "index": {"name": "Aaa"}}
+        with open(self.cfg, "w") as f:
+            yaml.dump(data, f)
+        d = swq.EditConfigDialog(
+            configs_path=self.cfg,
+            protocols_path=self.proto,
+            current="Stokes",
+        )
+        # "Aaa" sorts first, but current= pre-selects Stokes.
+        self.assertEqual(d._combo.currentData(), "Stokes")
+
     def test_loads_saved_values(self):
         d = swq.EditConfigDialog(
             configs_path=self.cfg, protocols_path=self.proto
