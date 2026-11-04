@@ -353,6 +353,15 @@ class _ServerPage(QWizardPage):
         self.ssh_pw = QLineEdit()
         self.ssh_pw.setEchoMode(QLineEdit.EchoMode.Password)
         ssh_form.addRow("SSH password", _with_reveal(self.ssh_pw))
+        self.sudo_pw = QLineEdit()
+        self.sudo_pw.setEchoMode(QLineEdit.EchoMode.Password)
+        self.sudo_pw.setPlaceholderText("blank = use the SSH password")
+        self.sudo_pw.setToolTip(
+            "Only needed if the user's sudo password differs from the SSH "
+            "login password (e.g. key-based login). The install runs as root "
+            "via sudo."
+        )
+        ssh_form.addRow("sudo password", _with_reveal(self.sudo_pw))
         row = QHBoxLayout()
         btn_install = QPushButton("Install over SSH")
         btn_install.clicked.connect(self._install_ssh)
@@ -421,6 +430,9 @@ class _ServerPage(QWizardPage):
                 user=user,
                 password=self.ssh_pw.text() or None,
                 key_filename=self.ssh_key.text().strip() or None,
+                # Defaults to the SSH password in remote_install_server; only
+                # pass a distinct sudo password when the user entered one.
+                sudo_password=self.sudo_pw.text() or None,
                 port=self.port_spin.value(),
                 rig=self.rig_edit.text().strip() or "acquisition-rig",
             )
@@ -1359,6 +1371,11 @@ class EditConfigDialog(QDialog):
         self._pm_form = _DriverForm("powermeter")
         self._at_form = _DriverForm("attenuation")
         self._an_form = _DriverForm("analysis")
+        self._driver_forms = (
+            ("powermeter", self._pm_form),
+            ("attenuation", self._at_form),
+            ("analysis", self._an_form),
+        )
         form.addRow("Power meter", self._pm_form)
         form.addRow("Attenuator", self._at_form)
         form.addRow("Curve model", self._an_form)
@@ -1407,11 +1424,7 @@ class EditConfigDialog(QDialog):
         self._wl_spin.setValue(int(index.get("wavelength [nm]", 488) or 488))
         self._lp_spin.setValue(int(index.get("laser_power [mW]", 100) or 100))
         unknown = []
-        for cat, frm in (
-            ("powermeter", self._pm_form),
-            ("attenuation", self._at_form),
-            ("analysis", self._an_form),
-        ):
+        for cat, frm in self._driver_forms:
             sec = self._entry.get(cat)
             if sec:
                 frm.load(sec)
@@ -1444,6 +1457,21 @@ class EditConfigDialog(QDialog):
         name = self._name()
         if not name:
             return
+        # Validate ALL protocol power inputs up front so a typo can't leave a
+        # half-written state (configs.yaml committed, protocols.yaml not).
+        new_powers = {}
+        for laser, edit in self._power_edits.items():
+            try:
+                vals = sc.parse_number_list(edit.text())
+            except Exception:
+                self._status.setText(
+                    "Invalid power value for {} nm: {!r} — nothing "
+                    "saved.".format(laser, edit.text())
+                )
+                return
+            if vals:
+                new_powers[laser] = vals
+
         entry = dict(self._entry)  # preserve lasers / beampath / other keys
         entry["database"] = self._db_edit.text().strip()
         idx = dict(entry.get("index", {}) or {})
@@ -1451,28 +1479,33 @@ class EditConfigDialog(QDialog):
         idx["wavelength [nm]"] = self._wl_spin.value()
         idx["laser_power [mW]"] = self._lp_spin.value()
         entry["index"] = idx
-        for cat, frm in (
-            ("powermeter", self._pm_form),
-            ("attenuation", self._at_form),
-            ("analysis", self._an_form),
-        ):
-            if not frm.loaded_ok() and cat in self._entry:
-                continue  # keep the original (unrecognized) driver as-is
+        for cat, frm in self._driver_forms:
+            # Only edit sections the entry actually had: never ADD a default
+            # section for one it lacked, and keep an unrecognized driver as-is.
+            if cat not in self._entry:
+                continue
+            if not frm.loaded_ok():
+                continue
             sec = frm.section()
-            entry[cat] = {
-                "classpath": sc.classpath_for(cat, sec["class"]),
-                "init_kwargs": sec["init_kwargs"],
-            }
+            classpath = sc.classpath_for(cat, sec["class"])
+            kwargs = dict(sec["init_kwargs"])
+            # If the driver is unchanged, overlay the edited fields onto the
+            # original init_kwargs so any kwarg the form doesn't model (a legacy
+            # / extra key) is preserved rather than silently dropped.
+            if (self._entry.get(cat) or {}).get("classpath") == classpath:
+                preserved = dict(
+                    (self._entry[cat] or {}).get("init_kwargs") or {}
+                )
+                preserved.update(kwargs)
+                kwargs = preserved
+            entry[cat] = {"classpath": classpath, "init_kwargs": kwargs}
         try:
             sc.write_microscope_config(name, entry, self._configs_path)
             msgs = ["Saved '{}' to {}".format(name, self._configs_path)]
-            if self._power_edits and self._protocols_path:
+            if new_powers and self._protocols_path:
                 proto = dict(self._protocol)
                 powers = dict(proto.get("laser_powers") or {})
-                for laser, edit in self._power_edits.items():
-                    vals = sc.parse_number_list(edit.text())
-                    if vals:
-                        powers[laser] = vals
+                powers.update(new_powers)
                 proto["laser_powers"] = powers
                 sc.write_protocol_entry(name, proto, self._protocols_path)
                 msgs.append("protocol to {}".format(self._protocols_path))

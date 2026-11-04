@@ -1,13 +1,13 @@
 ; Inno Setup script for the standalone Windows monet GUI installer.
 ;
-; Produces Monet-Setup-<version>.exe, which *installs* the portable
-; monet-gui.exe (from packaging/monet-gui.spec) per-user — no admin rights —
-; and creates a proper "Monet GUI" Start-menu shortcut, an uninstaller, and an
-; Add/Remove Programs entry. This replaces the "download the bare exe and run
-; it from Downloads" flow: after running the installer the GUI is actually
-; installed and launches from the Start menu by name.
+; Produces Monet-Setup-<version>.exe, which *installs* the onedir bundle built
+; by packaging/monet-gui.spec (the folder dist\monet-gui\ with monet-gui.exe
+; inside) per-user — no admin rights — and creates a proper "Monet GUI"
+; Start-menu shortcut, an uninstaller, and an Add/Remove Programs entry. After
+; running the installer the GUI is actually installed and launches from the
+; Start menu by name (no per-launch temp extraction — see the spec).
 ;
-; Build locally (after dist\monet-gui.exe exists):
+; Build locally (after the onedir folder dist\monet-gui\ exists):
 ;     pip install ".[gui]" pyinstaller
 ;     pyinstaller --clean --noconfirm packaging/monet-gui.spec
 ;     iscc /DMyAppVersion=0.6.1 packaging\monet-gui.iss

@@ -10,7 +10,21 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
-## [0.6.10] - 2026-11-04
+## [0.6.11] - 2026-11-04
+
+### Fixed
+- **Edit configuration dialog no longer corrupts entries** (code-review fixes):
+  it no longer adds a default driver section for a section the config didn't
+  have, preserves driver `init_kwargs` the form doesn't model (unchanged
+  driver), and validates all protocol power inputs *before* writing — so a typo
+  can't leave configs.yaml written while the status says "Save failed".
+- **Laser auto-off timer** is cancelled when the microscope disconnects, and no
+  longer claims "lasers off" at the deadline when nothing is connected.
+
+### Added
+- Setup wizard SSH install: an optional **sudo password** field (defaults to the
+  SSH login password) — so a key-based login with a password-protected sudo can
+  complete the automated server install.
 
 ### Added
 - **Setup ▸ Edit configuration…** — an editable dialog to change a microscope's
