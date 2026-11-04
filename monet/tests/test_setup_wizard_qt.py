@@ -274,6 +274,107 @@ class TestPickExistingMicroscope(unittest.TestCase):
         self.assertEqual(data["Stokes"]["database"], "http://s:8000")
 
 
+class TestEditConfigDialog(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.cfg = os.path.join(self.tmp, "configs.yaml")
+        self.proto = os.path.join(self.tmp, "protocols.yaml")
+        with open(self.cfg, "w") as f:
+            yaml.dump(
+                {
+                    "Stokes": {
+                        "database": "./s.xlsx",
+                        "index": {
+                            "name": "Stokes",
+                            "wavelength [nm]": 561,
+                            "laser_power [mW]": 200,
+                        },
+                        "powermeter": {
+                            "classpath": "monet.powermeter.TestPowerMeter",
+                            "init_kwargs": {"amp": 50},
+                        },
+                        "attenuation": {
+                            "classpath": "monet.attenuation.TestAttenuator",
+                            "init_kwargs": {},
+                        },
+                        "analysis": {
+                            "classpath": "monet.analysis."
+                            "SinusAttenuationCurveAnalyzer",
+                            "init_kwargs": {},
+                        },
+                        "lasers": {
+                            488: {
+                                "classpath": "monet.laser.TestLaser",
+                                "init_kwargs": {},
+                            }
+                        },
+                    }
+                },
+                f,
+            )
+        with open(self.proto, "w") as f:
+            yaml.dump(
+                {
+                    "Stokes": {
+                        "laser_sequence": [488],
+                        "laser_powers": {488: [100, 200]},
+                    }
+                },
+                f,
+            )
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_loads_saved_values(self):
+        d = swq.EditConfigDialog(
+            configs_path=self.cfg, protocols_path=self.proto
+        )
+        self.assertEqual(d._db_edit.text(), "./s.xlsx")
+        self.assertEqual(d._wl_spin.value(), 561)
+        self.assertEqual(d._pm_form.current_name(), "TestPowerMeter")
+        self.assertTrue(d._pm_form.loaded_ok())
+        self.assertIn(488, d._power_edits)
+
+    def test_save_edits_and_preserves_untouched_sections(self):
+        d = swq.EditConfigDialog(
+            configs_path=self.cfg, protocols_path=self.proto
+        )
+        d._db_edit.setText("http://srv:8000")
+        d._power_edits[488].setText("50, 150, 300")
+        d._save()
+        with open(self.cfg) as f:
+            entry = yaml.full_load(f)["Stokes"]
+        self.assertEqual(entry["database"], "http://srv:8000")
+        self.assertIn("lasers", entry)  # preserved, not edited away
+        with open(self.proto) as f:
+            self.assertEqual(
+                yaml.full_load(f)["Stokes"]["laser_powers"][488],
+                [50, 150, 300],
+            )
+
+    def test_unknown_driver_is_preserved_on_save(self):
+        # A driver not in the registry must survive an edit+save unchanged.
+        import yaml as _yaml
+
+        data = _yaml.full_load(open(self.cfg))
+        data["Stokes"]["powermeter"] = {
+            "classpath": "some.custom.Meter",
+            "init_kwargs": {"x": 1},
+        }
+        with open(self.cfg, "w") as f:
+            _yaml.dump(data, f)
+        d = swq.EditConfigDialog(
+            configs_path=self.cfg, protocols_path=self.proto
+        )
+        self.assertFalse(d._pm_form.loaded_ok())
+        d._save()
+        with open(self.cfg) as f:
+            pm = yaml.full_load(f)["Stokes"]["powermeter"]
+        self.assertEqual(pm["classpath"], "some.custom.Meter")
+        self.assertEqual(pm["init_kwargs"], {"x": 1})
+
+
 class TestPasswordReveal(unittest.TestCase):
     def test_reveal_button_toggles_echo_mode(self):
         from PyQt6.QtWidgets import QLineEdit, QToolButton

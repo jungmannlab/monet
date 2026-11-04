@@ -440,6 +440,16 @@ class TestMainWindowChrome(unittest.TestCase):
         menus = [a.text() for a in win.menuBar().actions()]
         self.assertIn("&Help", menus)
         self.assertIn("&Setup", menus)
+        setup_actions = [
+            a.text()
+            for m in win.menuBar().actions()
+            if m.text() == "&Setup"
+            for a in m.menu().actions()
+        ]
+        self.assertTrue(
+            any("Edit configuration" in a for a in setup_actions),
+            setup_actions,
+        )
         help_actions = [
             a.text()
             for m in win.menuBar().actions()

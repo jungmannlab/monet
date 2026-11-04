@@ -721,6 +721,15 @@ def read_microscope_entry(name, configs_path):
     return _load_yaml(configs_path).get(name)
 
 
+def read_protocol_entry(name, protocols_path):
+    """Return the protocol entry for ``name`` from the ``protocols_path`` file.
+
+    The protocols-file counterpart to :func:`read_microscope_entry`; ``None``
+    if the file or entry is absent.
+    """
+    return _load_yaml(protocols_path).get(name)
+
+
 def repoint_microscope_to_server(name, server_url, configs_path):
     """Set an existing microscope's ``database`` to ``server_url`` and persist.
 
