@@ -98,6 +98,28 @@ class _SshInstallWorker(QThread):
         self.done.emit(result)
 
 
+class _SshMintWorker(QThread):
+    """Runs ``remote_mint_token`` off the GUI thread; streams via signals."""
+
+    output = pyqtSignal(str)
+    done = pyqtSignal(str)  # the minted token
+    failed = pyqtSignal(str)
+
+    def __init__(self, kwargs, parent=None):
+        super().__init__(parent)
+        self._kwargs = kwargs
+
+    def run(self):
+        try:
+            token = sc.remote_mint_token(
+                on_output=self.output.emit, **self._kwargs
+            )
+        except Exception as exc:
+            self.failed.emit(str(exc))
+            return
+        self.done.emit(token)
+
+
 class MigrateWorker(QThread):
     """Runs an Excel→server migration off the GUI thread.
 
@@ -309,7 +331,8 @@ class _ServerPage(QWizardPage):
 
     def _build_existing(self):
         w = QWidget()
-        form = QFormLayout(w)
+        lay = QVBoxLayout(w)
+        form = QFormLayout()
         self.url_edit = QLineEdit()
         self.url_edit.setPlaceholderText("http://host:8000")
         form.addRow("Server URL", self.url_edit)
@@ -319,6 +342,42 @@ class _ServerPage(QWizardPage):
         btn = QPushButton("Test connection")
         btn.clicked.connect(self._test_existing)
         form.addRow("", btn)
+        lay.addLayout(form)
+
+        # Convenience: mint this rig's token on the (already-running) server
+        # over SSH instead of making the user SSH in and run `monet token add`
+        # by hand. The server host is taken from the URL above.
+        ssh_box = QGroupBox("Mint a token over SSH (optional)")
+        ssh_form = QFormLayout(ssh_box)
+        self.ex_rig_edit = QLineEdit("acquisition-rig")
+        ssh_form.addRow("Rig label (for its token)", self.ex_rig_edit)
+        self.ex_ssh_user = QLineEdit()
+        ssh_form.addRow("SSH user", self.ex_ssh_user)
+        self.ex_ssh_key = QLineEdit()
+        self.ex_ssh_key.setPlaceholderText(
+            "private-key file (blank = password)"
+        )
+        ssh_form.addRow("SSH key file", self.ex_ssh_key)
+        self.ex_ssh_pw = QLineEdit()
+        self.ex_ssh_pw.setEchoMode(QLineEdit.EchoMode.Password)
+        ssh_form.addRow("SSH password", _with_reveal(self.ex_ssh_pw))
+        self.ex_sudo_pw = QLineEdit()
+        self.ex_sudo_pw.setEchoMode(QLineEdit.EchoMode.Password)
+        self.ex_sudo_pw.setPlaceholderText("blank = use the SSH password")
+        self.ex_sudo_pw.setToolTip(
+            "Only needed if the user's sudo password differs from the SSH "
+            "login password (e.g. key-based login). Minting runs as root via "
+            "sudo."
+        )
+        ssh_form.addRow("sudo password", _with_reveal(self.ex_sudo_pw))
+        btn_mint = QPushButton("Mint token over SSH")
+        btn_mint.clicked.connect(self._mint_existing)
+        ssh_form.addRow("", btn_mint)
+        self.ex_log = QTextEdit()
+        self.ex_log.setReadOnly(True)
+        self.ex_log.setMaximumHeight(120)
+        ssh_form.addRow(self.ex_log)
+        lay.addWidget(ssh_box)
         return w
 
     def _build_local(self):
@@ -404,6 +463,54 @@ class _ServerPage(QWizardPage):
             "Reachable: {} — {}".format(
                 "yes" if verdict["reachable"] else "NO", verdict["detail"]
             )
+        )
+
+    def _mint_existing(self):
+        url = self.url_edit.text().strip().rstrip("/")
+        probe = url if "://" in url else "http://" + url
+        host = urlparse(probe).hostname
+        user = self.ex_ssh_user.text().strip()
+        if not host:
+            self.ex_log.append("Enter the server URL (with a host) first.\n")
+            return
+        if not user:
+            self.ex_log.append("Enter the SSH user first.\n")
+            return
+        if self._worker is not None and self._worker.isRunning():
+            self.ex_log.append("SSH action already running…")
+            return
+        self.ex_log.append("Minting a token on {}@{} …".format(user, host))
+        self.setCursor(Qt.CursorShape.WaitCursor)
+        self._worker = _SshMintWorker(
+            dict(
+                host=host,
+                user=user,
+                password=self.ex_ssh_pw.text() or None,
+                key_filename=self.ex_ssh_key.text().strip() or None,
+                # Defaults to the SSH password in remote_mint_token; only pass
+                # a distinct sudo password when the user entered one.
+                sudo_password=self.ex_sudo_pw.text() or None,
+                rig=self.ex_rig_edit.text().strip() or "acquisition-rig",
+            )
+        )
+        self._worker.output.connect(
+            lambda s: self.ex_log.append(s.rstrip("\n"))
+        )
+        self._worker.done.connect(self._on_mint_done)
+        self._worker.failed.connect(self._on_mint_failed)
+        self._worker.start()
+
+    def _on_mint_done(self, token):
+        self.unsetCursor()
+        self.token_edit.setText(token)
+        self.ex_log.append(
+            "Done — token captured and filled in above. Click Next."
+        )
+
+    def _on_mint_failed(self, msg):
+        self.unsetCursor()
+        self.ex_log.append(
+            "Failed: {}\nMint the token manually and paste it.".format(msg)
         )
 
     # -- new-server actions --

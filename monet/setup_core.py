@@ -1117,44 +1117,26 @@ def parse_token_line(stdout):
     return None
 
 
-def remote_install_server(
-    host,
-    user,
-    password=None,
-    key_filename=None,
-    port=8000,
-    ssh_port=22,
-    rig=None,
-    git_ref=DEFAULT_GIT_REF,
-    bind_host="0.0.0.0",
-    on_output=None,
-    sudo_password=None,
+def _ssh_connect_and_runner(
+    host, user, password, key_filename, ssh_port, sudo_password, on_output
 ):
-    """Install/upgrade the monet server on ``host`` over SSH and mint a token.
+    """Open an SSH connection and return ``(client, run)``.
 
-    Runs ``deploy/setup-server.sh`` (idempotent) then ``monet token add`` for
-    this rig, parsing the printed token. Requires the optional ``paramiko``
-    dependency (``pip install 'monet[setup]'``) and that ``user`` can ``sudo``.
-    Returns ``{'url': ..., 'token': ...}``. Raises on any failure so the caller
-    can fall back to :func:`guided_server_instructions`.
-
-    The install commands need root, so they run under ``sudo -S`` with the
-    password fed on stdin. ``sudo_password`` defaults to the SSH ``password``
-    (the login password is usually also the sudo password); for key-based SSH
-    login, pass it explicitly or give ``user`` passwordless sudo (NOPASSWD).
-
-    ``on_output`` (optional) is called with each command's combined output for
-    live progress display.
+    ``run(cmd, sudo=False)`` executes one command, combining stderr into stdout
+    and streaming each chunk to ``on_output`` (if given); for ``sudo=True`` it
+    feeds ``sudo_password`` on stdin (there is no tty on an exec channel) and
+    raises :class:`RuntimeError` on a non-zero exit. The caller owns ``client``
+    and must ``close()`` it. ``sudo_password`` defaults to ``password``.
+    Requires the optional ``paramiko`` dependency.
     """
     try:
         import paramiko
     except ModuleNotFoundError as exc:
         raise RuntimeError(
-            "automated SSH install needs paramiko: pip install 'monet[setup]' "
-            "— or use the guided manual steps instead."
+            "automated SSH needs paramiko: pip install 'monet[setup]' — or "
+            "use the guided manual steps instead."
         ) from exc
 
-    rig = rig or "acquisition-rig"
     if sudo_password is None:
         sudo_password = password
 
@@ -1205,9 +1187,9 @@ def remote_install_server(
         chan.close()
         out = "".join(chunks)
         if code != 0:
-            # The command ran under sudo (every install command does), so a
-            # sudo-password rejection is a likely cause. Append the hint on any
-            # sudo-command failure rather than matching English error text,
+            # The command ran under sudo (every install/token command does), so
+            # a sudo-password rejection is a likely cause. Append the hint on
+            # any sudo-command failure rather than matching English error text,
             # which misses non-English server locales.
             hint = ""
             if sudo:
@@ -1226,6 +1208,128 @@ def remote_install_server(
                 )
             )
         return out
+
+    return client, run
+
+
+def _token_add_cmd(sudo, rig, scope="write"):
+    """The ``monet token add`` command minting a ``scope`` token for ``rig``."""
+    return (
+        sudo + "-u monet monet token add --scope {scope} --label {rig} "
+        "--env-file {env}".format(scope=scope, rig=rig, env=SERVER_ENV_FILE)
+    )
+
+
+def _wait_service_active(run, sudo):
+    """Poll ``systemctl is-active monet`` for ~15 s after a (re)start.
+
+    ``systemctl restart`` returns 0 even if the unit then crash-loops, so
+    confirm the service actually came up. Polls (the server can take a few
+    seconds to bind) and reads the result from a marked line so stderr noise /
+    shell banners don't confuse the parse. Raises :class:`RuntimeError` with the
+    unit status if it never becomes active.
+    """
+    probe = (
+        "for i in $(seq 1 15); do "
+        "s=$(systemctl is-active monet 2>/dev/null || true); "
+        '[ "$s" = active ] && break; sleep 1; done; '
+        'echo "MONET_IS_ACTIVE=$s"'
+    )
+    out = run(probe)
+    active = ""
+    for line in out.splitlines():
+        line = line.strip()
+        if line.startswith("MONET_IS_ACTIVE="):
+            active = line.split("=", 1)[1]
+    if active != "active":
+        detail = run(
+            sudo + "systemctl --no-pager -l status monet || true", sudo=True
+        )
+        raise RuntimeError(
+            "the monet service did not come up (systemctl is-active = {!r}). "
+            "Check the server:\n{}".format(active, detail[-1200:])
+        )
+
+
+def remote_mint_token(
+    host,
+    user,
+    password=None,
+    key_filename=None,
+    ssh_port=22,
+    rig=None,
+    scope="write",
+    on_output=None,
+    sudo_password=None,
+):
+    """Mint a token on an ALREADY-RUNNING monet server over SSH; return it.
+
+    Unlike :func:`remote_install_server` this installs nothing — it runs
+    ``monet token add`` for ``rig`` against the server's env file
+    (:data:`SERVER_ENV_FILE`) and restarts the service so the new token is
+    accepted, then returns the token string. Use it to onboard a new rig
+    against a server that is already deployed. Needs ``paramiko`` and that
+    ``user`` can ``sudo``. Raises on any failure so the caller can fall back to
+    minting the token manually (see :func:`server_token_help`).
+
+    ``on_output`` (optional) is called with each command's combined output for
+    live progress display.
+    """
+    rig = rig or "acquisition-rig"
+    client, run = _ssh_connect_and_runner(
+        host, user, password, key_filename, ssh_port, sudo_password, on_output
+    )
+    sudo = "sudo -S "
+    try:
+        token_out = run(_token_add_cmd(sudo, rig, scope), sudo=True)
+        # A fresh token is only honored once the server reloads its env.
+        run(sudo + "systemctl restart monet", sudo=True)
+        _wait_service_active(run, sudo)
+    finally:
+        client.close()
+
+    token = parse_token_line(token_out)
+    if not token:
+        raise RuntimeError(
+            "minted a token but could not read it from 'monet token add' "
+            "output; mint one manually (see the guided steps) and paste it."
+        )
+    return token
+
+
+def remote_install_server(
+    host,
+    user,
+    password=None,
+    key_filename=None,
+    port=8000,
+    ssh_port=22,
+    rig=None,
+    git_ref=DEFAULT_GIT_REF,
+    bind_host="0.0.0.0",
+    on_output=None,
+    sudo_password=None,
+):
+    """Install/upgrade the monet server on ``host`` over SSH and mint a token.
+
+    Runs ``deploy/setup-server.sh`` (idempotent) then ``monet token add`` for
+    this rig, parsing the printed token. Requires the optional ``paramiko``
+    dependency (``pip install 'monet[setup]'``) and that ``user`` can ``sudo``.
+    Returns ``{'url': ..., 'token': ...}``. Raises on any failure so the caller
+    can fall back to :func:`guided_server_instructions`.
+
+    The install commands need root, so they run under ``sudo -S`` with the
+    password fed on stdin. ``sudo_password`` defaults to the SSH ``password``
+    (the login password is usually also the sudo password); for key-based SSH
+    login, pass it explicitly or give ``user`` passwordless sudo (NOPASSWD).
+
+    ``on_output`` (optional) is called with each command's combined output for
+    live progress display.
+    """
+    rig = rig or "acquisition-rig"
+    client, run = _ssh_connect_and_runner(
+        host, user, password, key_filename, ssh_port, sudo_password, on_output
+    )
 
     # `sudo -S` reads the password from stdin (no tty on an exec channel). Use
     # just `-S` — not `-p ''` — for compatibility with sudo-rs (the Rust sudo
@@ -1252,41 +1356,9 @@ def remote_install_server(
             port=port,
         )
         run(install, sudo=True)
-        token_out = run(
-            sudo + "-u monet monet token add --scope write --label {rig} "
-            "--env-file {env}".format(rig=rig, env=SERVER_ENV_FILE),
-            sudo=True,
-        )
+        token_out = run(_token_add_cmd(sudo, rig), sudo=True)
         run(sudo + "systemctl restart monet", sudo=True)
-        # `systemctl restart` returns 0 even if the unit then crash-loops;
-        # confirm it actually came up before reporting success. Poll for up to
-        # ~15 s (the server can take a few seconds to bind), and emit the result
-        # on a marked line so stderr noise / shell banners don't confuse the
-        # parse. is-active's own stderr is discarded; `|| true` keeps run() from
-        # raising on its non-zero "not active" exit.
-        probe = (
-            "for i in $(seq 1 15); do "
-            "s=$(systemctl is-active monet 2>/dev/null || true); "
-            '[ "$s" = active ] && break; sleep 1; done; '
-            'echo "MONET_IS_ACTIVE=$s"'
-        )
-        out = run(probe)
-        active = ""
-        for line in out.splitlines():
-            line = line.strip()
-            if line.startswith("MONET_IS_ACTIVE="):
-                active = line.split("=", 1)[1]
-        if active != "active":
-            detail = run(
-                sudo + "systemctl --no-pager -l status monet || true",
-                sudo=True,
-            )
-            raise RuntimeError(
-                "server installed but the monet service did not come up "
-                "(systemctl is-active = {!r}). Check the server:\n{}".format(
-                    active, detail[-1200:]
-                )
-            )
+        _wait_service_active(run, sudo)
     finally:
         client.close()
 

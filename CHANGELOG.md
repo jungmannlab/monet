@@ -12,6 +12,13 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [0.6.13] - 2026-11-04
 
+### Added
+- Setup wizard ▸ **Connect to an existing server**: a *Mint a token over SSH*
+  box that SSHes into the already-running server, runs `monet token add` for
+  this rig, restarts the service and fills in the token — so onboarding a new
+  rig against an existing server no longer needs a manual SSH session. The
+  server host is taken from the URL.
+
 ### Changed
 - Set Power tab: the laser **auto-off timer** now shows only in Expert view,
   grouped at the right edge of the laser row (right-aligned with the window). It

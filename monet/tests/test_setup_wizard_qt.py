@@ -11,6 +11,7 @@ import os
 import shutil
 import tempfile
 import unittest
+from unittest import mock
 
 import pytest
 import yaml
@@ -122,6 +123,46 @@ class TestSetupWizard(unittest.TestCase):
         self.assertTrue(page.validatePage())
         self.assertEqual(wiz.server_url, "")
         self.assertNotIn(sc.ENV_CLIENT_TOKEN, wiz.updates)
+
+    def test_existing_server_mint_fills_token(self):
+        # The existing-server page can mint this rig's token over SSH and drop
+        # it into the token field (host taken from the URL).
+        page = swq._ServerPage()
+        page.url_edit.setText("http://host:8000")
+        page.ex_ssh_user.setText("lab")
+        page.ex_ssh_pw.setText("pw")
+
+        captured = {}
+
+        class _FakeMintWorker(swq.QThread):
+            output = swq.pyqtSignal(str)
+            done = swq.pyqtSignal(str)
+            failed = swq.pyqtSignal(str)
+
+            def __init__(self, kwargs, parent=None):
+                super().__init__(parent)
+                captured["kwargs"] = kwargs
+
+            def isRunning(self):
+                return False
+
+            def start(self):
+                self.done.emit("minted-xyz")
+
+        with mock.patch.object(swq, "_SshMintWorker", _FakeMintWorker):
+            page._mint_existing()
+
+        self.assertEqual(page.token_edit.text(), "minted-xyz")
+        self.assertEqual(captured["kwargs"]["host"], "host")
+        self.assertEqual(captured["kwargs"]["user"], "lab")
+        self.assertEqual(captured["kwargs"]["password"], "pw")
+        self.assertEqual(captured["kwargs"]["rig"], "acquisition-rig")
+
+    def test_existing_server_mint_needs_url_and_user(self):
+        # No URL / SSH user yet -> guarded: no worker runs, token stays empty.
+        page = swq._ServerPage()
+        page._mint_existing()
+        self.assertEqual(page.token_edit.text(), "")
 
     def test_protocol_page_authors_from_cfg(self):
         cfg_path = os.path.join(self.tmp, "scope.cfg")
