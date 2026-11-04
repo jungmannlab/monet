@@ -558,7 +558,27 @@ class _MicroscopePage(QWizardPage):
         self._laser_rows = []
         self._bp_rows = []
         lay = QVBoxLayout(self)
-        self.author_cb = QCheckBox("Author a microscope entry now")
+
+        # Option 1: reuse an entry already defined in the shared configs.yaml —
+        # just make it this rig's default, no re-authoring. Populated from
+        # configs_path in initializePage.
+        self._existing_sentinel = "— author a new entry below —"
+        ex_row = QHBoxLayout()
+        ex_row.addWidget(QLabel("Use an existing entry:"))
+        self.existing_combo = QComboBox()
+        self.existing_combo.addItem(self._existing_sentinel, None)
+        self.existing_combo.setToolTip(
+            "Pick a microscope already defined in configs.yaml to use it as-is "
+            "(its protocol too) — or leave this and author a new entry below."
+        )
+        self.existing_combo.currentIndexChanged.connect(
+            self._on_existing_changed
+        )
+        ex_row.addWidget(self.existing_combo, 1)
+        lay.addLayout(ex_row)
+
+        # Option 2: author a new entry.
+        self.author_cb = QCheckBox("Author a new microscope entry")
         self.author_cb.setChecked(True)
         lay.addWidget(self.author_cb)
 
@@ -620,6 +640,13 @@ class _MicroscopePage(QWizardPage):
         lay.addWidget(self.body)
         self.author_cb.toggled.connect(self.body.setEnabled)
 
+    def _on_existing_changed(self):
+        # When an existing entry is picked, the author section is irrelevant —
+        # grey it out; restore it when the sentinel ("author new") is selected.
+        using_existing = self.existing_combo.currentData() is not None
+        self.author_cb.setEnabled(not using_existing)
+        self.body.setEnabled(not using_existing and self.author_cb.isChecked())
+
     def _add_laser(self):
         row = _LaserRow(self._remove_row)
         self._laser_rows.append(row)
@@ -638,8 +665,23 @@ class _MicroscopePage(QWizardPage):
         row.deleteLater()
 
     def initializePage(self):
+        # Populate the existing-entry picker from the configs.yaml in use.
+        wiz = self.wizard()
+        names = sc.existing_entry_names(getattr(wiz, "configs_path", "") or "")
+        keep = self.existing_combo.currentData()
+        self.existing_combo.blockSignals(True)
+        self.existing_combo.clear()
+        self.existing_combo.addItem(self._existing_sentinel, None)
+        for name in names:
+            self.existing_combo.addItem(name, name)
+        idx = self.existing_combo.findData(keep) if keep else 0
+        self.existing_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self.existing_combo.blockSignals(False)
+        self.existing_combo.setEnabled(bool(names))
+        self._on_existing_changed()
+
         if not self.db_edit.text().strip():
-            url = getattr(self.wizard(), "server_url", "") or ""
+            url = getattr(wiz, "server_url", "") or ""
             # No server (single-computer) -> default to a local database file.
             self.db_edit.setText(url or "./power_database.xlsx")
 
@@ -685,6 +727,16 @@ class _MicroscopePage(QWizardPage):
 
     def validatePage(self):
         wiz = self.wizard()
+        existing = self.existing_combo.currentData()
+        if existing is not None:
+            # Reuse a pre-existing configs.yaml entry: make it this rig's
+            # default microscope, but don't re-author it (entry/answers None so
+            # commit() won't rewrite the config, and the protocol page, which
+            # keys off microscope_answers, is a no-op).
+            wiz.microscope_name = existing
+            wiz.microscope_entry = None
+            wiz.microscope_answers = None
+            return True
         if not self.author_cb.isChecked():
             wiz.microscope_name = None
             wiz.microscope_entry = None
@@ -1279,6 +1331,13 @@ class SetupWizard(QWizard):
             lines.append(
                 "Wrote microscope '{}' to {}".format(
                     self.microscope_name, self.configs_path
+                )
+            )
+        elif self.microscope_name:
+            # Reusing an existing entry: nothing written, just made default.
+            lines.append(
+                "Using existing microscope '{}' (configs.yaml unchanged).".format(
+                    self.microscope_name
                 )
             )
         else:
