@@ -64,54 +64,46 @@ datas += collect_data_files("matplotlib")
 # these by name *inside methods* (e.g. attenuation.py's KinesisAttenuator does
 # `from msl.equipment import ...` only when it connects), and several resolve
 # submodules dynamically — msl-equipment's resource backends
-# (`msl.equipment.resources.thorlabs`), pyvisa/pyvisa-py backends, nidaqmx — so
-# PyInstaller's static analysis would miss them and a real rig would fail at
-# connect time with ModuleNotFoundError. Pull each in explicitly. Best-effort:
-# a package not present in a given build (e.g. a [gui]-only build) just
-# contributes nothing instead of failing the spec.
-_HARDWARE_PKGS = (
-    "msl",
-    "pyvisa",
-    "pyvisa_py",
-    "nidaqmx",
-    "pycobolt",
-    "microscope",
-    "pycromanager",
-    "ThorlabsPM100",
-    "serial",  # pyserial — base dep, but several drivers import it dynamically
+# (`msl.equipment.resources.thorlabs`), nidaqmx — so PyInstaller's static
+# analysis would miss them and a real rig would fail at connect time with
+# ModuleNotFoundError. Pull each in explicitly.
+#
+# One table, two keys, so there is a single place to edit when an SDK is
+# added/renamed (avoids the import-name vs distribution-name drift that let the
+# `nitypes` metadata go missing once):
+#   * import_name  → collect_submodules / collect_data_files (bundle the code)
+#   * dist_name    → copy_metadata(recursive=True) (bundle the .dist-info some
+#                    packages read via importlib.metadata at import; e.g.
+#                    nidaqmx → nitypes `version("nitypes")`)
+# Either may be None. All best-effort: a package absent from a given build
+# (e.g. a [gui]-only build) just contributes nothing instead of failing.
+_HARDWARE_SDKS = (
+    # (import_name, distribution_name)
+    ("msl", "msl-equipment"),
+    ("pyvisa", "PyVISA"),
+    ("nidaqmx", "nidaqmx"),
+    (None, "nitypes"),  # nidaqmx dep; code pulled by analysis, metadata not
+    ("pycobolt", "pycobolt"),
+    ("microscope", "microscope"),
+    ("pycromanager", "pycromanager"),
+    ("ThorlabsPM100", "ThorlabsPM100"),
+    ("serial", None),  # pyserial — base dep, imported dynamically by drivers
 )
-for _pkg in _HARDWARE_PKGS:
-    try:
-        hiddenimports += collect_submodules(_pkg)
-    except Exception:
-        pass
-    try:
-        datas += collect_data_files(_pkg)
-    except Exception:
-        pass
-
-# Some SDKs read their own (or a dependency's) distribution metadata at import
-# via importlib.metadata — e.g. nidaqmx pulls in `nitypes`, which calls
-# ``version("nitypes")`` on import and dies with "No package metadata was found"
-# if the .dist-info isn't bundled. ``copy_metadata(..., recursive=True)`` ships
-# each package's metadata and that of its dependencies. Distribution names (not
-# import names) are required here; best-effort so a missing package is skipped.
-_METADATA_DISTS = (
-    "nidaqmx",
-    "nitypes",
-    "PyVISA",
-    "PyVISA-py",
-    "pycromanager",
-    "microscope",
-    "ThorlabsPM100",
-    "msl-equipment",
-    "pycobolt",
-)
-for _dist in _METADATA_DISTS:
-    try:
-        datas += copy_metadata(_dist, recursive=True)
-    except Exception:
-        pass
+for _imp, _dist in _HARDWARE_SDKS:
+    if _imp:
+        try:
+            hiddenimports += collect_submodules(_imp)
+        except Exception:
+            pass
+        try:
+            datas += collect_data_files(_imp)
+        except Exception:
+            pass
+    if _dist:
+        try:
+            datas += copy_metadata(_dist, recursive=True)
+        except Exception:
+            pass
 
 a = Analysis(
     [_launcher],

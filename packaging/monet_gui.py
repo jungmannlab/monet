@@ -50,14 +50,18 @@ _SELFCHECK_MODULES = (
 # Hardware SDK packages the drivers lazy-import at connect time. These are
 # bundled from the [hardware] extra; verifying they import proves the bundle is
 # complete so a real rig doesn't fail with ModuleNotFoundError. Split in two:
-#   * _fatal: pure-Python SDKs that import cleanly with no instrument/DLL
-#     present, so a failure here means the bundle is genuinely broken.
+#   * _fatal: PyPI-pinned, pure-Python SDKs that import cleanly with no
+#     instrument/DLL present, so a failure here means the bundle is genuinely
+#     broken and the release should fail.
 #   * _best_effort: SDKs that may touch a vendor runtime at import on some
-#     machines; a failure on the headless CI runner is reported but does not
-#     fail the build (collect_submodules in the .spec still bundles them).
-_SELFCHECK_HW_FATAL = ("msl.equipment", "pyvisa", "pycobolt")
+#     machines, OR are sourced from an unpinned VCS ref (pycobolt is
+#     `git+…` with no pin — an upstream change must never be able to block a
+#     monet release). A failure on the headless CI runner is reported but does
+#     not fail the build (collect_submodules in the .spec still bundles them).
+_SELFCHECK_HW_FATAL = ("msl.equipment", "pyvisa")
 _SELFCHECK_HW_BEST_EFFORT = (
     "nidaqmx",
+    "pycobolt",
     "microscope",
     "pycromanager",
     "ThorlabsPM100",

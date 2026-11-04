@@ -273,8 +273,17 @@ class ConnectWorker(QThread):
 
         # Now probe the power meter (may block on a hardware scan). The GUI is
         # already up; it enables/greys the power-dependent controls when this
-        # resolves.
-        available = pc.load_powermeter()
+        # resolves. load_powermeter() swallows the expected driver failures, but
+        # guard the whole probe so an *unexpected* error still resolves the
+        # pending state — otherwise the UI is stuck on "checking power meter…".
+        try:
+            available = pc.load_powermeter()
+        except Exception as exc:
+            logging.getLogger(__name__).exception("power-meter probe failed")
+            pc.powermeter = None
+            pc.powermeter_available = False
+            pc.powermeter_error = "{}: {}".format(type(exc).__name__, exc)
+            available = False
         msg = ""
         if not available:
             msg = (
@@ -921,11 +930,31 @@ class CalibrationPlots(QWidget):
 
 
 # ---------------------------------------------------------------------------
+# Tab base class
+# ---------------------------------------------------------------------------
+
+
+class _MonetTab(QWidget):
+    """Base for the tabs embedded in :class:`MonetWidget`.
+
+    ``MonetWidget`` calls ``set_pc(pc)`` on *every* tab when a microscope
+    connects, so a tab that ignores the live connection (e.g. the Doctor tab)
+    must still provide the method — otherwise the connect slot raises and PyQt6
+    aborts the process. The default is a no-op; tabs that use the connection
+    override it. This makes the tab/connection contract structural rather than
+    a per-class convention.
+    """
+
+    def set_pc(self, pc):
+        """Bind (or re-bind) the calibration-protocol object; no-op default."""
+
+
+# ---------------------------------------------------------------------------
 # Tab 1 — Calibrate
 # ---------------------------------------------------------------------------
 
 
-class CalibrateTab(QWidget):
+class CalibrateTab(_MonetTab):
     """Tab for running calibration protocols."""
 
     # Status messages are emitted via the `status` signal so the tab can be
@@ -1663,11 +1692,18 @@ class CalibrateTab(QWidget):
         worker.start()
 
     def set_powermeter_available(self, available):
-        """Enable or disable calibration controls per powermeter state."""
-        self._pm_available = available
-        self._btn_start.setEnabled(available)
+        """Enable or disable calibration controls per powermeter state.
+
+        ``available`` is tri-state: ``True`` / ``False`` / ``None`` (not yet
+        probed). Controls are disabled for both ``None`` and ``False``, but the
+        log warning is only emitted for a *confirmed* ``False`` — logging it
+        during the pending ``None`` window would leave a spurious warning on
+        every successful connect (the probe usually resolves to available)."""
+        enabled = bool(available)
+        self._pm_available = enabled
+        self._btn_start.setEnabled(enabled)
         self._update_verify_enabled()
-        if not available:
+        if available is False:
             self._log.append(
                 "WARNING: PowerMeter not available. Calibration is disabled."
             )
@@ -2005,7 +2041,7 @@ class CalibrateTab(QWidget):
 # ---------------------------------------------------------------------------
 
 
-class AdjustTab(QWidget):
+class AdjustTab(_MonetTab):
     """Tab for direct attenuator and laser power adjustment.
 
     No laser selector — operations act on whichever laser is currently
@@ -2301,7 +2337,7 @@ class AdjustTab(QWidget):
 # ---------------------------------------------------------------------------
 
 
-class SetPowerTab(QWidget):
+class SetPowerTab(_MonetTab):
     """Tab for setting output power using calibration data."""
 
     status = pyqtSignal(str, int)
@@ -3842,10 +3878,14 @@ class SetPowerTab(QWidget):
             self._feedback_cb.setChecked(False)
 
     def set_powermeter_available(self, available):
-        """Enable or disable powermeter-dependent controls."""
-        self._btn_measure.setEnabled(available)
-        self._btn_backlash.setEnabled(available)
-        self._btn_pin.setEnabled(available)
+        """Enable or disable powermeter-dependent controls.
+
+        ``available`` is tri-state (True/False/None); None (not yet probed) and
+        False both disable, so a plain bool coercion is right here."""
+        enabled = bool(available)
+        self._btn_measure.setEnabled(enabled)
+        self._btn_backlash.setEnabled(enabled)
+        self._btn_pin.setEnabled(enabled)
         self._update_feedback_enabled()
 
     def _on_all_on(self):
@@ -4308,7 +4348,7 @@ class RunPairDialog(QDialog):
             self._canvas.draw_idle()
 
 
-class DatabaseTab(QWidget):
+class DatabaseTab(_MonetTab):
     """Tab for exploring calibration runs and objective transmission factors.
 
     The left table lists 2D calibration *runs* (grouped from the database by
@@ -5030,7 +5070,7 @@ class DatabaseTab(QWidget):
         worker.start()
 
 
-class DoctorTab(QWidget):
+class DoctorTab(_MonetTab):
     """Read-only diagnostics: where monet reads its configuration and whether
     the calibration server is reachable + authenticated.
 
@@ -5047,17 +5087,19 @@ class DoctorTab(QWidget):
         self._worker = None
         self._server_status = None
         self._server_url = None
+        self._probed = False
         self._build_ui()
         self._render()
-        # Probe the server once the event loop is running (non-blocking).
-        QTimer.singleShot(0, self._recheck)
 
-    def set_pc(self, pc):
-        """Part of the tab interface (``MonetWidget`` calls ``set_pc`` on every
-        tab when a microscope connects). The diagnostics view is about files
-        and server reachability, not the live connection, so this is a no-op —
-        but it must exist, or binding a connection would raise and, via Qt's
-        slot handling, abort the app."""
+    def showEvent(self, event):
+        # Probe the server lazily — the first time the tab is actually shown,
+        # not eagerly on construction. A standalone GUI launch where the user
+        # never opens the Doctor tab then pays no unsolicited network probe (and
+        # no timeout on an offline/slow-LAN rig).
+        super().showEvent(event)
+        if not self._probed:
+            self._probed = True
+            QTimer.singleShot(0, self._recheck)
 
     def _build_ui(self):
         layout = QVBoxLayout(self)
@@ -5126,12 +5168,11 @@ class DoctorTab(QWidget):
 
     @staticmethod
     def _log_path():
-        import os
+        # Single source of truth, shared with the logging setup, so the
+        # reported path can't drift from where monet actually writes.
+        import monet
 
-        log_file = os.environ.get("MONET_LOG_FILE") or os.path.join(
-            os.environ.get("MONET_LOG_DIR", ""), "monet.log"
-        )
-        return os.path.abspath(log_file)
+        return monet.log_file_path()
 
     def report_text(self):
         """The full diagnostics report as plain text (also used by tests)."""
@@ -5405,6 +5446,20 @@ class MonetWidget(QWidget):
     def connect_microscope(self, name=None):
         """Start a ``ConnectWorker`` for ``name`` (or the currently selected
         microscope). Emits ``connect_error`` on failure."""
+        # Ignore a re-entrant request while a connect is already running:
+        # rebinding self._connect_worker would drop the only reference to the
+        # still-running QThread (now longer-lived, since it also probes the
+        # power meter), and Qt aborts if a running QThread is garbage-collected.
+        # The toolbar disables its button during connect, but this guards the
+        # programmatic entry point (hosts / tests) too.
+        if (
+            self._connect_worker is not None
+            and self._connect_worker.isRunning()
+        ):
+            logger.debug(
+                "connect already in progress; ignoring re-entrant call"
+            )
+            return
         if name is not None and self._scope_combo is not None:
             self.set_microscope(name)
         if name is None:
@@ -5458,6 +5513,13 @@ class MonetWidget(QWidget):
         exposing ``.instrument`` (an ``IlluminationLaserControl``),
         ``.powermeter``, and ``.protocol``. Skips the in-widget
         ``ConnectWorker``.
+
+        The ``pc`` must be *fully built* — in particular its power meter must
+        already be opened (``powermeter_available`` is ``True``/``False``, not
+        ``None``). Unlike the toolbar path, ``set_pc`` does no background probe,
+        so a pc built with ``load_powermeter=False`` would leave the Calibrate
+        tab greyed with nothing to ever re-enable it. Call
+        ``pc.load_powermeter()`` before binding.
         """
         self._pc = pc
         # Tag the pc with its CONFIGS key (if known) so the Calibrate tab can
@@ -5552,13 +5614,15 @@ class MonetWidget(QWidget):
     def _apply_powermeter_state(self, available):
         """Grey out calibrate tab and feedback controls when no powermeter.
 
-        ``available`` may be ``None`` (meter not yet probed) — treated as "not
-        usable yet" so calibration can't be started before the probe confirms a
-        meter."""
-        available = bool(available)
+        ``available`` is tri-state and passed through to the tabs unchanged:
+        ``True`` (meter ready), ``False`` (probed, absent) or ``None`` (not yet
+        probed — the deferred window). Both ``None`` and ``False`` disable the
+        controls, but only ``False`` is a *confirmed* failure the tabs should
+        announce; ``None`` must stay quiet so a normal connect doesn't flash a
+        spurious "not available" warning before the probe resolves."""
         cal = self._tab_widgets.get("calibrate")
         if cal is not None:
-            self._tabs.setTabEnabled(self._tabs.indexOf(cal), available)
+            self._tabs.setTabEnabled(self._tabs.indexOf(cal), bool(available))
             cal.set_powermeter_available(available)
         sp = self._tab_widgets.get("set_power")
         if sp is not None:

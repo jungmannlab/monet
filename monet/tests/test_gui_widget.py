@@ -545,6 +545,21 @@ class TestConnectRobustness(unittest.TestCase):
         cal = w.tab("calibrate")
         self.assertTrue(w._tabs.isTabEnabled(w._tabs.indexOf(cal)))
 
+    def test_pending_does_not_log_spurious_powermeter_warning(self):
+        """The deferred (None) window must not write the 'not available'
+        warning to the Calibrate log — only a confirmed False does."""
+        tab = CalibrateTab()
+        # pending: disabled, but no warning logged
+        tab.set_powermeter_available(None)
+        self.assertFalse(tab._btn_start.isEnabled())
+        self.assertNotIn("PowerMeter not available", tab._log.toPlainText())
+        # confirmed available: still no warning
+        tab.set_powermeter_available(True)
+        self.assertNotIn("PowerMeter not available", tab._log.toPlainText())
+        # confirmed absent: now the warning appears
+        tab.set_powermeter_available(False)
+        self.assertIn("PowerMeter not available", tab._log.toPlainText())
+
     def test_powermeter_resolved_ignored_for_superseded_pc(self):
         """A probe for an old pc must not touch the current connection."""
 
@@ -559,6 +574,55 @@ class TestConnectRobustness(unittest.TestCase):
         stale = _PC()
         w._on_powermeter_resolved(stale, False, "nope")
         self.assertIs(w._pc, current)
+
+
+class TestConnectReentrancyAndLazyProbe(unittest.TestCase):
+    def test_connect_microscope_ignores_reentrant_call(self):
+        from unittest import mock
+
+        w = MonetWidget(show_toolbar=True, tabs=("set_power",))
+        with mock.patch.object(ConnectWorker, "start", lambda self: None):
+            w.connect_microscope("test")
+        first = w._connect_worker
+        self.assertIsNotNone(first)
+        # A second call while the worker "is running" must not replace it
+        # (rebinding would drop the live QThread → Qt abort).
+        with (
+            mock.patch.object(ConnectWorker, "isRunning", lambda self: True),
+            mock.patch.object(ConnectWorker, "start", lambda self: None),
+        ):
+            w.connect_microscope("test")
+        self.assertIs(w._connect_worker, first)
+
+    def test_doctor_tab_probes_lazily_not_on_construction(self):
+        tab = DoctorTab()
+        self.assertFalse(tab._probed)
+        self.assertIsNone(tab._worker)  # no eager server probe
+        tab.show()  # first show triggers the deferred probe flag
+        self.assertTrue(tab._probed)
+
+    def test_doctor_log_path_matches_shared_helper(self):
+        import monet
+
+        self.assertEqual(DoctorTab._log_path(), monet.log_file_path())
+
+    def test_log_file_path_honors_env(self):
+        import os
+
+        import monet
+
+        old = os.environ.get("MONET_LOG_FILE")
+        os.environ["MONET_LOG_FILE"] = os.path.join("x", "y", "monet.log")
+        try:
+            self.assertEqual(
+                monet.log_file_path(),
+                os.path.abspath(os.path.join("x", "y", "monet.log")),
+            )
+        finally:
+            if old is None:
+                os.environ.pop("MONET_LOG_FILE", None)
+            else:
+                os.environ["MONET_LOG_FILE"] = old
 
 
 class TestExceptHook(unittest.TestCase):
