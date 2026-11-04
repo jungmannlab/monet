@@ -12,6 +12,7 @@ laser/attenuator adjustment, power setting, and database management.
 
 import logging
 import sys
+import time
 
 import numpy as np
 
@@ -2394,6 +2395,34 @@ class SetPowerTab(_MonetTab):
         laser_row.addStretch()
         layout.addLayout(laser_row)
 
+        # Safety: automatically switch all lasers off after a set time (e.g. a
+        # full day's session), so lasers aren't left on overnight.
+        auto_row = QHBoxLayout()
+        auto_row.addWidget(QLabel("Auto-off all lasers after:"))
+        self._autooff_hours = QDoubleSpinBox()
+        self._autooff_hours.setRange(0.1, 24.0)
+        self._autooff_hours.setSingleStep(0.5)
+        self._autooff_hours.setDecimals(1)
+        self._autooff_hours.setValue(8.0)
+        self._autooff_hours.setSuffix(" h")
+        auto_row.addWidget(self._autooff_hours)
+        self._btn_autooff = QPushButton("Arm")
+        self._btn_autooff.setCheckable(True)
+        self._btn_autooff.setToolTip(
+            "Switch every laser off automatically after this time (a safety "
+            "cut-off). Re-arming resets the countdown."
+        )
+        self._btn_autooff.toggled.connect(self._on_autooff_toggled)
+        auto_row.addWidget(self._btn_autooff)
+        self._autooff_label = QLabel("")
+        auto_row.addWidget(self._autooff_label)
+        auto_row.addStretch()
+        layout.addLayout(auto_row)
+        self._autooff_deadline = None
+        self._autooff_timer = QTimer(self)
+        self._autooff_timer.setInterval(1000)
+        self._autooff_timer.timeout.connect(self._autooff_tick)
+
         # Multi-laser checkbox
         self._multi_cb = QCheckBox(
             "Multi-laser mode (keep other lasers on when switching)"
@@ -3921,6 +3950,46 @@ class SetPowerTab(_MonetTab):
             self._emit_status("Ready", 2000)
 
         self._run_hw(_do, "Switching all lasers off…", on_done=_done)
+
+    # ---- auto-off timer ------------------------------------------------
+    @staticmethod
+    def _format_countdown(seconds):
+        seconds = max(0, int(seconds))
+        h, rem = divmod(seconds, 3600)
+        m, s = divmod(rem, 60)
+        return "off in {:d}:{:02d}:{:02d}".format(h, m, s)
+
+    def _on_autooff_toggled(self, armed):
+        if armed:
+            hours = self._autooff_hours.value()
+            self._autooff_deadline = time.monotonic() + hours * 3600
+            self._autooff_hours.setEnabled(False)
+            self._btn_autooff.setText("Cancel")
+            self._autooff_timer.start()
+            self._autooff_tick()
+            self._emit_status(
+                "Auto-off armed: all lasers off in {:.1f} h.".format(hours),
+                4000,
+            )
+        else:
+            self._autooff_timer.stop()
+            self._autooff_deadline = None
+            self._autooff_hours.setEnabled(True)
+            self._btn_autooff.setText("Arm")
+            self._autooff_label.setText("")
+
+    def _autooff_tick(self):
+        if self._autooff_deadline is None:
+            return
+        remaining = self._autooff_deadline - time.monotonic()
+        if remaining <= 0:
+            # Disarm (resets the controls) then fire the shut-off.
+            self._btn_autooff.setChecked(False)
+            self._autooff_label.setText("Auto-off fired — lasers off.")
+            self._emit_status("Auto-off: switching all lasers off.", 0)
+            self._on_all_off()
+            return
+        self._autooff_label.setText(self._format_countdown(remaining))
 
     def _sync_laser_toggle(self, laser=None):
         """Reflect a laser's actual on/off state onto the toggle button.
@@ -5709,6 +5778,9 @@ class MonetMainWindow(QMainWindow):
         act_update = QAction("Check for Updates…", self)
         act_update.triggered.connect(self._check_for_updates)
         help_menu.addAction(act_update)
+        act_tokens = QAction("Server tokens (mint / rotate / revoke)…", self)
+        act_tokens.triggered.connect(self._show_token_help)
+        help_menu.addAction(act_tokens)
         help_menu.addSeparator()
         act_license = QAction("License", self)
         act_license.triggered.connect(self._show_license)
@@ -5789,6 +5861,28 @@ class MonetMainWindow(QMainWindow):
         view.setReadOnly(True)
         view.setFont(QFont("Monospace"))
         view.setPlainText(_license_text())
+        lay.addWidget(view)
+        btn = QPushButton("Close")
+        btn.clicked.connect(dlg.accept)
+        lay.addWidget(btn)
+        dlg.exec()
+
+    def _show_token_help(self):
+        from monet import setup_core as sc
+
+        try:
+            server_url = sc.detect_state(probe_server=False).server_url
+        except Exception:
+            server_url = None
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Monet — Server tokens")
+        dlg.resize(720, 520)
+        lay = QVBoxLayout(dlg)
+        view = QTextEdit()
+        view.setReadOnly(True)
+        view.setFont(QFont("Monospace"))
+        view.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
+        view.setPlainText(sc.server_token_help(server_url))
         lay.addWidget(view)
         btn = QPushButton("Close")
         btn.clicked.connect(dlg.accept)

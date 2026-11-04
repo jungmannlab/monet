@@ -246,6 +246,33 @@ class TestPickExistingMicroscope(unittest.TestCase):
         env = sc.read_env(env_file)
         self.assertEqual(env[sc.ENV_MICROSCOPE], "Stokes")
 
+    def test_commit_repoints_existing_local_db_to_server(self):
+        # Picked an existing microscope whose DB is a local .xlsx, with a server
+        # configured -> re-point it to the server (so the GUI reads the migrated
+        # calibrations from there, not the stale local file).
+        wiz = swq.SetupWizard()
+        wiz.configs_path = self.cfg
+        wiz.server_url = "http://srv:8000"
+        wiz.microscope_name = "Voyager"  # database "./v.xlsx"
+        wiz.microscope_entry = None
+        summary = wiz.commit(os.path.join(self.tmp, ".env"))
+        self.assertIn("Re-pointed", summary)
+        with open(self.cfg) as f:
+            data = yaml.full_load(f)
+        self.assertEqual(data["Voyager"]["database"], "http://srv:8000")
+
+    def test_commit_does_not_repoint_entry_already_on_server(self):
+        wiz = swq.SetupWizard()
+        wiz.configs_path = self.cfg
+        wiz.server_url = "http://srv:8000"
+        wiz.microscope_name = "Stokes"  # already "http://s:8000"
+        wiz.microscope_entry = None
+        summary = wiz.commit(os.path.join(self.tmp, ".env"))
+        self.assertIn("configs.yaml unchanged", summary)
+        with open(self.cfg) as f:
+            data = yaml.full_load(f)
+        self.assertEqual(data["Stokes"]["database"], "http://s:8000")
+
 
 class TestPasswordReveal(unittest.TestCase):
     def test_reveal_button_toggles_echo_mode(self):
