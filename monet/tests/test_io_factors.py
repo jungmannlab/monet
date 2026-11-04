@@ -788,6 +788,29 @@ class TestCalibrationRuns(unittest.TestCase):
         # And they now appear as stored pairs.
         self.assertEqual(len(mio.load_factor_pairs(self.db)), 2)
 
+    def test_mixed_db_skips_unannotated_rows(self):
+        # Column present (annotated DB) + one row missing powermeter_type: the
+        # annotated row shows, the stray un-annotated row is skipped (NOT
+        # mislabelled BFP, so it can't be wrongly paired).
+        _write_calib_db(
+            self.db,
+            [
+                self._cal(488, 100, "2024-06-01", "10:00", "bfp", 40),
+                (
+                    "TestScope",
+                    561.0,
+                    200.0,
+                    "2024-06-02",
+                    "11:00",
+                    {"amp": 30},
+                ),
+            ],
+        )
+        runs = mio.list_calibration_runs(self.db, "TestScope")
+        self.assertEqual(len(runs), 1)
+        self.assertEqual(runs[0]["powermeter_type"], mio.POWERMETER_BFP)
+        self.assertEqual(runs[0]["wavelengths"], [488.0])
+
     def test_legacy_no_powermeter_type_shows_as_bfp(self):
         # Calibrations without a powermeter_type annotation (e.g. migrated from
         # an old Excel database) must still appear, treated as BFP — otherwise
