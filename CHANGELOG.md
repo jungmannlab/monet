@@ -10,6 +10,14 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
+### Fixed
+- **Installer bundles paramiko (the `[setup]` extra).** The setup wizard's
+  automated SSH server install failed on the installed build with "needs
+  paramiko: pip install 'monet[setup]'" because the frozen exe was built from
+  `[gui,hardware]` only. The release build now installs `[gui,hardware,setup]`
+  and the PyInstaller spec bundles paramiko, so the SSH install works with no
+  separate pip step; `--selfcheck` verifies it's present.
+
 ## [0.6.4] - 2026-11-04
 
 ### Added
