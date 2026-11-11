@@ -79,8 +79,11 @@ def parse_token_list(text: str) -> list[TokenEntry]:
 
 #: ``monet token add``/``rotate`` print the value once as a
 #: ``PAINT_MONET_TOKEN=<value>`` line (the client .env line to copy) — pull it
-#: back out for a copy button. token_urlsafe values are ``[A-Za-z0-9_-]``.
-_MINTED_RE = re.compile(r"PAINT_MONET_TOKEN=(?P<value>[A-Za-z0-9._\-]+)")
+#: back out for a copy button. The value is a ``secrets.token_urlsafe`` string,
+#: whose alphabet is exactly ``[A-Za-z0-9_-]``; matching only those chars stops
+#: the capture at the end of the token instead of swallowing a trailing period
+#: if the surrounding message is ever reworded.
+_MINTED_RE = re.compile(r"PAINT_MONET_TOKEN=(?P<value>[A-Za-z0-9_\-]+)")
 
 
 def parse_minted_token(text: str) -> str | None:

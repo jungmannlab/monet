@@ -63,6 +63,13 @@ RUN pip install --no-index --find-links=/wheels \
         monet picasso-registry fastapi "uvicorn[standard]" \
     && rm -rf /wheels \
     && mkdir -p /data /etc/monet
+# Fail the BUILD (not production) if the hand-named server closure above missed
+# a dependency the DB-only server needs: import the serve entry points now. The
+# install is by-name rather than `monet[server]` because that extra carries
+# picasso-registry[auth] as a git-URL direct reference pip would re-fetch even
+# under --no-index; this smoke keeps the hand-named list honest. (The CI smoke
+# job additionally runs the real `monet serve` + polls /health.)
+RUN python -c "import uvicorn; from monet.server import app"
 
 # DB + logs live on a volume so they survive container replacement.
 VOLUME ["/data"]

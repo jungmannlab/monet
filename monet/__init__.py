@@ -120,13 +120,23 @@ def _load_env_files(pkg_root=_PKG_ROOT, override=False):
         # Explicit env-file path for deployments where the settings/token file
         # is neither the package-root nor a cwd `.env` — notably the Docker
         # image (deploy/install-docker.sh), where tokens live in a mounted
-        # /etc/monet/monet.env. MONET_ENV_FILE names that file; loaded LAST so
-        # it wins, and re-read on SIGHUP (server.reload_auth -> _load_env_files)
-        # so `monet token` add/rotate/revoke apply live without a restart. This
-        # mirrors picasso-registry's PAINT_REGISTRY_ENV_FILE.
+        # /etc/monet/monet.env. MONET_ENV_FILE names that file. It is loaded
+        # after the package-root/cwd `.env`, under the SAME precedence rule as
+        # them: at import (override=False) an already-exported var still wins;
+        # on a SIGHUP reload (override=True) a value *changed* in this file
+        # wins, so `monet token` add/rotate/revoke apply live without a restart.
+        # Mirrors picasso-registry's PAINT_REGISTRY_ENV_FILE.
         explicit = os.environ.get("MONET_ENV_FILE")
         if explicit:
-            load_dotenv(explicit, override=override)
+            if os.path.isfile(explicit):
+                load_dotenv(explicit, override=override)
+            else:
+                # A mistyped / unmounted path would otherwise load nothing
+                # silently — then `monet serve` fails the fail-closed auth
+                # guard with no hint why. Surface it.
+                logger.warning(
+                    "MONET_ENV_FILE points at a missing file: %s", explicit
+                )
     except Exception:
         logger.debug("could not load .env", exc_info=True)
 

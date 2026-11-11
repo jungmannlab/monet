@@ -274,7 +274,13 @@ class AdminWindow(QMainWindow):
                 self, "Connect", "Set a host and user first."
             )
             return
-        save_profile(profile)
+        try:
+            save_profile(profile)
+        except OSError as exc:
+            # Persisting the connection profile is best-effort — an unwritable
+            # config dir (read-only HOME, bad XDG_CONFIG_HOME) must not block
+            # the actual admin operation.
+            self.activity.appendPlainText(f"(could not save profile: {exc})")
         self.activity.appendPlainText(f"• {busy}")
         self.setCursor(Qt.CursorShape.WaitCursor)
 

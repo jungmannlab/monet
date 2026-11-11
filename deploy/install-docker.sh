@@ -135,6 +135,16 @@ if [ -f "$APP_DIR/deploy/install-docker.sh" ] \
     log "admin wrapper -> /usr/local/bin/monet-admin"
   fi
 fi
+if [ ! -e /usr/local/bin/monet-admin ]; then
+  # Happens if the installer was run standalone (e.g. a bare PULL_IMAGE curl)
+  # with no sibling deploy/monet-admin to copy. The server still runs, but the
+  # SSH admin console (monet-admin* -> this wrapper) won't work until it is
+  # installed. Warn loudly rather than leave it silently missing.
+  echo "WARNING: deploy/monet-admin was not found next to this installer, so" \
+    "the server-side admin wrapper (/usr/local/bin/monet-admin) was NOT" \
+    "installed — the SSH admin console won't work. Re-run from a monet" \
+    "checkout (so deploy/monet-admin is present)." >&2
+fi
 
 # ---- 4. directories + token env file (preserve if it already has content) ---
 install -d -m 750 "$DATA_DIR" "$ETC_DIR"
