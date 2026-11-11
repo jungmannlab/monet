@@ -117,6 +117,16 @@ def _load_env_files(pkg_root=_PKG_ROOT, override=False):
         cwd_env = find_dotenv(usecwd=True)
         if cwd_env:
             load_dotenv(cwd_env, override=override)
+        # Explicit env-file path for deployments where the settings/token file
+        # is neither the package-root nor a cwd `.env` — notably the Docker
+        # image (deploy/install-docker.sh), where tokens live in a mounted
+        # /etc/monet/monet.env. MONET_ENV_FILE names that file; loaded LAST so
+        # it wins, and re-read on SIGHUP (server.reload_auth -> _load_env_files)
+        # so `monet token` add/rotate/revoke apply live without a restart. This
+        # mirrors picasso-registry's PAINT_REGISTRY_ENV_FILE.
+        explicit = os.environ.get("MONET_ENV_FILE")
+        if explicit:
+            load_dotenv(explicit, override=override)
     except Exception:
         logger.debug("could not load .env", exc_info=True)
 

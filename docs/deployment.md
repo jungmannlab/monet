@@ -209,6 +209,58 @@ ReadWritePaths=/var/lib/monet /root/miniconda3
 Less isolated than a dedicated user; acceptable for an internal, loopback- or
 auth-gated host.
 
+## Containerized deploy (Docker)
+
+An **alternative** to the systemd/venv path above: run the DB-only server in a
+Docker container instead. No host Python is needed (the interpreter lives in the
+image), so it sidesteps the "host has no Python 3.11" problem on older distros.
+It uses the **same data/token layout** — DB under `/var/lib/monet`, tokens under
+`/etc/monet/monet.env` — so a box can switch between the two deploys over the
+same database and tokens. This is the path used on the central host that also
+runs picasso-registry (both services get the same container story).
+
+> **DB-only server only.** Like the systemd path above, this containerizes the
+> hardware-free calibration server (`monet serve`, no microscope). The
+> **instrument server** (`monet serve <Microscope>`, which actuates lasers over
+> COM/USB) is not containerized — see [Instrument server](#instrument-server).
+
+```bash
+# build + run from a checkout (needs Docker; installs it if missing):
+sudo bash deploy/install-docker.sh
+# pin a tag in production, or pull a prebuilt image instead of building:
+sudo GIT_REF=v0.7.0 bash deploy/install-docker.sh
+sudo PULL_IMAGE=ghcr.io/jungmannlab/monet:0.7.0 bash deploy/install-docker.sh
+```
+
+`deploy/install-docker.sh` is idempotent — **re-running is also how you upgrade**
+(it updates the source to `GIT_REF`, rebuilds, and replaces the container),
+preserving the token file and DB. On first run it enables auth
+(`PAINT_MONET_AUTH=on`) and mints a write + read token. The container reads the
+mounted `/etc/monet/monet.env` via `MONET_ENV_FILE`, so a token change applies
+live with `docker kill --signal=HUP monet` (no downtime).
+
+### Admin console (from your laptop)
+
+Manage the deployed container **over SSH** from an admin workstation — you do
+not log into the box or edit files by hand. Install just the admin extra there
+(no server/hardware needed):
+
+```bash
+pip install 'monet[admin]'          # PyQt6 + paramiko, nothing else
+monet-admin-gui                      # desktop console
+# or scriptable:
+monet-admin-cli --host mibweather status
+monet-admin-cli --host mibweather token add --scope write --label microscope-mercury
+monet-admin-cli --host mibweather --sudo upgrade ghcr.io/jungmannlab/monet:0.7.0
+```
+
+The console SSHes in and drives the server-side `monet-admin` wrapper
+(installed to `/usr/local/bin` by `install-docker.sh`) — status, tokens, logs,
+restart, upgrade. It is the monet counterpart of `picasso-registry-admin-*`, so
+one laptop administers both services on the shared host. (The GUI is also
+reachable from the running monet app: **Setup → Admin console (SSH)…**.) No HTTP
+admin surface is added — authority stays your SSH access (ADR-001 / C18).
+
 ## Instrument server
 
 `monet serve <Microscope>` builds the instrument and actuates lasers, so it must
