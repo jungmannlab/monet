@@ -1,0 +1,148 @@
+name: Docker image
+
+# Two jobs on a cheap GitHub-hosted runner, mirroring picasso-registry's:
+#
+#   smoke   — build the image and actually RUN it (bind 0.0.0.0 with a minted
+#             token + auth on, poll /health). The safety net: a stale-Python-
+#             floor Dockerfile bug, or a wheel that ships no _version.py (so the
+#             image reports __version__ == "unknown"), is caught here instead of
+#             in production. Runs on every PR and branch push.
+#
+#   publish — on a `v*` release tag only (and only if `smoke` passed), build
+#             and push to GHCR (ghcr.io/<owner>/monet) so labs can `docker pull`
+#             a versioned image instead of building on the box.
+#
+# `fetch-depth: 0` is required in BOTH: the multi-stage Dockerfile's builder
+# stage runs setuptools-scm over the .git in the build context, so without the
+# tags the image would report the fallback version.
+#
+# This builds the DB-only calibration server image only (the instrument server
+# is not containerized).
+
+on:
+  push:
+    branches:
+      - main
+      - master
+      - develop
+    tags:
+      - "v*"
+  pull_request:
+
+jobs:
+  smoke:
+    name: Build & smoke-test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # setuptools-scm needs tags/history for the version
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image (load locally, GHA layer cache)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: monet:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Enable auth + mint a write token (throwaway container -> env file)
+        run: |
+          mkdir -p "$PWD/ci-etc"
+          printf 'PAINT_MONET_AUTH=on\n' > "$PWD/ci-etc/monet.env"
+          docker run --rm -v "$PWD/ci-etc:/etc/monet" \
+            monet:ci \
+            monet token add --scope write --label ci \
+            --env-file /etc/monet/monet.env
+
+      - name: Run the container (0.0.0.0 bind + mounted tokens, as in deploy)
+        run: |
+          mkdir -p "$PWD/ci-data"
+          docker run -d --name monet \
+            -p 8000:8000 \
+            -v "$PWD/ci-data:/data" \
+            -v "$PWD/ci-etc:/etc/monet:ro" \
+            -e MONET_ENV_FILE=/etc/monet/monet.env \
+            monet:ci
+
+      - name: Wait for /health
+        run: |
+          for _ in $(seq 1 30); do
+            if curl -fsS http://localhost:8000/health >/dev/null 2>&1; then
+              echo "service healthy"; exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::/health did not answer within 30s"; exit 1
+
+      - name: Assert the container is still up (fail-closed guard satisfied)
+        run: |
+          state="$(docker inspect -f '{{.State.Status}}' monet)"
+          echo "container state: $state"
+          [ "$state" = "running" ] || { echo "::error::container not running"; exit 1; }
+
+      - name: Assert the image reports a real (tag-derived) version
+        run: |
+          v="$(docker run --rm monet:ci \
+            python -c "import monet; print(monet.__version__)")"
+          echo "image version: $v"
+          # Guards packaging: a wheel that shipped no _version.py makes
+          # monet.__init__ fall back to "unknown". A real build is e.g.
+          # 0.7.1.dev3+g... or a release 0.7.1 — both pass.
+          [ "$v" != "unknown" ] || {
+            echo "::error::image reports __version__=unknown — is _version.py in the wheel / .git in the build context?"
+            exit 1
+          }
+
+      - name: Dump logs on failure
+        if: failure()
+        run: docker logs monet || true
+
+  publish:
+    name: Publish to GHCR
+    runs-on: ubuntu-latest
+    needs: smoke
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # setuptools-scm needs tags/history for the version
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Derive image tags
+        uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/monet
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest
+
+      - name: Build & push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha   # reuse the layers smoke just built
+          cache-to: type=gha,mode=max

@@ -5812,6 +5812,9 @@ class MonetMainWindow(QMainWindow):
         act_update_srv = QAction("Update monet server (SSH)…", self)
         act_update_srv.triggered.connect(self._run_update_server)
         setup_menu.addAction(act_update_srv)
+        act_admin = QAction("Admin console (SSH)…", self)
+        act_admin.triggered.connect(self._open_admin_console)
+        setup_menu.addAction(act_admin)
 
         help_menu = self.menuBar().addMenu("&Help")
         act_update = QAction("Check for Updates…", self)
@@ -5827,6 +5830,37 @@ class MonetMainWindow(QMainWindow):
         act_about = QAction("About Monet", self)
         act_about.triggered.connect(self._show_about)
         help_menu.addAction(act_about)
+
+    # ---- Setup menu ----------------------------------------------------
+    def _open_admin_console(self):
+        """Open the SSH admin console for the deployed (containerized) server.
+
+        The console (monet/admin/qt.py) is a thin SSH client: it drives the
+        server-side ``monet-admin`` wrapper on the central host — it touches no
+        hardware and needs no local server. paramiko is lazy-imported (only on
+        connect), so opening the window here needs only PyQt6 (already loaded).
+        """
+        try:
+            from monet.admin.qt import AdminWindow
+        except Exception as exc:  # pragma: no cover - import-time env guard
+            QMessageBox.warning(
+                self,
+                "Admin console",
+                "Could not open the admin console: {}\n\n"
+                "Install the admin extra:  pip install 'monet[admin]'".format(
+                    exc
+                ),
+            )
+            return
+        # Keep a reference so the window isn't garbage-collected when it falls
+        # out of scope; reuse a single instance across invocations.
+        win = getattr(self, "_admin_window", None)
+        if win is None:
+            win = AdminWindow(self)
+            self._admin_window = win
+        win.show()
+        win.raise_()
+        win.activateWindow()
 
     # ---- Help menu -----------------------------------------------------
     def _check_for_updates(self):

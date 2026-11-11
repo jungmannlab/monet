@@ -78,6 +78,17 @@ server = [
     "picasso-registry[auth] @ git+https://github.com/jungmannlab/picasso-registry.git@v0.1.0",
 ]
 
+# SSH admin console for the deployed (containerized) DB-only server — the
+# `monet-admin-cli` / `monet-admin-gui` front-ends (monet/admin/). Both drive
+# the server-side `monet-admin` wrapper over SSH; paramiko + PyQt6 are
+# lazy-imported, so this extra is installed on the ADMIN WORKSTATION (a laptop),
+# NOT on a rig or the server — it needs neither [server] nor [hardware]. Mirrors
+# picasso-registry's [admin] extra (same PyQt6/paramiko floors).
+admin = [
+    "PyQt6>=6.10.2,<7",
+    "paramiko>=3",
+]
+
 # Automated remote server install for the `monet setup` wizard. paramiko is
 # imported lazily (monet/setup_core.remote_install_server) and is optional: the
 # wizard works without it via the guided-manual fallback. Only install this on a
@@ -131,6 +142,7 @@ all = [
     "monet[server]",
     "monet[hardware]",
     "monet[setup]",
+    "monet[admin]",
     "monet[dev]",
 ]
 
@@ -140,6 +152,10 @@ Repository = "https://github.com/Heerpa/monet"
 
 [project.scripts]
 monet = "monet.__main__:main"
+# SSH admin console (the [admin] extra). Laptop-side front-ends over the
+# server-side monet-admin wrapper; both lazy-import Qt/paramiko.
+monet-admin-cli = "monet.admin.cli:main"
+monet-admin-gui = "monet.admin.qt:main"
 
 [tool.setuptools_scm]
 # Writes the version into a file that is importable at runtime, even when
