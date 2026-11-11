@@ -10,6 +10,8 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-11
+
 ### Added
 - **Containerized deploy path for the DB-only calibration server** (`Dockerfile`
   + `.dockerignore` + `deploy/install-docker.sh` + a server-side `deploy/monet-admin`
