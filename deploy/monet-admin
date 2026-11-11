@@ -1,0 +1,186 @@
+#!/usr/bin/env bash
+# monet-admin — server-side admin wrapper for the Docker deployment.
+#
+# Collapses the verbose `docker run --rm -v … monet token … && docker kill -HUP …`
+# incantations into short subcommands, run on the box (directly or over SSH).
+# It is the command surface the laptop-side admin CLI/GUI (the [admin] extra)
+# drives — keeping all Docker specifics server-side and off the network (no
+# HTTP token surface; authority is shell/SSH access, per ADR-001 / C18).
+#
+# This administers the DB-only calibration server only (the containerized
+# `monet serve`, no microscope). The instrument server stays on systemd/SSH.
+#
+# Installed into /usr/local/bin by deploy/install-docker.sh. Self-configuring:
+# the image + host port are read from the running container; override via the
+# MONET_ADMIN_* env vars below if your names differ.
+#
+# Usage:
+#   monet-admin status
+#   monet-admin token list
+#   monet-admin token add  --scope write --label <holder>
+#   monet-admin token rotate --label <holder>
+#   monet-admin token revoke --label <holder>
+#   monet-admin logs [-n N] [-f]
+#   monet-admin restart
+#   monet-admin upgrade <image-ref>      # e.g. ghcr.io/jungmannlab/monet:0.7.0
+#
+# Needs Docker access (run as root or a docker-group user; upgrade needs root).
+set -euo pipefail
+
+CONTAINER="${MONET_ADMIN_CONTAINER:-monet}"
+ETC_DIR="${MONET_ADMIN_ETC_DIR:-/etc/monet}"
+CONTAINER_ETC="/etc/monet"
+ENV_FILE_IN="$CONTAINER_ETC/monet.env"
+# Stable copy of install-docker.sh that `upgrade` re-runs (install-docker.sh
+# drops itself here on every deploy, so this works in pull-only installs too).
+INSTALLER="${MONET_ADMIN_INSTALLER:-/opt/monet/deploy/install-docker.sh}"
+
+die() { echo "monet-admin: $*" >&2; exit 1; }
+need_docker() {
+  command -v docker >/dev/null 2>&1 || die "docker not found on PATH"
+}
+
+container_running() {
+  [ "$(docker inspect -f '{{.State.Running}}' "$CONTAINER" 2>/dev/null)" = "true" ]
+}
+
+# The image the running container uses — token ops run a throwaway container of
+# the SAME image, so the token CLI version always matches the service.
+detect_image() {
+  local img
+  img="$(docker inspect -f '{{.Config.Image}}' "$CONTAINER" 2>/dev/null || true)"
+  [ -n "$img" ] || die "container '$CONTAINER' not found — is it deployed? (set MONET_ADMIN_CONTAINER)"
+  printf '%s' "$img"
+}
+
+# Host port mapped to the container's 8000 (for health checks).
+detect_port() {
+  docker port "$CONTAINER" 8000/tcp 2>/dev/null | head -1 | sed 's/.*://' || true
+}
+
+cmd_status() {
+  # `docker ps --filter` exits 0 with no output for a missing container, so
+  # check existence explicitly (otherwise status prints an empty block + rc 0).
+  docker inspect "$CONTAINER" >/dev/null 2>&1 \
+    || die "container '$CONTAINER' not found — is it deployed? (set MONET_ADMIN_CONTAINER)"
+  echo "container: $CONTAINER"
+  docker ps -a --filter "name=^/${CONTAINER}$" \
+    --format 'state:     {{.State}}\nstatus:    {{.Status}}\nimage:     {{.Image}}\nports:     {{.Ports}}'
+  local port; port="$(detect_port)"
+  if [ -n "$port" ]; then
+    if curl -fsS "http://127.0.0.1:${port}/health" >/dev/null 2>&1; then
+      echo "health:    OK (http://127.0.0.1:${port}/health)"
+    else
+      echo "health:    NOT answering on port ${port}"
+    fi
+  fi
+  # Report the image's self-stamped version (handy to confirm an upgrade).
+  if container_running; then
+    local ver
+    ver="$(docker exec "$CONTAINER" python -c \
+      'import monet; print(monet.__version__)' 2>/dev/null || true)"
+    [ -n "$ver" ] && echo "version:   $ver"
+  fi
+}
+
+# Run the token CLI in a throwaway container of the running image, with the
+# token dir mounted so the shared monet.env is read/written on the host.
+token_run() {
+  local image; image="$(detect_image)"
+  docker run --rm -v "$ETC_DIR:$CONTAINER_ETC" "$image" \
+    monet token "$@" --env-file "$ENV_FILE_IN"
+}
+
+# SIGHUP the running service so an add/rotate/revoke applies without downtime.
+# The token file is ALREADY written at this point, so a failed reload must warn,
+# not abort under `set -e` (else the operator sees a bare rc=1 and may not
+# realize the change landed on disk but wasn't applied live).
+reload() {
+  if container_running; then
+    if docker kill --signal=HUP "$CONTAINER" >/dev/null 2>&1; then
+      echo "reloaded: live token map (SIGHUP, no downtime)"
+    else
+      echo "warning: token file updated but SIGHUP reload failed — restart" \
+        "the container to apply (docker restart $CONTAINER)" >&2
+    fi
+  else
+    echo "note: container not running — tokens apply on next start" >&2
+  fi
+}
+
+cmd_token() {
+  local sub="${1:-}"; shift || true
+  case "$sub" in
+    list)   token_run list "$@" ;;
+    add)    token_run add "$@";    reload ;;
+    rotate) token_run rotate "$@"; reload ;;
+    revoke) token_run revoke "$@"; reload ;;
+    ""|-h|--help)
+      echo "usage: monet-admin token {list|add|rotate|revoke} [--scope read|write] [--label NAME]" ;;
+    *) die "unknown token subcommand '$sub' (list|add|rotate|revoke)" ;;
+  esac
+}
+
+# Present a stable `-n N`/`-f` interface and translate to docker's flags
+# (`docker logs` uses --tail, NOT -n). Keeps docker specifics in the wrapper.
+cmd_logs() {
+  local tail=200 follow=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -n | --lines | --tail) tail="${2:-200}"; shift 2 || shift ;;
+      -f | --follow) follow=1; shift ;;
+      *) shift ;;
+    esac
+  done
+  if [ -n "$follow" ]; then
+    docker logs --tail "$tail" -f "$CONTAINER"
+  else
+    docker logs --tail "$tail" "$CONTAINER"
+  fi
+}
+
+cmd_restart() {
+  docker restart "$CONTAINER" >/dev/null && echo "restarted: $CONTAINER"
+}
+
+cmd_upgrade() {
+  local ref="${1:-}"
+  [ -n "$ref" ] || die "usage: monet-admin upgrade <image-ref>  (e.g. ghcr.io/jungmannlab/monet:0.7.0)"
+  [ -f "$INSTALLER" ] \
+    || die "installer not found at $INSTALLER (set MONET_ADMIN_INSTALLER)"
+  [ "$(id -u)" -eq 0 ] || die "upgrade needs root — run via sudo"
+  # Honor an explicit MONET_PORT, else detect from the running container.
+  # Never silently fall back to 8000: a stopped/absent container would then be
+  # rebound to the wrong host port, dropping a customized one.
+  local port; port="${MONET_PORT:-$(detect_port)}"
+  [ -n "$port" ] || die "can't detect the host port (container stopped/absent)\
+ — re-run with MONET_PORT set, e.g. MONET_PORT=8001"
+  echo "upgrading $CONTAINER -> $ref (port $port) via install-docker.sh"
+  PULL_IMAGE="$ref" MONET_PORT="$port" bash "$INSTALLER"
+}
+
+# Print the leading comment block (after the shebang) as help — stop at the
+# first non-comment line so `set -euo pipefail`/variable assignments don't leak.
+usage() {
+  awk 'NR==1 { next }
+       /^#/  { sub(/^# ?/, ""); print; next }
+       { exit }' "$0"
+}
+
+main() {
+  local cmd="${1:-}"; shift || true
+  case "$cmd" in
+    ""|-h|--help) usage; return 0 ;;
+  esac
+  need_docker   # every real command needs the docker CLI
+  case "$cmd" in
+    status)  cmd_status "$@" ;;
+    token)   cmd_token "$@" ;;
+    logs)    cmd_logs "$@" ;;
+    restart) cmd_restart "$@" ;;
+    upgrade) cmd_upgrade "$@" ;;
+    *) die "unknown command '$cmd' (status|token|logs|restart|upgrade; -h for help)" ;;
+  esac
+}
+
+main "$@"

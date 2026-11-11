@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+build/
+dist/
+*.egg-info/
+.venv/
+*.db
+*.sqlite
+# never bake a local token store into an image layer (monet auto-loads ./.env)
+.env
+*.env
+# monet's rotating logs
+monet.log*
+calipower.log
+.pytest_cache/
+.coverage
+.claude/

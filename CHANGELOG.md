@@ -10,6 +10,34 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-11
+
+### Added
+- **Containerized deploy path for the DB-only calibration server** (`Dockerfile`
+  + `.dockerignore` + `deploy/install-docker.sh` + a server-side `deploy/monet-admin`
+  wrapper + a `docker-image.yml` CI workflow). Runs `monet serve` (no microscope)
+  in a container — no host Python needed — reusing the **same** `/var/lib/monet`
+  (DB) and `/etc/monet/monet.env` (tokens) layout as the systemd path, so a host
+  can switch between the two. `install-docker.sh` is idempotent (re-run = upgrade),
+  mints auth on first run, and the container reads the mounted token file via the
+  new `MONET_ENV_FILE` env var so `docker kill --signal=HUP` live-reloads tokens.
+  The CI `smoke` job builds + runs the image (bind `0.0.0.0`, mint a token, poll
+  `/health`) and asserts the image reports a real `__version__` (not `unknown`);
+  `publish` pushes `ghcr.io/jungmannlab/monet:<version>` on `v*` tags. The
+  **instrument** server (`monet serve <Microscope>`) is intentionally not
+  containerized — it stays on systemd/SSH. Mirrors picasso-registry's deploy path.
+- **SSH admin console — `monet-admin-cli` / `monet-admin-gui`** (the new `[admin]`
+  extra: PyQt6 + paramiko, both lazy-imported). An admin workstation (a laptop)
+  drives the deployed container **over SSH** — status, tokens (list/add/rotate/
+  revoke), logs, restart, upgrade — with **no local monet server or hardware**
+  required (`pip install 'monet[admin]'` is the only install there). The console
+  runs the server-side `monet-admin` wrapper, so monet adds **no network admin
+  surface** (authority stays SSH access, ADR-001 / C18). Reachable standalone or
+  from the app (**Setup ▸ Admin console (SSH)…**). The monet counterpart of
+  `picasso-registry-admin-*`, so one laptop administers both services on the
+  shared host. New `monet/admin/` package (`core`/`cli`/`qt`/`profile`) +
+  `MONET_ENV_FILE` support in `monet._load_env_files`.
+
 ## [0.6.14] - 2026-11-04
 
 ### Added
