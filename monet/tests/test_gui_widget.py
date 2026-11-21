@@ -19,6 +19,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt6.QtWidgets import QApplication  # noqa: E402
 
+import monet.io as io  # noqa: E402
+
 from monet.gui import (  # noqa: E402
     AdjustTab,
     CalibrateTab,
@@ -427,6 +429,79 @@ class TestDoctorTab(unittest.TestCase):
         self.assertIn("doctor", MonetWidget._TAB_CATALOG)
         w = MonetWidget(show_toolbar=False, tabs=("doctor",))
         self.assertIsNotNone(w.tab("doctor"))
+
+    def test_transmission_section_without_instrument(self):
+        """The transmission-factor section renders even with no connection."""
+        tab = DoctorTab()
+        txt = tab.report_text()
+        self.assertIn("Transmission factors", txt)
+        self.assertIn("No microscope connected", txt)
+
+    def test_transmission_section_shows_loaded_factors(self):
+        """With an instrument bound, the report shows the in-effect factor per
+        laser and flags a laser with none (the sample-plane-correction gap)."""
+
+        class _FakeInstr:
+            def __init__(self):
+                self._factors = {488: 0.8}
+                self._powermeter_type = {488: "bfp"}
+                self.lasers = {488: object(), 561: object()}
+                self.config = {
+                    "index": {"name": "Scope"},
+                    # A non-existent local DB → load_factors returns empty,
+                    # so the diagnostic is deterministic and makes no network
+                    # call.
+                    "database": "/nonexistent/does-not-exist.xlsx",
+                }
+
+        class _FakePC:
+            instrument = _FakeInstr()
+
+        tab = DoctorTab()
+        tab.set_pc(_FakePC())
+        txt = tab.report_text()
+        self.assertIn("488 nm", txt)
+        self.assertIn("0.8000", txt)
+        self.assertIn("cal=bfp", txt)
+        # 561 nm has no factor loaded → flagged as no correction.
+        self.assertIn("561 nm", txt)
+        self.assertIn("no sample-plane correction", txt)
+
+    def test_transmission_section_makes_no_network_call(self):
+        """The transmission diagnostics read only in-memory control state — no
+        network — so rendering on a connect/recompute can't freeze the GUI even
+        when the DB is an (unreachable) HTTP server."""
+
+        class _FakeInstr:
+            _factors = {488: 0.8}
+            _powermeter_type = {488: "bfp"}
+            lasers = {488: object()}
+            config = {
+                "index": {"name": "Scope"},
+                "database": "http://unreachable-server:8000",
+            }
+
+        class _FakePC:
+            instrument = _FakeInstr()
+
+        called = []
+        orig = io.load_factors
+
+        def _spy(*a, **k):
+            called.append((a, k))
+            return orig(*a, **k)
+
+        io.load_factors = _spy
+        try:
+            tab = DoctorTab()
+            tab._probed = True  # even "fully opened", no query is made
+            tab.set_pc(_FakePC())
+            txt = tab.report_text()
+        finally:
+            io.load_factors = orig
+        self.assertIn("488 nm", txt)
+        self.assertIn("0.8000", txt)
+        self.assertEqual(called, [])
 
 
 class TestMainWindowChrome(unittest.TestCase):

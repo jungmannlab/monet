@@ -238,3 +238,104 @@ class TestOutboxFlush(unittest.TestCase):
         self.assertIsInstance(result, pd.DataFrame)
         bkgs = [result.iloc[i]["bkg"] for i in range(len(result))]
         self.assertIn(7.0, bkgs)
+
+
+class TestFactorSaveHttpError(unittest.TestCase):
+    """A transient (5xx / unclassified) factor-save failure must NOT be dropped.
+
+    Regression for the "set 40 mW sample, get ~32" divergence: a 5xx while the
+    server restarts used to be swallowed silently, so the projection factor the
+    power-setting path reads was lost while the pair store the Database tab
+    shows still had it. The save must now cache + outbox the factor so the next
+    load flush retries it. (A permanent 4xx is handled separately — see
+    TestFactorSavePermanentReject.)
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        mcache._set_cache_dir(self.tmpdir)
+        mcache._clear_cache_registry()
+        mio._last_flush_failure.clear()
+        self.server_url = "http://http-error-test-server:8000"
+
+        import requests as _requests
+
+        self._orig_post = _requests.post
+        _requests.post = self._raise_http_error
+
+    def _raise_http_error(self, *args, **kwargs):
+        class _Resp:
+            status_code = 500
+
+            def raise_for_status(self):
+                raise requests.exceptions.HTTPError("500 Server Error")
+
+        return _Resp()
+
+    def tearDown(self):
+        import requests as _requests
+
+        _requests.post = self._orig_post
+        mcache._clear_cache_registry()
+        import shutil
+
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_http_error_factor_save_is_cached_and_outboxed(self):
+        mio._save_factor_http(
+            self.server_url, "TestScope", 488, "2024-01-01", 0.8, 0.0, 50
+        )
+        cache = mcache._get_cache(self.server_url)
+        records = cache.query_factors("TestScope", 488)
+        self.assertEqual(len(records), 1)
+        self.assertAlmostEqual(records[0]["transmission_objective_mean"], 0.8)
+        # A 5xx/unclassified failure is transient → queued for retry.
+        self.assertEqual(cache.pending_outbox_count(), 1)
+
+
+class TestFactorSavePermanentReject(unittest.TestCase):
+    """A permanent 4xx on a factor save is cached but NOT outboxed, so it does
+    not become a poison entry replayed (and re-warned) on every HTTP op."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        mcache._set_cache_dir(self.tmpdir)
+        mcache._clear_cache_registry()
+        mio._last_flush_failure.clear()
+        self.server_url = "http://reject-test-server:8000"
+
+        import requests as _requests
+
+        self._orig_post = _requests.post
+        _requests.post = self._raise_4xx
+
+    def _raise_4xx(self, *args, **kwargs):
+        class _Resp:
+            status_code = 422
+
+            def raise_for_status(self):
+                err = requests.exceptions.HTTPError("422 Unprocessable")
+                err.response = self
+                raise err
+
+        return _Resp()
+
+    def tearDown(self):
+        import requests as _requests
+
+        _requests.post = self._orig_post
+        mcache._clear_cache_registry()
+        import shutil
+
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_4xx_factor_save_is_cached_but_not_outboxed(self):
+        mio._save_factor_http(
+            self.server_url, "TestScope", 488, "2024-01-01", 0.8, 0.0, 50
+        )
+        cache = mcache._get_cache(self.server_url)
+        records = cache.query_factors("TestScope", 488)
+        self.assertEqual(len(records), 1)
+        self.assertAlmostEqual(records[0]["transmission_objective_mean"], 0.8)
+        # Permanent reject → not queued (would otherwise retry forever).
+        self.assertEqual(cache.pending_outbox_count(), 0)
