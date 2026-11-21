@@ -10,7 +10,31 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
-## [0.7.0] - 2026-11-11
+### Fixed
+- **Objective transmission factor is now applied when setting power after a
+  recompute.** Setting a sample-plane power on a BFP-calibrated laser drove the
+  *back-focal-plane* power to the requested value instead of `sample / T`, so
+  the sample plane received `T ×` the request (e.g. "set 40 mW, measure ~32").
+  Two causes: (1) the running control cached the per-laser transmission factors
+  only at calibration-load time, so a factor computed afterwards in the Database
+  tab never reached the live control — added `IlluminationLaserControl.reload_factors()`
+  and call it when the Database tab recomputes/removes transmission pairs; and
+  (2) a non-connection failure on `POST /factors` was silently dropped (so the
+  projection factor the power path reads diverged from the pair store the
+  Database tab shows and the loss survived restarts) — `io._save_factor_http`
+  now caches the factor on any failure (and outboxes *transient* failures for
+  retry; a permanent 4xx is cached but not queued, so it can't become a poison
+  outbox entry), and `compute_run_pair_factors` logs a failed projection save
+  at warning level.
+- **Transmission factors computed on an older monet keep working after the
+  upgrade without a recompute:** `reload_factors` falls back to the local
+  factor-*pair* store (which survives on the same machine) for any laser the
+  projection store is missing, recovering factors whose original `POST /factors`
+  was dropped. A transient load failure no longer wipes a good factor cache.
+- **Doctor tab now reports the loaded transmission factors** (per-laser
+  calibration power-meter position and the in-effect factor, plus whether the
+  database returns any factor rows for the device), so this divergence is
+  visible for support.
 
 ### Added
 - **Containerized deploy path for the DB-only calibration server** (`Dockerfile`

@@ -600,6 +600,102 @@ class IlluminationLaserControl(IlluminationControl):
     def laser_enabled(self, value):
         self.lasers[self.curr_laser].enabled = value
 
+    def reload_factors(self):
+        """(Re)load the per-laser objective transmission factors from the DB.
+
+        ``self._factors`` is a live cache keyed on laser; it feeds
+        :meth:`_bfp_factor` (sample-plane projection) and the power-setting
+        path. It is populated at construction via
+        :meth:`load_calibration_database`, but the transmission factor is often
+        (re)computed *after* that — e.g. the operator pairs a sample-plane and
+        a BFP run in the GUI's Database tab. Without a way to refresh this
+        cache in place, the running control keeps the stale factor (1.0 when
+        none existed yet), so a sample-plane set-point is served at the BFP
+        power and under-delivers by the transmission factor. Call this after
+        the factor store changes so the correction takes effect without a full
+        reconnect. Best-effort: a load failure leaves the cache unchanged-safe
+        (empty) rather than raising.
+
+        For any laser the projection store does not cover, fall back to the
+        locally-stored factor *pairs* (:func:`io.load_factor_pairs`). An earlier
+        monet dropped a failed ``POST /factors`` silently, so a factor computed
+        then is missing from the projection store but still present in the local
+        pair store — this fallback makes such a calibration usable after the
+        upgrade without recomputing it.
+        """
+        new_factors = {}
+        try:
+            device = self.config["index"][DEVICE_TAG]
+            factors_df = io.load_factors(
+                self.config["database"], device=device
+            )
+            if not factors_df.empty:
+                for laser in self.lasers.keys():
+                    try:
+                        laser_int = int(laser)
+                        sub = factors_df.loc[
+                            factors_df.index.get_level_values(LASER_TAG)
+                            == laser_int
+                        ]
+                        if not sub.empty:
+                            new_factors[laser] = float(
+                                sub.iloc[-1]["transmission_objective_mean"]
+                            )
+                    except Exception as exc:
+                        logger.debug(
+                            "Skipping factor row for %s nm: %s", laser, exc
+                        )
+            # Only replace the cache on a *successful* load. A successful but
+            # empty result legitimately clears it (then pairs fill below).
+            self._factors = new_factors
+        except Exception as exc:
+            # Transient failure (server blip): keep the existing factors rather
+            # than wiping a good cache — reload_factors runs at construction and
+            # after every Database-tab recompute.
+            logger.debug("Could not load powermeter factors: %s", exc)
+
+        self._fill_factors_from_pairs()
+
+    def _fill_factors_from_pairs(self):
+        """Fill any missing per-laser factor from the local pair store.
+
+        The projection store (``/factors``) is authoritative when present; this
+        only covers lasers it is missing, using the latest-dated pair for that
+        wavelength (matching the projection store's ``iloc[-1]`` semantics).
+        Best-effort — a connected projection factor is never overwritten.
+        """
+        missing = [la for la in self.lasers.keys() if la not in self._factors]
+        if not missing:
+            return
+        try:
+            device = self.config["index"][DEVICE_TAG]
+            pairs = io.load_factor_pairs(
+                self.config["database"], device=device
+            )
+        except Exception as exc:
+            logger.debug("Could not load factor pairs: %s", exc)
+            return
+        if pairs is None or pairs.empty or "factor" not in pairs.columns:
+            return
+        for laser in missing:
+            try:
+                wl = float(int(laser))
+                sub = pairs.loc[pairs["wavelength"].astype(float) == wl]
+                sub = sub.dropna(subset=["factor"])
+                if sub.empty:
+                    continue
+                if "date" in sub.columns:
+                    sub = sub.sort_values("date")
+                self._factors[laser] = float(sub.iloc[-1]["factor"])
+                logger.info(
+                    "Transmission factor for %s nm recovered from the "
+                    "local pair store (%.4f); the projection store had none.",
+                    laser,
+                    self._factors[laser],
+                )
+            except Exception as exc:
+                logger.debug("Pair fallback for %s nm skipped: %s", laser, exc)
+
     def _bfp_factor(self, laser=None):
         """Return transmission_objective = P_sample / P_bfp if the latest
         calibration used the back focal plane (BFP) powermeter, else 1.0.
@@ -1298,28 +1394,7 @@ class IlluminationLaserControl(IlluminationControl):
                 except Exception:
                     pass
 
-        self._factors = {}
-        try:
-            device = self.config["index"][DEVICE_TAG]
-            factors_df = io.load_factors(
-                self.config["database"], device=device
-            )
-            if not factors_df.empty:
-                for laser in self.lasers.keys():
-                    try:
-                        laser_int = int(laser)
-                        sub = factors_df.loc[
-                            factors_df.index.get_level_values(LASER_TAG)
-                            == laser_int
-                        ]
-                        if not sub.empty:
-                            self._factors[laser] = float(
-                                sub.iloc[-1]["transmission_objective_mean"]
-                            )
-                    except Exception:
-                        pass
-        except Exception as exc:
-            logger.debug("Could not load powermeter factors: %s", exc)
+        self.reload_factors()
 
         # Populate the analyzers for the current laser, but do NOT switch any
         # laser on: loading the calibration (e.g. on GUI connect) must never

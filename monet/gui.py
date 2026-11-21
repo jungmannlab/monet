@@ -4459,6 +4459,9 @@ class DatabaseTab(_MonetTab):
     """
 
     status = pyqtSignal(str, int)
+    # Emitted after the objective transmission factors change (recompute /
+    # remove), so the window can refresh the Set Power tab's live control.
+    factors_changed = pyqtSignal()
 
     RUN_COLUMNS = [
         "Date",
@@ -4980,6 +4983,7 @@ class DatabaseTab(_MonetTab):
                 "Stored {} transmission pair(s).".format(total), 5000
             )
             self._on_refresh()
+            self._apply_factors_to_instrument()
 
         def _on_error(msg):
             self._active_worker = None
@@ -5011,6 +5015,24 @@ class DatabaseTab(_MonetTab):
                     logger.debug("delete pair failed: %s", exc)
         self._emit_status("Removed {} pair(s).".format(removed), 4000)
         self._on_refresh()
+        self._apply_factors_to_instrument()
+
+    def _apply_factors_to_instrument(self):
+        """Push freshly stored transmission factors into the live control.
+
+        ``self._pc.instrument`` is the same object the Set Power tab actuates
+        through; its ``_factors`` cache is only populated when the calibration
+        is loaded, which is *before* the operator computes the factor here.
+        Reload it in place so the sample-plane correction takes effect without
+        a reconnect, then signal the window to refresh the dependent UI.
+        """
+        if self._pc is None:
+            return
+        try:
+            self._pc.instrument.reload_factors()
+        except Exception as exc:
+            logger.debug("reload_factors failed: %s", exc)
+        self.factors_changed.emit()
 
     def _refresh_factor_plot(self):
         """Redraw the transmission-factor plot.
@@ -5190,8 +5212,22 @@ class DoctorTab(_MonetTab):
         self._server_status = None
         self._server_url = None
         self._probed = False
+        self._pc = None
         self._build_ui()
         self._render()
+
+    def set_pc(self, pc):
+        """Track the connected control so the transmission-factor diagnostics
+        reflect the live instrument. Pure inspection — never actuates.
+
+        ``MonetWidget.set_pc`` fans this out to every tab without per-tab
+        isolation, so a render failure here must not abort binding the rest.
+        """
+        self._pc = pc
+        try:
+            self._render()
+        except Exception:
+            logger.debug("Doctor render failed on set_pc", exc_info=True)
 
     def showEvent(self, event):
         # Probe the server lazily — the first time the tab is actually shown,
@@ -5345,6 +5381,8 @@ class DoctorTab(_MonetTab):
         )
         lines.append("")
 
+        lines.extend(self._transmission_lines(row))
+
         lines.append("[ Calibration server ]")
         if not self._server_url:
             lines.append(
@@ -5374,6 +5412,48 @@ class DoctorTab(_MonetTab):
             if st.get("detail"):
                 lines.append(row("detail", st["detail"]))
         return "\n".join(lines)
+
+    def _transmission_lines(self, row):
+        """Diagnostics for the objective transmission factor.
+
+        Shows, per laser, the stored calibration's power-meter position and the
+        transmission factor actually *in effect* in the live control
+        (``_factors`` — what the sample-plane power-setting uses, after the
+        projection store and the local-pair fallback). A laser whose
+        calibration is in the BFP but has no factor is the "set 40 mW sample,
+        get ~32" gap: it is served with no sample-plane correction.
+
+        Reads only in-memory control state — no network or disk — so it is safe
+        to render on every connect and on the GUI thread (unlike the server
+        probe, the factors are already loaded into the control).
+        """
+        lines = ["[ Transmission factors ]"]
+        pc = self._pc
+        instrument = getattr(pc, "instrument", None) if pc else None
+        if instrument is None:
+            lines.append("  No microscope connected.")
+            lines.append("")
+            return lines
+
+        factors = getattr(instrument, "_factors", {}) or {}
+        pm_types = getattr(instrument, "_powermeter_type", {}) or {}
+        lasers = list(getattr(instrument, "lasers", {}).keys())
+        if not lasers:
+            lasers = sorted(set(factors) | set(pm_types))
+        for laser in lasers:
+            pm = pm_types.get(laser, "(default: sample)")
+            if laser in factors:
+                factor = "{:.4f}".format(factors[laser])
+            else:
+                factor = "none (→ 1.0, no sample-plane correction)"
+            lines.append(
+                row(
+                    "{} nm".format(laser),
+                    "cal={}  factor={}".format(pm, factor),
+                )
+            )
+        lines.append("")
+        return lines
 
     def _render(self):
         self._view.setPlainText(self.report_text())
@@ -5505,6 +5585,13 @@ class MonetWidget(QWidget):
         if cal is not None:
             cal.calibration_started.connect(self._on_calibration_started)
             cal.calibration_finished.connect(self._on_calibration_finished)
+
+        # When the Database tab changes the objective transmission factors,
+        # refresh the Set Power tab so its range/conversion reflect the new
+        # factor (the live control was already reloaded in place).
+        db = self._tab_widgets.get("database")
+        if db is not None:
+            db.factors_changed.connect(self._on_factors_changed)
 
         # Matplotlib backend safety: must happen before any Qt-backed figure
         # is created. Non-fatal if matplotlib isn't installed.
@@ -5761,6 +5848,20 @@ class MonetWidget(QWidget):
             if hasattr(sp, "refresh_laser_toggle"):
                 sp.refresh_laser_toggle()
         self.calibration_finished.emit()
+
+    def _on_factors_changed(self):
+        """Refresh the Set Power tab after the transmission factors changed.
+
+        The Database tab already reloaded the shared control's factor cache in
+        place; here we only re-sync the dependent UI (accessible-range label),
+        which is computed from the (now projected) calibration ranges.
+        """
+        sp = self._tab_widgets.get("set_power")
+        if sp is not None and hasattr(sp, "refresh_calibration_state"):
+            sp.refresh_calibration_state()
+        doc = self._tab_widgets.get("doctor")
+        if doc is not None and hasattr(doc, "_render"):
+            doc._render()
 
     def closeEvent(self, event):
         # Only fires when this widget is the top-level window; when embedded,
