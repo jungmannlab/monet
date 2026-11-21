@@ -2072,7 +2072,13 @@ def compute_run_pair_factors(db_fname, sample_run, bfp_run, ana_config):
                 int(n),
             )
         except Exception as exc:
-            logger.debug("projection factor save failed: %s", exc)
+            # The projection factor is what the power-setting path reads; a
+            # failure here (while the pair itself is stored) is the exact
+            # silent divergence that makes a sample-plane set-point under-
+            # deliver, so surface it at warning level.
+            logger.warning(
+                "projection factor save failed for %s nm: %s", wl, exc
+            )
         stored.append(pair)
     return stored
 
@@ -2129,7 +2135,30 @@ def _save_factor_http(
         cache.upsert_factor(payload)
         cache.add_to_outbox("/factors", payload)
     except Exception as exc:
-        logger.warning("Failed to save factor via HTTP: %s", exc)
+        # A non-connection failure must NOT silently drop the factor: the
+        # projection store (what monet.control reads for the sample-plane
+        # correction) would diverge from the pair store the Database tab shows,
+        # and a set-point would be served at the BFP power with no visible
+        # cause. Always cache it locally. Only *transient* failures (a 5xx while
+        # the server restarts, or an unclassifiable error) are queued for retry
+        # — a permanent 4xx (auth/schema reject) would otherwise become a poison
+        # outbox entry replayed (and re-warned) on every HTTP op, since the
+        # outbox has no max-attempts purge.
+        cache.upsert_factor(payload)
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+        if status is not None and 400 <= status < 500:
+            logger.warning(
+                "Server rejected the factor save (HTTP %s) — cached locally "
+                "but NOT queued for retry. Fix the server/token and recompute.",
+                status,
+            )
+        else:
+            logger.warning(
+                "Failed to save factor via HTTP (%s) — cached and queued for "
+                "retry via the outbox.",
+                exc,
+            )
+            cache.add_to_outbox("/factors", payload)
 
 
 def _save_factor_excel(

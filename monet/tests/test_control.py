@@ -496,6 +496,114 @@ class TestControl(unittest.TestCase):
         ctrl._factors[488] = 1.7
         self.assertTrue(ctrl._has_transmission_factor(488))
 
+    def test_reload_factors_picks_up_factor_stored_after_load(self):
+        """Regression: a transmission factor computed *after* the calibration
+        was loaded must become usable without a reconnect.
+
+        This is the "set 40 mW sample, get ~32" bug: the operator calibrates
+        (so the control's ``_factors`` cache is empty), then pairs a BFP and a
+        sample run to get the factor. Until ``reload_factors`` existed, the
+        running control kept the stale empty cache, so ``_bfp_factor`` returned
+        1.0 and the sample-plane set-point was served at the BFP power —
+        under-delivering by the transmission factor. After ``reload_factors``
+        the factor is applied and the BFP target becomes sample / T.
+        """
+        import monet.io as mio
+
+        ctrl = self._build_laser_control()
+        ctrl.laser = 488
+        ctrl.laserpower = 50
+        # The calibration was taken in the back focal plane.
+        ctrl._powermeter_type[488] = "bfp"
+
+        # Fresh calibration → no factor loaded yet: the stale state that made
+        # the set-point under-deliver.
+        self.assertEqual(ctrl._factors, {})
+        self.assertEqual(ctrl._bfp_factor(488), 1.0)
+
+        def _bfp_target(sample_power):
+            """Drive to a sample-plane power and read back the BFP power the
+            hardware was actually commanded to (raw calibration curve)."""
+            ctrl.power = sample_power
+            return (
+                ctrl.analyzer.estimate_power(ctrl.attenuator.curr_pos())
+                * ctrl._pin_factor()
+            )
+
+        # Pick a sample target whose BFP-equivalent sits inside the calibrated
+        # range for both factor values (T < 1 ⇒ sample/T is the larger one).
+        lo, hi = sorted(
+            float(v) for v in ctrl._power_ranges.loc[50, ["min", "max"]]
+        )
+        transmission = 0.8
+        sample_target = transmission * (lo + hi) / 2.0
+
+        # Before the factor is loaded, the setter wrongly targets BFP == the
+        # requested sample power (no projection).
+        raw_before = _bfp_target(sample_target)
+        self.assertAlmostEqual(raw_before, sample_target, delta=0.5)
+
+        # Store the factor in the DB *after* the control was built, then reload.
+        mio.save_transmission_factor(
+            ctrl.config["database"],
+            "DefaultMicroscope",
+            488,
+            datetime.now().strftime("%Y-%m-%d"),
+            transmission,
+            0.0,
+            5,
+        )
+        ctrl.reload_factors()
+
+        self.assertAlmostEqual(ctrl._factors[488], transmission)
+        self.assertAlmostEqual(ctrl._bfp_factor(488), transmission)
+
+        # Now the same sample request drives BFP = sample / T (the larger
+        # value), so the sample plane actually receives the requested power.
+        raw_after = _bfp_target(sample_target)
+        self.assertAlmostEqual(
+            raw_after, sample_target / transmission, delta=0.5
+        )
+        self.assertAlmostEqual(raw_after / raw_before, 1.0 / transmission, 2)
+
+    def test_reload_factors_recovers_from_local_pair_store(self):
+        """A factor present only in the local pair store (projection store
+        empty) is recovered on reload.
+
+        Mirrors upgrading from a monet that dropped a failed POST /factors: the
+        projection store has nothing, but the local pair store still holds the
+        operator-computed factor, so the calibration stays usable without a
+        recompute.
+        """
+        import monet.io as mio
+
+        ctrl = self._build_laser_control()
+        ctrl.laser = 488
+        ctrl.laserpower = 50
+        ctrl._powermeter_type[488] = "bfp"
+
+        pair = {
+            "device": "DefaultMicroscope",
+            "wavelength": 488,
+            "laser_power": 50,
+            "date": datetime.now().strftime("%Y-%m-%d"),
+            "sample_time": "10:00",
+            "bfp_time": "10:05",
+            "factor": 0.8,
+            "n_points": 5,
+        }
+        db = ctrl.config["database"]
+        pair_path = mio._factor_pairs_path(db)
+        try:
+            # No projection factor stored → only the local pair exists.
+            mio.save_factor_pair(db, pair)
+            ctrl.reload_factors()
+            self.assertAlmostEqual(ctrl._factors[488], 0.8)
+            self.assertAlmostEqual(ctrl._bfp_factor(488), 0.8)
+        finally:
+            if os.path.exists(pair_path):
+                os.remove(pair_path)
+
     @mock.patch("time.sleep")
     def test_run_power_feedback_projects_to_sample_plane(self, _sleep):
         """With a BFP transmission factor, the feedback loop drives the
