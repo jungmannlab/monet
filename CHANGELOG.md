@@ -10,6 +10,8 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-11-21
+
 ### Fixed
 - **Objective transmission factor is now applied when setting power after a
   recompute.** Setting a sample-plane power on a BFP-calibrated laser drove the
@@ -32,9 +34,10 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
   projection store is missing, recovering factors whose original `POST /factors`
   was dropped. A transient load failure no longer wipes a good factor cache.
 - **Doctor tab now reports the loaded transmission factors** (per-laser
-  calibration power-meter position and the in-effect factor, plus whether the
-  database returns any factor rows for the device), so this divergence is
-  visible for support.
+  calibration power-meter position and the in-effect factor), so this
+  divergence is visible for support.
+
+## [0.7.0] - 2026-11-11
 
 ### Added
 - **Containerized deploy path for the DB-only calibration server** (`Dockerfile`
