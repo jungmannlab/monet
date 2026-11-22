@@ -1274,13 +1274,25 @@ def _latest_date_subset(df):
     ``df`` is indexed with a 'date' level ('YYYY-MM-DD' strings or Timestamps).
     Used to pick one plane's latest calibration session when pairing sample vs
     BFP for the transmission factor, so the pairing uses the newest available
-    data per plane rather than requiring both planes on the same day.
+    data per plane rather than requiring both planes on the same day. Rows whose
+    date is unparseable (e.g. a NaT from a blank cell — ``str`` gives 'NaT',
+    which would sort *after* any real ISO date) are ignored, not treated as the
+    latest.
     """
     if "date" not in df.index.names or df.empty:
         return df
     dates = [str(d)[:10] for d in df.index.get_level_values("date")]
-    latest = max(dates)
-    return df.loc[[d == latest for d in dates]]
+    valid = [d for d in dates if len(d) >= 4 and d[:4].isdigit()]
+    if not valid:
+        return df.iloc[0:0]
+    latest = max(valid)
+    sub = df.loc[[d == latest for d in dates]]
+    # Sort so a later per-power ``.iloc[-1]`` picks the latest *time* within the
+    # day, not merely the last row in file/insertion order.
+    try:
+        return sub.sort_index()
+    except Exception:
+        return sub
 
 
 def compute_and_save_factor(db_fname, device, laser, ana_config):
@@ -1374,6 +1386,28 @@ def compute_and_save_factor(db_fname, device, laser, ana_config):
         return
     db_manual = _latest_date_subset(db_manual)
     db_beampath = _latest_date_subset(db_beampath)
+
+    # Traceability: when the two planes come from different days, the pairing
+    # assumes the optical alignment is unchanged between them — log it so a
+    # stale cross-day pairing is visible (the offset-bias check below also
+    # warns if the two planes disagree).
+    def _one_date(sub):
+        try:
+            return str(sub.index.get_level_values("date")[0])[:10]
+        except Exception:
+            return "?"
+
+    s_date, b_date = _one_date(db_manual), _one_date(db_beampath)
+    if s_date != b_date:
+        logger.info(
+            "transmission_objective %s/%s nm: pairing latest sample-plane "
+            "calibration (%s) with latest BFP calibration (%s) — different "
+            "days; verify the alignment is unchanged.",
+            device,
+            laser,
+            s_date,
+            b_date,
+        )
 
     from monet.util import load_class
 
