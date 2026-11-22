@@ -1412,16 +1412,39 @@ def compute_and_save_factor(db_fname, device, laser, ana_config):
             )
             continue
 
+        level_ratios, level_ps, level_pb = [], [], []
         for pos in positions:
             try:
                 p_m = ana_m.estimate_power(pos)
                 p_b = ana_b.estimate_power(pos)
                 if p_m > 0 and p_b > 0:
-                    all_ratios.append(p_m / p_b)
-                    all_ps.append(p_m)
-                    all_pb.append(p_b)
+                    level_ratios.append(p_m / p_b)
+                    level_ps.append(p_m)
+                    level_pb.append(p_b)
             except Exception:
                 pass
+        if not level_ratios:
+            continue
+        # Drop a whole dark/degenerate power level up front (one plane reading
+        # meter noise makes its ratios ~1e6..1e14): a mixed calibration then
+        # still yields a factor from the *good* levels instead of being tipped
+        # non-physical or rejected wholesale. The cross-level MAD filter below
+        # still handles statistically-anomalous-but-physical runs.
+        level_factor = float(np.median(level_ratios))
+        if not is_physical_transmission(level_factor):
+            logger.warning(
+                "transmission_objective %s/%s nm: dropping %s mW level — "
+                "per-level factor %.4g is non-physical (one plane likely "
+                "dark/degenerate).",
+                device,
+                laser,
+                lpwr,
+                level_factor,
+            )
+            continue
+        all_ratios.extend(level_ratios)
+        all_ps.extend(level_ps)
+        all_pb.extend(level_pb)
 
     if not all_ratios:
         logger.warning(

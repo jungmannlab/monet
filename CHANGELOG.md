@@ -24,8 +24,12 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
   it to power-setting. Both compute paths (`compute_and_save_factor` and the
   "Pair runs…" `compute_run_pair_factors`) now reject factors outside a generous
   physical band (0 < T ≤ 100) and log a clear warning naming the bad run, rather
-  than storing them. Use the manual override when auto-compute can't produce a
-  sane value.
+  than storing them. For a **mixed calibration** the bad plane is filtered and
+  the good data is kept: the "Pair runs…" path is already per-(wavelength,
+  power), and auto-compute now drops individual dark/degenerate *power levels*
+  before pooling, so one bad level no longer tips or rejects the whole
+  wavelength. Use the manual override when auto-compute can't produce a sane
+  value.
 - **Auto-compute now reloads the live control** too (not just the Database-tab
   recompute/remove paths), so a freshly computed factor is applied without a
   reconnect.

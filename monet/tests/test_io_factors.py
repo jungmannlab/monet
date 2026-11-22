@@ -598,6 +598,21 @@ class TestComputeAndSaveFactorOutliers(unittest.TestCase):
         # toward 3.0 by the failed run.
         self.assertLess(df.iloc[0]["transmission_objective_mean"], 2.5)
 
+    def test_mixed_calibration_keeps_good_level_drops_dark(self):
+        """A mixed calibration (one good power level + one dark level) still
+        yields a factor from the good level; the dark level is dropped, not
+        allowed to tip the pooled factor or reject the whole wavelength."""
+        today = datetime.now().strftime("%Y-%m-%d")
+        rows = self._pair(100.0, 40.0, 20.0, today)  # good → factor ~2
+        rows += self._pair(200.0, 400.0, 1e-9, today)  # dark BFP → ~1e3
+        _write_calib_db(self.db, rows)
+        mio.compute_and_save_factor(self.db, "TestScope", 488, self.ana_config)
+        df = mio.load_factors(self.db, device="TestScope", laser=488)
+        self.assertEqual(len(df), 1)
+        f = df.iloc[0]["transmission_objective_mean"]
+        self.assertTrue(mio.is_physical_transmission(f))
+        self.assertLess(f, 5.0)  # from the good level (~2), not the dark one
+
     def test_rejects_nonphysical_factor(self):
         """A dark/degenerate run in one plane makes P_sample/P_bfp explode;
         that non-physical factor must NOT be stored (regression for the
