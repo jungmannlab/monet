@@ -430,6 +430,14 @@ class TestDoctorTab(unittest.TestCase):
         w = MonetWidget(show_toolbar=False, tabs=("doctor",))
         self.assertIsNotNone(w.tab("doctor"))
 
+    def test_database_tab_has_manual_factor_button(self):
+        """The Database tab exposes a manual transmission-factor override,
+        disabled until a microscope is connected."""
+        w = MonetWidget(show_toolbar=False, tabs=("database",))
+        db = w.tab("database")
+        self.assertTrue(hasattr(db, "_btn_set_factor"))
+        self.assertFalse(db._btn_set_factor.isEnabled())
+
     def test_transmission_section_without_instrument(self):
         """The transmission-factor section renders even with no connection."""
         tab = DoctorTab()
@@ -448,6 +456,9 @@ class TestDoctorTab(unittest.TestCase):
                 self.lasers = {488: object(), 561: object()}
                 self.config = {
                     "index": {"name": "Scope"},
+                    # 640 is configured but not loaded (no hardware); it must
+                    # still appear in the report.
+                    "lasers": {"488": {}, "561": {}, "640": {}},
                     # A non-existent local DB → load_factors returns empty,
                     # so the diagnostic is deterministic and makes no network
                     # call.
@@ -466,6 +477,9 @@ class TestDoctorTab(unittest.TestCase):
         # 561 nm has no factor loaded → flagged as no correction.
         self.assertIn("561 nm", txt)
         self.assertIn("no sample-plane correction", txt)
+        # 640 is configured but not loaded → still shown, flagged.
+        self.assertIn("640 nm", txt)
+        self.assertIn("[laser not loaded]", txt)
 
     def test_transmission_section_makes_no_network_call(self):
         """The transmission diagnostics read only in-memory control state — no

@@ -598,6 +598,38 @@ class TestComputeAndSaveFactorOutliers(unittest.TestCase):
         # toward 3.0 by the failed run.
         self.assertLess(df.iloc[0]["transmission_objective_mean"], 2.5)
 
+    def test_rejects_nonphysical_factor(self):
+        """A dark/degenerate run in one plane makes P_sample/P_bfp explode;
+        that non-physical factor must NOT be stored (regression for the
+        '1e6..1e14 transmission' bug)."""
+        today = datetime.now().strftime("%Y-%m-%d")
+        # BFP amplitude ~1e-6 (near-dark) vs sample ~40 → ratio ~4e7.
+        rows = self._pair(100.0, 40.0, 1e-6, today)
+        _write_calib_db(self.db, rows)
+        mio.compute_and_save_factor(self.db, "TestScope", 488, self.ana_config)
+        df = mio.load_factors(self.db, device="TestScope", laser=488)
+        self.assertTrue(df.empty)
+
+
+class TestIsPhysicalTransmission(unittest.TestCase):
+    def test_accepts_plausible_values(self):
+        for v in (0.0001, 0.11, 0.8, 1.0, 2.0, 50.0, 100.0):
+            self.assertTrue(mio.is_physical_transmission(v), v)
+
+    def test_rejects_implausible_values(self):
+        for v in (
+            0.0,
+            -0.5,
+            100.01,
+            1e6,
+            9.5e14,
+            float("nan"),
+            float("inf"),
+            None,
+            "x",
+        ):
+            self.assertFalse(mio.is_physical_transmission(v), v)
+
 
 class TestFactorPairs(unittest.TestCase):
 

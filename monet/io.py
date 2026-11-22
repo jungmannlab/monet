@@ -1230,6 +1230,32 @@ def load_calibration_history(
 # ──────────────────────────────────────────────
 
 
+# Sanity backstop for the objective transmission (P_sample / P_bfp). Physically
+# it is ~a loss (T ≲ 1), but it can sit modestly above 1 depending on where the
+# "BFP" meter is placed, so this is a *generous* bound, not a strict physical
+# limit. Its only job is to catch the degenerate failure: a dark/degenerate run
+# in one plane (power-meter reading noise ~1e-13 W) paired with a normal run,
+# which makes the ratio explode to 1e6..1e14 — a nonsense "transmission" that,
+# if stored, drives the sample-plane power-setting wildly wrong. Reject those
+# (and T <= 0) rather than store/apply them; a real value never approaches 100.
+MAX_PHYSICAL_TRANSMISSION = 100.0
+
+
+def is_physical_transmission(factor):
+    """True if ``factor`` is a plausible objective transmission.
+
+    A generous sanity check (0 < T <= :data:`MAX_PHYSICAL_TRANSMISSION`): it
+    passes any realistic value and rejects only non-finite, non-positive or
+    wildly-exploded factors (a dark/degenerate run paired with a normal one),
+    so callers can refuse to store them.
+    """
+    try:
+        f = float(factor)
+    except (TypeError, ValueError):
+        return False
+    return np.isfinite(f) and 0.0 < f <= MAX_PHYSICAL_TRANSMISSION
+
+
 def compute_and_save_factor(db_fname, device, laser, ana_config):
     """Compute and save the objective transmission factor.
 
@@ -1440,6 +1466,18 @@ def compute_and_save_factor(db_fname, device, laser, ana_config):
         n_points,
         n_dropped,
     )
+    if not is_physical_transmission(factor_mean):
+        logger.warning(
+            "transmission_objective %s/%s nm = %.4g is non-physical "
+            "(expected 0 < T <= %s); NOT storing it. One plane's calibration "
+            "is likely dark/degenerate or sample and BFP were recorded under "
+            "mismatched conditions. Fix the runs or set the factor manually.",
+            device,
+            laser,
+            factor_mean,
+            MAX_PHYSICAL_TRANSMISSION,
+        )
+        return
     if _is_server_url(db_fname):
         _save_factor_http(
             db_fname, device, laser, today, factor_mean, factor_std, n_points
@@ -2047,6 +2085,19 @@ def compute_run_pair_factors(db_fname, sample_run, bfp_run, ana_config):
             continue
         factor, n = compute_pair_factor(s_pars, b_pars, ana_config)
         if factor is None:
+            continue
+        if not is_physical_transmission(factor):
+            logger.warning(
+                "transmission_objective pair %s / %s nm / %s mW = %.4g is "
+                "non-physical (expected 0 < T <= %s); skipping. One of the "
+                "paired runs is likely dark/degenerate. Re-pick the runs or "
+                "set the factor manually.",
+                sample_run["device"],
+                wl,
+                power,
+                factor,
+                MAX_PHYSICAL_TRANSMISSION,
+            )
             continue
         pair = {
             "device": sample_run["device"],
