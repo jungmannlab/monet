@@ -10,6 +10,8 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
+## [0.7.4] - 2026-11-22
+
 ### Fixed
 - **Database inspection and transmission-factor tools now work with the laser
   hardware down.** Previously, if *every* laser's COM port was down the control
