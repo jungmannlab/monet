@@ -10,6 +10,8 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
+## [0.7.3] - 2026-11-22
+
 ### Fixed
 - **Transmission factor is now capped at 1.** The objective transmission is a
   loss (`P_sample / P_bfp`), so it is physical only for `0 < T ≤ 1`; monet now
@@ -37,6 +39,12 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
   sections into tabs (growable tabs also scroll), and the Edit-configuration
   dialog scrolls its body, so neither grows taller than the display on a fresh
   single-computer setup.
+- **A non-physical factor is never *applied*, not just never stored.** The band
+  check previously guarded only the write/compute paths; a garbage factor
+  persisted by an older monet (before the gate) still loaded and drove
+  `newpwr / factor` wrong. `reload_factors` and the local-pair fallback now drop
+  a non-physical stored factor on load (with a warning) and fall back to no
+  sample-plane correction.
 
 ## [0.7.2] - 2026-11-22
 
