@@ -4735,10 +4735,19 @@ class DatabaseTab(_MonetTab):
             # otherwise a reachable-but-empty result looks identical to a
             # silent failure.
             self._status.setText(self._describe_empty())
+        self._plot_selected_runs()
+        self._refresh_factors_table()
+        self._refresh_factor_plot()
 
     def _describe_empty(self):
         """Explain an empty run list: distinguish 'no rows for this device'
-        from a read/connection error (runs only when the table is empty)."""
+        from a read error (runs only when the table is empty).
+
+        Note: load_database falls back to the local cache on a connection
+        error, so a KeyError here means "no rows for this device in the server
+        *or* the offline cache", which we report as not-found; only a non-cache
+        read error surfaces as an error.
+        """
         scope = self._current_scope()
         index = {DEVICE_TAG: scope} if scope else {}
         try:
@@ -4750,9 +4759,6 @@ class DatabaseTab(_MonetTab):
         except Exception as exc:
             return "Could not read database: {}".format(exc)
         return "0 run(s)"
-        self._plot_selected_runs()
-        self._refresh_factors_table()
-        self._refresh_factor_plot()
 
     def _selected_runs(self):
         """Run dicts for the currently-selected rows."""

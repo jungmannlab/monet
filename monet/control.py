@@ -373,6 +373,10 @@ class IlluminationLaserControl(IlluminationControl):
                 sorted(self._configured_lasers),
             )
             self.curr_laser = None
+            # No laser to default a power to; keep the attribute defined so a
+            # non-GUI caller touching the power path gets a clean guard, not an
+            # AttributeError.
+            self.curr_laserpower = None
         else:
             self.curr_laser = list(self.lasers.keys())[0]
 
