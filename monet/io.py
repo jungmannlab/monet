@@ -1268,11 +1268,29 @@ def is_physical_transmission(factor):
     )
 
 
+def _latest_date_subset(df):
+    """Rows of ``df`` whose calibration date is the most recent present.
+
+    ``df`` is indexed with a 'date' level ('YYYY-MM-DD' strings or Timestamps).
+    Used to pick one plane's latest calibration session when pairing sample vs
+    BFP for the transmission factor, so the pairing uses the newest available
+    data per plane rather than requiring both planes on the same day.
+    """
+    if "date" not in df.index.names or df.empty:
+        return df
+    dates = [str(d)[:10] for d in df.index.get_level_values("date")]
+    latest = max(dates)
+    return df.loc[[d == latest for d in dates]]
+
+
 def compute_and_save_factor(db_fname, device, laser, ana_config):
     """Compute and save the objective transmission factor.
 
-    Uses paired back focal plane (BFP) vs sample-plane calibrations
-    recorded on the same day.
+    Pairs the latest back focal plane (BFP) vs the latest sample-plane
+    calibration for the laser (each plane taken on its own most-recent date, so
+    a laser whose hardware is currently off still gets a factor from its
+    existing calibrations — the same-day case is just when both latest dates are
+    today).
 
     transmission_objective = P_sample / P_bfp, sampled at 50 attenuator
     positions per common laser-power level. Saved to the 'factors' sheet.
@@ -1335,32 +1353,27 @@ def compute_and_save_factor(db_fname, device, laser, ana_config):
         )
         return
 
-    # Filter to today — normalize dates to 'YYYY-MM-DD' strings regardless of
-    # whether Excel stored them as strings or Timestamps.
-    if "date" in db.index.names:
-        dates_str = [str(d)[:10] for d in db.index.get_level_values("date")]
-        db = db.loc[[d == today for d in dates_str]]
-    if db.empty:
-        logger.warning(
-            "compute_and_save_factor: no calibrations for today (%s) for "
-            "%s / %s nm — both types must be calibrated on the same day",
-            today,
-            device,
-            laser,
-        )
-        return
-
+    # Split by plane, then use each plane's LATEST calibration independently
+    # (not restricted to today), so a laser whose hardware is currently off can
+    # still get a factor from its existing sample/BFP calibrations. A fresh
+    # same-day calibration is just the case where both latest dates are today;
+    # the physical-band / MAD / offset-bias safeguards below catch a mismatched
+    # (e.g. stale) pairing.
     pm_type_norm = db["powermeter_type"].map(normalize_powermeter_type)
     db_manual = db.loc[pm_type_norm == POWERMETER_SAMPLE]
     db_beampath = db.loc[pm_type_norm == POWERMETER_BFP]
     if db_manual.empty or db_beampath.empty:
         logger.warning(
             "compute_and_save_factor: need both sample-plane and BFP "
-            "calibrations on the same day; found sample=%d bfp=%d",
+            "calibrations for %s / %s nm; found sample=%d bfp=%d",
+            device,
+            laser,
             len(db_manual),
             len(db_beampath),
         )
         return
+    db_manual = _latest_date_subset(db_manual)
+    db_beampath = _latest_date_subset(db_beampath)
 
     from monet.util import load_class
 
