@@ -566,6 +566,29 @@ class TestControl(unittest.TestCase):
         )
         self.assertAlmostEqual(raw_after / raw_before, 1.0 / transmission, 2)
 
+    def test_reload_factors_ignores_nonphysical_stored_factor(self):
+        """A non-physical factor persisted by an older monet (before the
+        write-side gate) must not be *applied* on load: it would drive
+        newpwr / factor to the rails. It is dropped → no correction (1.0)."""
+        import monet.io as mio
+
+        ctrl = self._build_laser_control()
+        # Simulate a garbage factor already in the DB (e.g. a pre-fix dark-plane
+        # value well above the physical cap of 1).
+        mio.save_transmission_factor(
+            ctrl.config["database"],
+            "DefaultMicroscope",
+            488,
+            datetime.now().strftime("%Y-%m-%d"),
+            1500.0,
+            0.0,
+            5,
+        )
+        ctrl.reload_factors()
+        # Not applied → absent from the cache, and _bfp_factor falls back to 1.0.
+        self.assertNotIn(488, ctrl._factors)
+        self.assertEqual(ctrl._bfp_factor(488), 1.0)
+
     def test_all_laser_keys_includes_configured_not_loaded(self):
         """Factors are loaded for every *configured* wavelength, not only the
         lasers whose hardware loaded — so the Doctor tab, the manual-factor

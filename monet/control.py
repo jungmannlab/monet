@@ -661,9 +661,29 @@ class IlluminationLaserControl(IlluminationControl):
                             == laser_int
                         ]
                         if not sub.empty:
-                            new_factors[laser] = float(
+                            val = float(
                                 sub.iloc[-1]["transmission_objective_mean"]
                             )
+                            # Never *apply* a non-physical factor, even one an
+                            # older monet persisted before the write-side gate
+                            # existed: a garbage value (dark plane -> T≈0 or
+                            # T≫1) would drive the sample-plane power-set
+                            # (newpwr / factor) to the rails. Drop it (-> no
+                            # correction, factor 1.0) and warn.
+                            if io.is_physical_transmission(val):
+                                new_factors[laser] = val
+                            else:
+                                logger.warning(
+                                    "Ignoring non-physical stored transmission "
+                                    "factor %.4g for %s nm (expected %g < T "
+                                    "<= %g); using no sample-plane correction. "
+                                    "Recompute from clean runs or set it "
+                                    "manually.",
+                                    val,
+                                    laser,
+                                    io.MIN_PHYSICAL_TRANSMISSION,
+                                    io.MAX_PHYSICAL_TRANSMISSION,
+                                )
                     except Exception as exc:
                         logger.debug(
                             "Skipping factor row for %s nm: %s", laser, exc
@@ -711,7 +731,21 @@ class IlluminationLaserControl(IlluminationControl):
                     continue
                 if "date" in sub.columns:
                     sub = sub.sort_values("date")
-                self._factors[laser] = float(sub.iloc[-1]["factor"])
+                val = float(sub.iloc[-1]["factor"])
+                # Same apply-side guard as reload_factors: a non-physical pair
+                # factor is never applied (it would corrupt power-setting).
+                if not io.is_physical_transmission(val):
+                    logger.warning(
+                        "Ignoring non-physical transmission factor %.4g for "
+                        "%s nm from the local pair store (expected %g < T <= "
+                        "%g); using no sample-plane correction.",
+                        val,
+                        laser,
+                        io.MIN_PHYSICAL_TRANSMISSION,
+                        io.MAX_PHYSICAL_TRANSMISSION,
+                    )
+                    continue
+                self._factors[laser] = val
                 logger.info(
                     "Transmission factor for %s nm recovered from the "
                     "local pair store (%.4f); the projection store had none.",
