@@ -318,6 +318,17 @@ class IlluminationLaserControl(IlluminationControl):
 
         self.auto_enable_lasers = auto_enable_lasers
         self.lasers = {}
+        # Every configured wavelength, captured BEFORE the failed-to-load ones
+        # are pruned from ``self.config["lasers"]`` below. A laser whose COM port
+        # is down this session still has a stored calibration and transmission
+        # factor; keeping the full set lets the Doctor tab, the manual-factor
+        # dialog and auto-compute address it even though its hardware is absent.
+        self._configured_lasers = set()
+        for laser_key in config["lasers"].keys():
+            try:
+                self._configured_lasers.add(int(laser_key))
+            except Exception:
+                pass
         lasers_missing = []
         for laser_key, lconf in config["lasers"].items():
             try:
@@ -609,11 +620,7 @@ class IlluminationLaserControl(IlluminationControl):
         wavelength, not only the ones that happened to connect. Keys are ints.
         """
         keys = {int(la) for la in self.lasers.keys()}
-        try:
-            for w in self.config.get("lasers", {}).keys():
-                keys.add(int(w))
-        except Exception:
-            pass
+        keys |= set(getattr(self, "_configured_lasers", set()))
         return keys
 
     def reload_factors(self):

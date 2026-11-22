@@ -10,6 +10,34 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
+### Fixed
+- **Transmission factor is now capped at 1.** The objective transmission is a
+  loss (`P_sample / P_bfp`), so it is physical only for `0 < T ≤ 1`; monet now
+  rejects any factor above unity (previously a generous `≤ 100` backstop let
+  mildly-above-1 garbage through). The manual-override spin box is likewise
+  bounded at 1.
+- **No-signal (dark) planes are now dropped on *both* ends when pairing runs.**
+  Previously only a dark **BFP** plane was caught (its ratio explodes `≫1`); a
+  dark **sample** plane collapses the ratio to `~0`, which slipped through the
+  bare `0 < T` check and was stored as `T ≈ 0` — then `newpwr / factor` drove
+  the laser to the rails. The physical band is now `1e-6 < T ≤ 1`, so a dark
+  sample plane is rejected too. This is per-(wavelength, power): in a "Pair
+  runs…" calibration where the chosen sample run has signal in some lasers but
+  not others (e.g. a dark 642 but good 488/560), the dark wavelength is dropped
+  and the good ones are kept — exactly the mixed-run case.
+- **All configured lasers can be addressed, not just the ones that loaded.**
+  A laser whose COM port was down this session is popped from the live config,
+  which previously left the manual-factor dialog, the auto-compute button and
+  the Doctor tab able to see only the one laser that connected (e.g. 405). The
+  originally-configured wavelengths are now preserved (`_configured_lasers`), so
+  you can set *and compute* the transmission factor for every configured laser
+  from its stored calibration regardless of whether its hardware is present.
+- **Setup wizard no longer overflows the screen.** The "Microscope" step split
+  its identity / power-meter / attenuator / curve-model / lasers / beam-path
+  sections into tabs (growable tabs also scroll), and the Edit-configuration
+  dialog scrolls its body, so neither grows taller than the display on a fresh
+  single-computer setup.
+
 ## [0.7.2] - 2026-11-22
 
 ### Added

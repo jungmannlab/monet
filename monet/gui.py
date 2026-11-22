@@ -5170,7 +5170,10 @@ class DatabaseTab(_MonetTab):
 
         try:
             device = self._pc.instrument.config["index"]["name"]
-            lasers = list(self._pc.instrument.lasers.keys())
+            # All configured wavelengths: the factor is computed from the stored
+            # sample/BFP calibrations in the DB, so it works for a laser whose
+            # hardware did not load this session too.
+            lasers = sorted(self._pc.instrument._all_laser_keys())
             ana_config = self._pc.instrument.config["analysis"]
         except Exception as exc:
             QMessageBox.critical(
@@ -5218,9 +5221,10 @@ class DatabaseTab(_MonetTab):
             return
         try:
             device = self._pc.instrument.config["index"]["name"]
-            lasers = sorted(
-                {int(w) for w in self._pc.instrument.config["lasers"].keys()}
-            )
+            # Every configured wavelength, not only the ones whose hardware
+            # loaded this session — a laser with a down COM port still has a
+            # stored calibration whose transmission factor you may need to set.
+            lasers = sorted(self._pc.instrument._all_laser_keys())
         except Exception as exc:
             QMessageBox.critical(
                 self, "Error", f"Could not read microscope config: {exc}"
@@ -5527,7 +5531,7 @@ class DoctorTab(_MonetTab):
         # transmission factor worth inspecting for support.
         lasers = set(factors) | set(pm_types)
         try:
-            lasers |= {int(w) for w in instrument.config["lasers"].keys()}
+            lasers |= set(instrument._all_laser_keys())
         except Exception:
             lasers |= set(getattr(instrument, "lasers", {}).keys())
         loaded = set(getattr(instrument, "lasers", {}).keys())

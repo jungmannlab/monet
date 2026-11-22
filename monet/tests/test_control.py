@@ -568,19 +568,56 @@ class TestControl(unittest.TestCase):
 
     def test_all_laser_keys_includes_configured_not_loaded(self):
         """Factors are loaded for every *configured* wavelength, not only the
-        lasers whose hardware loaded — so the Doctor tab can report a laser
-        that failed to open its COM port."""
-        ctrl = self._build_laser_control()
-        # 488 and 561 loaded; add a configured 640 that never loaded.
-        ctrl.config["lasers"]["640"] = {
-            "classpath": "monet.laser.TestLaser",
-            "init_kwargs": {"port": "COMX"},
+        lasers whose hardware loaded — so the Doctor tab, the manual-factor
+        dialog and auto-compute can address a laser that failed to open its COM
+        port (it is popped from ``config['lasers']`` but preserved as
+        configured)."""
+        # Build the calibration DB that _build_laser_control writes, then
+        # construct a control whose 640 driver fails to load.
+        self._build_laser_control()
+        db_path = "monet/tests/TestData/control/feedback_test_db.xlsx"
+        config = {
+            "database": db_path,
+            "dest_calibration_plot": "monet/tests/TestData/control/",
+            "index": {"name": "DefaultMicroscope"},
+            "attenuation": {
+                "classpath": "monet.attenuation.TestAttenuator",
+                "init_kwargs": {
+                    "bkg": 0,
+                    "amp": 50,
+                    "phi": 30,
+                    "start": 30,
+                    "step": 5,
+                },
+            },
+            "analysis": {
+                "classpath": "monet.analysis.LinearCurveAnalyzer",
+                "init_kwargs": {"min": 0, "max": 100, "step": 5},
+            },
+            "lasers": {
+                "488": {
+                    "classpath": "monet.laser.TestLaser",
+                    "init_kwargs": {"port": "COM4"},
+                },
+                "561": {
+                    "classpath": "monet.laser.TestLaser",
+                    "init_kwargs": {"port": "COM7"},
+                },
+                # Configured but its driver class does not exist → the load
+                # raises, so 640 is popped from config['lasers'] yet must stay
+                # in the preserved configured set.
+                "640": {
+                    "classpath": "monet.laser.NoSuchLaser",
+                    "init_kwargs": {},
+                },
+            },
         }
+        ctrl = mco.IlluminationLaserControl(config)
+        self.assertNotIn(640, ctrl.lasers)  # driver failed to load
         keys = ctrl._all_laser_keys()
         self.assertIn(488, keys)
         self.assertIn(561, keys)
         self.assertIn(640, keys)
-        self.assertNotIn(640, ctrl.lasers)  # not actually loaded
 
     def test_reload_factors_recovers_from_local_pair_store(self):
         """A factor present only in the local pair store (projection store
