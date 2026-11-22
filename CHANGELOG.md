@@ -10,6 +10,36 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-11-22
+
+### Added
+- **Manual override for the objective transmission factor** — a "Set factor
+  manually…" button in the GUI Database tab lets you enter `P_sample / P_bfp`
+  for a wavelength by hand (any configured laser, even one whose hardware didn't
+  load), bypassing auto-computation. It writes to the same projection store the
+  power path reads and reloads the live control, so it takes effect immediately.
+
+### Fixed
+- **Non-physical transmission factors are no longer stored.** A dark/degenerate
+  run in one plane (power-meter noise ~1e-13 W) paired with a normal run made
+  `P_sample / P_bfp` explode to 1e6…1e14; monet stored that nonsense and applied
+  it to power-setting. Both compute paths (`compute_and_save_factor` and the
+  "Pair runs…" `compute_run_pair_factors`) now reject factors outside a generous
+  physical band (0 < T ≤ 100) and log a clear warning naming the bad run, rather
+  than storing them. For a **mixed calibration** the bad plane is filtered and
+  the good data is kept: the "Pair runs…" path is already per-(wavelength,
+  power), and auto-compute now drops individual dark/degenerate *power levels*
+  before pooling, so one bad level no longer tips or rejects the whole
+  wavelength. Use the manual override when auto-compute can't produce a sane
+  value.
+- **Auto-compute now reloads the live control** too (not just the Database-tab
+  recompute/remove paths), so a freshly computed factor is applied without a
+  reconnect.
+- **Doctor tab reports every configured laser**, not only the ones whose
+  hardware loaded this session; a laser that failed to open its COM port is
+  shown with its stored factor and a `[laser not loaded]` note. `reload_factors`
+  now loads factors for all configured wavelengths.
+
 ## [0.7.1] - 2026-11-21
 
 ### Fixed

@@ -566,6 +566,22 @@ class TestControl(unittest.TestCase):
         )
         self.assertAlmostEqual(raw_after / raw_before, 1.0 / transmission, 2)
 
+    def test_all_laser_keys_includes_configured_not_loaded(self):
+        """Factors are loaded for every *configured* wavelength, not only the
+        lasers whose hardware loaded — so the Doctor tab can report a laser
+        that failed to open its COM port."""
+        ctrl = self._build_laser_control()
+        # 488 and 561 loaded; add a configured 640 that never loaded.
+        ctrl.config["lasers"]["640"] = {
+            "classpath": "monet.laser.TestLaser",
+            "init_kwargs": {"port": "COMX"},
+        }
+        keys = ctrl._all_laser_keys()
+        self.assertIn(488, keys)
+        self.assertIn(561, keys)
+        self.assertIn(640, keys)
+        self.assertNotIn(640, ctrl.lasers)  # not actually loaded
+
     def test_reload_factors_recovers_from_local_pair_store(self):
         """A factor present only in the local pair store (projection store
         empty) is recovered on reload.

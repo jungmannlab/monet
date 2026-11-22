@@ -600,6 +600,22 @@ class IlluminationLaserControl(IlluminationControl):
     def laser_enabled(self, value):
         self.lasers[self.curr_laser].enabled = value
 
+    def _all_laser_keys(self):
+        """Laser keys to load factors for: loaded lasers ∪ configured ones.
+
+        A laser whose hardware failed to open this session is absent from
+        ``self.lasers`` but still has a stored calibration and transmission
+        factor; load those too so the Doctor tab can report every configured
+        wavelength, not only the ones that happened to connect. Keys are ints.
+        """
+        keys = {int(la) for la in self.lasers.keys()}
+        try:
+            for w in self.config.get("lasers", {}).keys():
+                keys.add(int(w))
+        except Exception:
+            pass
+        return keys
+
     def reload_factors(self):
         """(Re)load the per-laser objective transmission factors from the DB.
 
@@ -630,7 +646,7 @@ class IlluminationLaserControl(IlluminationControl):
                 self.config["database"], device=device
             )
             if not factors_df.empty:
-                for laser in self.lasers.keys():
+                for laser in self._all_laser_keys():
                     try:
                         laser_int = int(laser)
                         sub = factors_df.loc[
@@ -664,7 +680,9 @@ class IlluminationLaserControl(IlluminationControl):
         wavelength (matching the projection store's ``iloc[-1]`` semantics).
         Best-effort — a connected projection factor is never overwritten.
         """
-        missing = [la for la in self.lasers.keys() if la not in self._factors]
+        missing = [
+            la for la in self._all_laser_keys() if la not in self._factors
+        ]
         if not missing:
             return
         try:

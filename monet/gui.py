@@ -28,6 +28,7 @@ from PyQt6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -4590,6 +4591,16 @@ class DatabaseTab(_MonetTab):
             self._on_compute_transmission
         )
         factors_hdr.addWidget(self._btn_compute_transmission)
+        self._btn_set_factor = QPushButton("Set factor manually…")
+        self._btn_set_factor.setEnabled(False)
+        self._btn_set_factor.setToolTip(
+            "Enter the objective transmission factor (P_sample / P_bfp) for a "
+            "wavelength by hand, bypassing auto-computation. Use this when the "
+            "paired runs give an implausible value. Applied to power-setting "
+            "immediately."
+        )
+        self._btn_set_factor.clicked.connect(self._on_set_factor_manually)
+        factors_hdr.addWidget(self._btn_set_factor)
         layout.addLayout(factors_hdr)
         # Shows the manually-selected pairs when any exist, otherwise the
         # auto-computed factors.  ``_showing_manual_pairs`` tracks which.
@@ -4647,6 +4658,7 @@ class DatabaseTab(_MonetTab):
         else:
             self._db_fname = None
         self._btn_compute_transmission.setEnabled(pc is not None)
+        self._btn_set_factor.setEnabled(pc is not None)
         self._update_db_link()
         self._on_refresh()
 
@@ -5180,6 +5192,7 @@ class DatabaseTab(_MonetTab):
             self._active_worker = None
             self._emit_status("Objective transmission computed.", 4000)
             self._on_refresh()
+            self._apply_factors_to_instrument()
 
         def _on_error(msg):
             self._btn_compute_transmission.setEnabled(True)
@@ -5192,6 +5205,77 @@ class DatabaseTab(_MonetTab):
         worker.error.connect(_on_error)
         self._active_worker = worker
         worker.start()
+
+    def _on_set_factor_manually(self):
+        """Set the objective transmission factor for a wavelength by hand.
+
+        The escape hatch when auto-computation yields an implausible value
+        (e.g. a dark/degenerate run makes P_sample / P_bfp explode). Writes to
+        the same projection store the power-setting path reads and reloads the
+        live control, so the manual value takes effect immediately.
+        """
+        if self._pc is None or self._db_fname is None:
+            return
+        try:
+            device = self._pc.instrument.config["index"]["name"]
+            lasers = sorted(
+                {int(w) for w in self._pc.instrument.config["lasers"].keys()}
+            )
+        except Exception as exc:
+            QMessageBox.critical(
+                self, "Error", f"Could not read microscope config: {exc}"
+            )
+            return
+        if not lasers:
+            QMessageBox.information(
+                self, "No lasers", "No lasers are configured for this scope."
+            )
+            return
+
+        items = ["{} nm".format(w) for w in lasers]
+        item, ok = QInputDialog.getItem(
+            self,
+            "Set transmission factor",
+            "Wavelength:",
+            items,
+            0,
+            False,
+        )
+        if not ok:
+            return
+        laser = lasers[items.index(item)]
+        value, ok = QInputDialog.getDouble(
+            self,
+            "Set transmission factor",
+            "Objective transmission (P_sample / P_bfp) for {} nm:".format(
+                laser
+            ),
+            0.8,
+            0.0001,
+            float(io.MAX_PHYSICAL_TRANSMISSION),
+            4,
+        )
+        if not ok:
+            return
+
+        from datetime import datetime as _dt
+
+        today = _dt.now().strftime("%Y-%m-%d")
+        try:
+            io.save_transmission_factor(
+                self._db_fname, device, int(laser), today, value, 0.0, 0
+            )
+        except Exception as exc:
+            QMessageBox.critical(
+                self, "Error", f"Could not save factor: {exc}"
+            )
+            return
+        self._emit_status(
+            "Set {} nm transmission factor to {:.4f}.".format(laser, value),
+            5000,
+        )
+        self._on_refresh()
+        self._apply_factors_to_instrument()
 
 
 class DoctorTab(_MonetTab):
@@ -5437,19 +5521,27 @@ class DoctorTab(_MonetTab):
 
         factors = getattr(instrument, "_factors", {}) or {}
         pm_types = getattr(instrument, "_powermeter_type", {}) or {}
-        lasers = list(getattr(instrument, "lasers", {}).keys())
-        if not lasers:
-            lasers = sorted(set(factors) | set(pm_types))
-        for laser in lasers:
+        # Show every *configured* laser, not just the ones whose hardware
+        # loaded this session — a laser that failed to open its COM port (so it
+        # is absent from ``instrument.lasers``) still has a calibration and a
+        # transmission factor worth inspecting for support.
+        lasers = set(factors) | set(pm_types)
+        try:
+            lasers |= {int(w) for w in instrument.config["lasers"].keys()}
+        except Exception:
+            lasers |= set(getattr(instrument, "lasers", {}).keys())
+        loaded = set(getattr(instrument, "lasers", {}).keys())
+        for laser in sorted(lasers, key=lambda x: (not isinstance(x, int), x)):
             pm = pm_types.get(laser, "(default: sample)")
             if laser in factors:
                 factor = "{:.4f}".format(factors[laser])
             else:
                 factor = "none (→ 1.0, no sample-plane correction)"
+            note = "" if laser in loaded else "  [laser not loaded]"
             lines.append(
                 row(
                     "{} nm".format(laser),
-                    "cal={}  factor={}".format(pm, factor),
+                    "cal={}  factor={}{}".format(pm, factor, note),
                 )
             )
         lines.append("")
