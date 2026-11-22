@@ -1230,30 +1230,42 @@ def load_calibration_history(
 # ──────────────────────────────────────────────
 
 
-# Sanity backstop for the objective transmission (P_sample / P_bfp). Physically
-# it is ~a loss (T ≲ 1), but it can sit modestly above 1 depending on where the
-# "BFP" meter is placed, so this is a *generous* bound, not a strict physical
-# limit. Its only job is to catch the degenerate failure: a dark/degenerate run
-# in one plane (power-meter reading noise ~1e-13 W) paired with a normal run,
-# which makes the ratio explode to 1e6..1e14 — a nonsense "transmission" that,
-# if stored, drives the sample-plane power-setting wildly wrong. Reject those
-# (and T <= 0) rather than store/apply them; a real value never approaches 100.
-MAX_PHYSICAL_TRANSMISSION = 100.0
+# Physical band for the objective transmission (P_sample / P_bfp). It is a
+# *loss* through the objective, so a real value sits in roughly 0.01..1 and is
+# physical only for MIN < T <= MAX. Rejecting anything outside the band drops a
+# "no-signal" plane either way it fails:
+#   * dark BFP  (meter noise ~1e-13 W in the BFP plane) -> ratio explodes to
+#     1e6..1e14, far above 1;
+#   * dark sample (noise in the sample plane) -> ratio collapses to ~1e-12, a
+#     tiny positive that would otherwise pass a bare "0 < T" check and get
+#     stored as T≈0 — which then drives the sample-plane power-setting (newpwr /
+#     factor) to the rails.
+# The band is generous: the lower bound (1e-6) sits ~4 orders below any usable
+# objective transmission yet ~6 orders above a noise-floor ratio, so it never
+# rejects real data, only no-signal planes. Mildly-above-1 garbage (sample and
+# BFP recorded under mismatched conditions) is caught by the upper bound.
+MIN_PHYSICAL_TRANSMISSION = 1e-6
+MAX_PHYSICAL_TRANSMISSION = 1.0
 
 
 def is_physical_transmission(factor):
-    """True if ``factor`` is a plausible objective transmission.
+    """True if ``factor`` is a physical objective transmission.
 
-    A generous sanity check (0 < T <= :data:`MAX_PHYSICAL_TRANSMISSION`): it
-    passes any realistic value and rejects only non-finite, non-positive or
-    wildly-exploded factors (a dark/degenerate run paired with a normal one),
-    so callers can refuse to store them.
+    The objective transmission is a loss, so it must satisfy
+    :data:`MIN_PHYSICAL_TRANSMISSION` < T <= :data:`MAX_PHYSICAL_TRANSMISSION`
+    (≈ 0 < T <= 1, excluding the noise floor). This rejects non-finite,
+    non-positive, above-unity, near-zero (dark sample plane) and
+    wildly-exploded (dark BFP plane) factors, so callers can refuse to store a
+    no-signal plane.
     """
     try:
         f = float(factor)
     except (TypeError, ValueError):
         return False
-    return np.isfinite(f) and 0.0 < f <= MAX_PHYSICAL_TRANSMISSION
+    return (
+        np.isfinite(f)
+        and MIN_PHYSICAL_TRANSMISSION < f <= MAX_PHYSICAL_TRANSMISSION
+    )
 
 
 def compute_and_save_factor(db_fname, device, laser, ana_config):
@@ -1492,12 +1504,14 @@ def compute_and_save_factor(db_fname, device, laser, ana_config):
     if not is_physical_transmission(factor_mean):
         logger.warning(
             "transmission_objective %s/%s nm = %.4g is non-physical "
-            "(expected 0 < T <= %s); NOT storing it. One plane's calibration "
-            "is likely dark/degenerate or sample and BFP were recorded under "
-            "mismatched conditions. Fix the runs or set the factor manually.",
+            "(expected %g < T <= %g); NOT storing it. A plane is likely "
+            "no-signal (dark sample -> T≈0, or dark BFP -> T≫1) or sample and "
+            "BFP were recorded under mismatched conditions. Fix the runs or set "
+            "the factor manually.",
             device,
             laser,
             factor_mean,
+            MIN_PHYSICAL_TRANSMISSION,
             MAX_PHYSICAL_TRANSMISSION,
         )
         return
@@ -2112,13 +2126,16 @@ def compute_run_pair_factors(db_fname, sample_run, bfp_run, ana_config):
         if not is_physical_transmission(factor):
             logger.warning(
                 "transmission_objective pair %s / %s nm / %s mW = %.4g is "
-                "non-physical (expected 0 < T <= %s); skipping. One of the "
-                "paired runs is likely dark/degenerate. Re-pick the runs or "
+                "non-physical (expected %g < T <= %g); skipping this plane. "
+                "One of the paired runs is no-signal for this wavelength (dark "
+                "sample -> T≈0, or dark BFP -> T≫1). The other wavelengths in "
+                "the pairing are unaffected; re-pick a run with signal here or "
                 "set the factor manually.",
                 sample_run["device"],
                 wl,
                 power,
                 factor,
+                MIN_PHYSICAL_TRANSMISSION,
                 MAX_PHYSICAL_TRANSMISSION,
             )
             continue

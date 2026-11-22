@@ -318,6 +318,17 @@ class IlluminationLaserControl(IlluminationControl):
 
         self.auto_enable_lasers = auto_enable_lasers
         self.lasers = {}
+        # Every configured wavelength, captured BEFORE the failed-to-load ones
+        # are pruned from ``self.config["lasers"]`` below. A laser whose COM port
+        # is down this session still has a stored calibration and transmission
+        # factor; keeping the full set lets the Doctor tab, the manual-factor
+        # dialog and auto-compute address it even though its hardware is absent.
+        self._configured_lasers = set()
+        for laser_key in config["lasers"].keys():
+            try:
+                self._configured_lasers.add(int(laser_key))
+            except Exception:
+                pass
         lasers_missing = []
         for laser_key, lconf in config["lasers"].items():
             try:
@@ -609,11 +620,7 @@ class IlluminationLaserControl(IlluminationControl):
         wavelength, not only the ones that happened to connect. Keys are ints.
         """
         keys = {int(la) for la in self.lasers.keys()}
-        try:
-            for w in self.config.get("lasers", {}).keys():
-                keys.add(int(w))
-        except Exception:
-            pass
+        keys |= set(getattr(self, "_configured_lasers", set()))
         return keys
 
     def reload_factors(self):
@@ -654,9 +661,29 @@ class IlluminationLaserControl(IlluminationControl):
                             == laser_int
                         ]
                         if not sub.empty:
-                            new_factors[laser] = float(
+                            val = float(
                                 sub.iloc[-1]["transmission_objective_mean"]
                             )
+                            # Never *apply* a non-physical factor, even one an
+                            # older monet persisted before the write-side gate
+                            # existed: a garbage value (dark plane -> T≈0 or
+                            # T≫1) would drive the sample-plane power-set
+                            # (newpwr / factor) to the rails. Drop it (-> no
+                            # correction, factor 1.0) and warn.
+                            if io.is_physical_transmission(val):
+                                new_factors[laser] = val
+                            else:
+                                logger.warning(
+                                    "Ignoring non-physical stored transmission "
+                                    "factor %.4g for %s nm (expected %g < T "
+                                    "<= %g); using no sample-plane correction. "
+                                    "Recompute from clean runs or set it "
+                                    "manually.",
+                                    val,
+                                    laser,
+                                    io.MIN_PHYSICAL_TRANSMISSION,
+                                    io.MAX_PHYSICAL_TRANSMISSION,
+                                )
                     except Exception as exc:
                         logger.debug(
                             "Skipping factor row for %s nm: %s", laser, exc
@@ -704,7 +731,21 @@ class IlluminationLaserControl(IlluminationControl):
                     continue
                 if "date" in sub.columns:
                     sub = sub.sort_values("date")
-                self._factors[laser] = float(sub.iloc[-1]["factor"])
+                val = float(sub.iloc[-1]["factor"])
+                # Same apply-side guard as reload_factors: a non-physical pair
+                # factor is never applied (it would corrupt power-setting).
+                if not io.is_physical_transmission(val):
+                    logger.warning(
+                        "Ignoring non-physical transmission factor %.4g for "
+                        "%s nm from the local pair store (expected %g < T <= "
+                        "%g); using no sample-plane correction.",
+                        val,
+                        laser,
+                        io.MIN_PHYSICAL_TRANSMISSION,
+                        io.MAX_PHYSICAL_TRANSMISSION,
+                    )
+                    continue
+                self._factors[laser] = val
                 logger.info(
                     "Transmission factor for %s nm recovered from the "
                     "local pair store (%.4f); the projection store had none.",

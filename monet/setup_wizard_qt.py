@@ -34,8 +34,10 @@ from PyQt6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QRadioButton,
+    QScrollArea,
     QSpinBox,
     QStackedWidget,
+    QTabWidget,
     QTextEdit,
     QToolButton,
     QVBoxLayout,
@@ -71,6 +73,20 @@ def _with_reveal(line_edit):
     )
     lay.addWidget(btn)
     return host
+
+
+def _scrollable(widget):
+    """Wrap ``widget`` in a vertical ``QScrollArea``.
+
+    Keeps a tall section (e.g. a driver form with many init-kwargs, or a long
+    list of lasers) from forcing a wizard page taller than the screen: the
+    content scrolls inside a bounded viewport instead.
+    """
+    area = QScrollArea()
+    area.setWidgetResizable(True)
+    area.setFrameShape(QScrollArea.Shape.NoFrame)
+    area.setWidget(widget)
+    return area
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -758,7 +774,16 @@ class _MicroscopePage(QWizardPage):
         self.body = QWidget()
         body_lay = QVBoxLayout(self.body)
         body_lay.setContentsMargins(0, 0, 0, 0)
-        form = QFormLayout()
+
+        # Each topic (identity, the three driver pickers, lasers, beam-path) is
+        # its own tab. Stacked vertically these overflow the screen on a fresh
+        # single-computer setup — a driver form expands with its init-kwargs and
+        # the laser list grows per laser. Tabs bound the page to one topic's
+        # height at a time; the growable tabs additionally scroll.
+        tabs = QTabWidget()
+
+        dev_tab = QWidget()
+        form = QFormLayout(dev_tab)
         self.name_edit = QLineEdit()
         form.addRow("Name", self.name_edit)
         self.db_edit = QLineEdit()
@@ -771,36 +796,44 @@ class _MicroscopePage(QWizardPage):
         self.lp_spin.setRange(0, 100000)
         self.lp_spin.setValue(100)
         form.addRow("Index laser_power [mW]", self.lp_spin)
+        tabs.addTab(dev_tab, "Device")
+
         self.pm_form = _DriverForm("powermeter")
         self.at_form = _DriverForm("attenuation")
         self.an_form = _DriverForm("analysis")
-        form.addRow("Power meter", self.pm_form)
-        form.addRow("Attenuator", self.at_form)
-        form.addRow("Curve model", self.an_form)
-        body_lay.addLayout(form)
+        tabs.addTab(_scrollable(self.pm_form), "Power meter")
+        tabs.addTab(_scrollable(self.at_form), "Attenuator")
+        tabs.addTab(_scrollable(self.an_form), "Curve model")
 
         # Lasers (optional; needed for multi-laser protocols)
-        laser_box = QGroupBox(
-            "Lasers (optional — enables a calibration protocol)"
+        laser_tab = QWidget()
+        lb = QVBoxLayout(laser_tab)
+        lb.addWidget(
+            QLabel("Optional — add a laser to enable a calibration protocol.")
         )
-        lb = QVBoxLayout(laser_box)
         self._laser_host = QVBoxLayout()
         lb.addLayout(self._laser_host)
         add_laser = QPushButton("Add laser")
         add_laser.clicked.connect(self._add_laser)
         lb.addWidget(add_laser)
-        body_lay.addWidget(laser_box)
+        lb.addStretch(1)
+        tabs.addTab(_scrollable(laser_tab), "Lasers")
 
         # Beam-path devices (optional; Micro-Manager)
-        bp_box = QGroupBox("Beam-path devices (optional — Micro-Manager)")
-        bb = QVBoxLayout(bp_box)
+        bp_tab = QWidget()
+        bb = QVBoxLayout(bp_tab)
+        bb.addWidget(QLabel("Optional — Micro-Manager beam-path devices."))
         self._bp_host = QVBoxLayout()
         bb.addLayout(self._bp_host)
         add_bp = QPushButton("Add beam-path device")
         add_bp.clicked.connect(self._add_bp)
         bb.addWidget(add_bp)
-        body_lay.addWidget(bp_box)
+        bb.addStretch(1)
+        tabs.addTab(_scrollable(bp_tab), "Beam path")
 
+        body_lay.addWidget(tabs)
+
+        # Test connection stays below the tabs so it is reachable from any topic.
         row = QHBoxLayout()
         btn_test = QPushButton("Test connection")
         btn_test.clicked.connect(self._test)
@@ -1505,6 +1538,13 @@ class EditConfigDialog(QDialog):
         top.addWidget(self._combo, 1)
         lay.addLayout(top)
 
+        # The editable sections (driver forms + per-laser protocol rows) can be
+        # taller than the screen once expanded; scroll them inside a bounded
+        # viewport so the Save/Close row below stays reachable.
+        content = QWidget()
+        content_lay = QVBoxLayout(content)
+        content_lay.setContentsMargins(0, 0, 0, 0)
+
         form = QFormLayout()
         self._db_edit = QLineEdit()
         form.addRow("Database (server URL or .xlsx)", self._db_edit)
@@ -1525,17 +1565,19 @@ class EditConfigDialog(QDialog):
         form.addRow("Power meter", self._pm_form)
         form.addRow("Attenuator", self._at_form)
         form.addRow("Curve model", self._an_form)
-        lay.addLayout(form)
+        content_lay.addLayout(form)
 
         self._proto_box = QGroupBox(
             "Protocol — power set-points [mW] per laser (comma-separated)"
         )
         self._proto_host = QFormLayout(self._proto_box)
-        lay.addWidget(self._proto_box)
+        content_lay.addWidget(self._proto_box)
 
         self._status = QLabel("")
         self._status.setWordWrap(True)
-        lay.addWidget(self._status)
+        content_lay.addWidget(self._status)
+        content_lay.addStretch(1)
+        lay.addWidget(_scrollable(content), 1)
 
         row = QHBoxLayout()
         self._btn_save = QPushButton("Save")
