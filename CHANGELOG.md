@@ -10,6 +10,21 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
+## [0.7.5] - 2026-11-22
+
+### Fixed
+- **Auto-compute transmission factors from existing calibrations, regardless of
+  date.** `compute_and_save_factor` (the Database tab's "Auto-compute") only
+  paired calibrations recorded *today*, so a laser whose hardware is off — and
+  thus can't be recalibrated today — never got a factor even with sample and BFP
+  calibrations already in the database. It now pairs each plane's **latest**
+  calibration (any date), making the whole transmission-factor calculation
+  independent of the laser hardware (DB-only), consistent with the "Pair runs…"
+  path. Works for the Excel and the HTTP server database. Unparseable dates are
+  ignored (not treated as latest), the latest *time* within a day is used, and a
+  cross-day pairing is logged for traceability; the physical-band / MAD /
+  offset-bias safeguards still catch a mismatched pairing.
+
 ## [0.7.4] - 2026-11-22
 
 ### Fixed

@@ -274,6 +274,40 @@ class TestComputeAndSaveFactor(unittest.TestCase):
             df.iloc[0]["transmission_objective_mean"], 0.5, places=1
         )
 
+    def test_computes_from_latest_calibrations_across_days(self):
+        """A laser whose hardware is off can't be recalibrated today, but its
+        existing sample/BFP calibrations — recorded on *different* days — must
+        still yield a factor. Auto-compute uses each plane's latest calibration,
+        not only same-day pairs."""
+        _write_calib_db(
+            self.db,
+            [
+                # Sample plane on an old day; BFP on a different (newer) day.
+                (
+                    "TestScope",
+                    488.0,
+                    100.0,
+                    "2024-01-01",
+                    "10:00",
+                    {"bkg": 0.1, "amp": 20.0, "powermeter_type": "sample"},
+                ),
+                (
+                    "TestScope",
+                    488.0,
+                    100.0,
+                    "2024-02-01",
+                    "10:05",
+                    {"bkg": 0.05, "amp": 40.0, "powermeter_type": "bfp"},
+                ),
+            ],
+        )
+        mio.compute_and_save_factor(self.db, "TestScope", 488, self.ana_config)
+        df = mio.load_factors(self.db, device="TestScope", laser=488)
+        self.assertEqual(len(df), 1)
+        self.assertAlmostEqual(
+            df.iloc[0]["transmission_objective_mean"], 0.5, places=1
+        )
+
 
 class TestMadOutlierMask(unittest.TestCase):
 
