@@ -358,12 +358,23 @@ class IlluminationLaserControl(IlluminationControl):
             self.config["lasers"].pop(laser_key)
 
         if not self.lasers:
-            raise RuntimeError(
-                "No lasers could be loaded. Configured lasers: {}. "
-                "Check that devices are powered on and COM ports have not "
-                "changed.".format(list(config["lasers"].keys()))
+            # Degraded mode: no laser hardware could be opened (e.g. every COM
+            # port is down). Do NOT fail the whole connection — the database
+            # inspection (Database tab) and the transmission-factor tools are
+            # DB-based and still work, as does the Doctor tab, so the operator
+            # can review/compute/set factors for all configured lasers with the
+            # hardware absent. Power-setting is the only thing that needs a live
+            # laser; curr_laser is None and the power paths guard on it.
+            logger.warning(
+                "No laser hardware could be loaded (COM ports down?). Running "
+                "in degraded mode: database inspection and transmission-factor "
+                "tools work; power-setting is disabled until a laser loads. "
+                "Configured lasers: %s.",
+                sorted(self._configured_lasers),
             )
-        self.curr_laser = list(self.lasers.keys())[0]
+            self.curr_laser = None
+        else:
+            self.curr_laser = list(self.lasers.keys())[0]
 
         # Hard per-laser output-power ceiling (C34 safety envelope). Enforced in
         # this control layer — below *every* actuation path (the HTTP power API,
@@ -1418,6 +1429,15 @@ class IlluminationLaserControl(IlluminationControl):
             self.config["database"], load_index, "last combinations"
         )
         logger.debug("loaded latest calibrations for every combination")
+        if self.curr_laser is None:
+            # Degraded mode (no laser hardware): the DB is loaded for inspection
+            # and the per-laser factors are refreshed (so the Doctor tab and the
+            # transmission-factor tools work), but there is no current laser to
+            # pick a default power/analyzers for — skip that and return.
+            self.is_calibrated = False
+            self._pin_scales = {}
+            self.reload_factors()
+            return
         ic(self.cali_db)
         index_combi = self.cali_db.index.to_frame(index=False)
         ic(index_combi)

@@ -10,6 +10,21 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
+### Fixed
+- **Database inspection and transmission-factor tools now work with the laser
+  hardware down.** Previously, if *every* laser's COM port was down the control
+  refused to construct (`No lasers could be loaded`), so the whole GUI
+  connection failed and the Database/Doctor tabs never opened — even though the
+  calibration server was reachable and held the device's data. The control now
+  constructs in a **degraded mode** when no laser loads: `curr_laser` is `None`,
+  the database/factor tools (all DB-based) and the Doctor tab work, and only
+  power-setting is disabled until a laser comes back. This is the server-backed
+  "empty Database tab with hardware off" case.
+- **An empty Database tab now says *why*** — "No calibrations found for
+  '<device>'" vs "Could not read database: <error>" — instead of a bare
+  "0 run(s)", since the underlying listing swallows load errors to an empty
+  list.
+
 ## [0.7.3] - 2026-11-22
 
 ### Fixed
