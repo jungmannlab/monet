@@ -642,6 +642,57 @@ class TestControl(unittest.TestCase):
         self.assertIn(561, keys)
         self.assertIn(640, keys)
 
+    def test_degraded_mode_constructs_when_no_lasers_load(self):
+        """When EVERY laser's hardware fails to open (all COM ports down), the
+        control must still construct in degraded mode rather than raising, so
+        the Database/Doctor tabs and the transmission-factor tools (all
+        DB-based) remain usable with the hardware absent. Power-setting is the
+        only thing disabled."""
+        self._build_laser_control()  # writes the calibration DB
+        db_path = "monet/tests/TestData/control/feedback_test_db.xlsx"
+        config = {
+            "database": db_path,
+            "dest_calibration_plot": "monet/tests/TestData/control/",
+            "index": {"name": "DefaultMicroscope"},
+            "attenuation": {
+                "classpath": "monet.attenuation.TestAttenuator",
+                "init_kwargs": {
+                    "bkg": 0,
+                    "amp": 50,
+                    "phi": 30,
+                    "start": 30,
+                    "step": 5,
+                },
+            },
+            "analysis": {
+                "classpath": "monet.analysis.LinearCurveAnalyzer",
+                "init_kwargs": {"min": 0, "max": 100, "step": 5},
+            },
+            "lasers": {
+                # Every driver class is missing → every laser fails to load.
+                "488": {
+                    "classpath": "monet.laser.NoSuchLaser",
+                    "init_kwargs": {},
+                },
+                "561": {
+                    "classpath": "monet.laser.NoSuchLaser",
+                    "init_kwargs": {},
+                },
+                "640": {
+                    "classpath": "monet.laser.NoSuchLaser",
+                    "init_kwargs": {},
+                },
+            },
+        }
+        # Must NOT raise despite zero lasers loading.
+        ctrl = mco.IlluminationLaserControl(config)
+        self.assertEqual(ctrl.lasers, {})
+        self.assertIsNone(ctrl.curr_laser)
+        # All configured wavelengths are still addressable for factor work.
+        self.assertEqual(ctrl._all_laser_keys(), {488, 561, 640})
+        # Factor application is safe (no hardware needed) and defaults to 1.0.
+        self.assertEqual(ctrl._bfp_factor(488), 1.0)
+
     def test_reload_factors_recovers_from_local_pair_store(self):
         """A factor present only in the local pair store (projection store
         empty) is recovered on reload.
@@ -1203,7 +1254,13 @@ class TestControl(unittest.TestCase):
 
     # ── construction edge case ───────────────────────────────────────────
 
-    def test_no_lasers_loadable_raises_runtimeerror(self):
+    def test_no_lasers_loadable_constructs_degraded(self):
+        """When no laser loads, construction no longer raises — it enters
+        degraded mode (DB/factor inspection works; power-setting is disabled),
+        so the operator can still use the Database/Doctor tabs with the hardware
+        down. The numeric-string key ('488') that fails to load must still be
+        popped from the cleanup loop without a KeyError, and preserved as a
+        configured wavelength."""
         config = {
             "database": "unused.xlsx",
             "index": {"name": "DefaultMicroscope"},
@@ -1215,9 +1272,6 @@ class TestControl(unittest.TestCase):
                 "classpath": "monet.analysis.LinearCurveAnalyzer",
                 "init_kwargs": {"min": 0, "max": 100},
             },
-            # A numeric-string key ('488') that fails to load used to trip a
-            # KeyError in the cleanup loop; the missing-laser cleanup must now
-            # pop the original key and reach the graceful RuntimeError.
             "lasers": {
                 "488": {
                     "classpath": "monet.laser.NoSuchLaser",
@@ -1225,5 +1279,8 @@ class TestControl(unittest.TestCase):
                 },
             },
         }
-        with self.assertRaises(RuntimeError):
-            mco.IlluminationLaserControl(config, do_load_cal=False)
+        ctrl = mco.IlluminationLaserControl(config, do_load_cal=False)
+        self.assertEqual(ctrl.lasers, {})
+        self.assertIsNone(ctrl.curr_laser)
+        # The failed numeric-string key is preserved as configured.
+        self.assertEqual(ctrl._all_laser_keys(), {488})

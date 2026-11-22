@@ -52,6 +52,7 @@ import monet.io as io
 from monet import updates
 from monet import (
     CONFIGS,
+    DEVICE_TAG,
     LASER_TAG,
     POWER_TAG,
     POWERMETER_BFP,
@@ -4725,10 +4726,39 @@ class DatabaseTab(_MonetTab):
                 self._table.setItem(r, col, item)
             self._table.item(r, 0).setData(Qt.ItemDataRole.UserRole, run)
 
-        self._status.setText("{} run(s)".format(len(self._runs)))
+        if self._runs:
+            self._status.setText("{} run(s)".format(len(self._runs)))
+        else:
+            # list_calibration_runs() swallows load errors to an empty list, so
+            # an empty table is ambiguous (server unreachable? no rows for this
+            # device? query error?). Probe once to tell the operator which —
+            # otherwise a reachable-but-empty result looks identical to a
+            # silent failure.
+            self._status.setText(self._describe_empty())
         self._plot_selected_runs()
         self._refresh_factors_table()
         self._refresh_factor_plot()
+
+    def _describe_empty(self):
+        """Explain an empty run list: distinguish 'no rows for this device'
+        from a read error (runs only when the table is empty).
+
+        Note: load_database falls back to the local cache on a connection
+        error, so a KeyError here means "no rows for this device in the server
+        *or* the offline cache", which we report as not-found; only a non-cache
+        read error surfaces as an error.
+        """
+        scope = self._current_scope()
+        index = {DEVICE_TAG: scope} if scope else {}
+        try:
+            io.load_database(self._db_fname, index, time_idx="all")
+        except KeyError:
+            return "No calibrations found for '{}' in this database.".format(
+                scope or "(any device)"
+            )
+        except Exception as exc:
+            return "Could not read database: {}".format(exc)
+        return "0 run(s)"
 
     def _selected_runs(self):
         """Run dicts for the currently-selected rows."""
