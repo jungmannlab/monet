@@ -10,6 +10,8 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-11-22
+
 ### Added
 - **Manual override for the objective transmission factor** — a "Set factor
   manually…" button in the GUI Database tab lets you enter `P_sample / P_bfp`
