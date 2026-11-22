@@ -254,7 +254,7 @@ class TestComputeAndSaveFactor(unittest.TestCase):
                     100.0,
                     today,
                     "10:00",
-                    {"bkg": 0.1, "amp": 40.0, "powermeter_type": "sample"},
+                    {"bkg": 0.1, "amp": 20.0, "powermeter_type": "sample"},
                 ),
                 (
                     "TestScope",
@@ -262,16 +262,16 @@ class TestComputeAndSaveFactor(unittest.TestCase):
                     100.0,
                     today,
                     "10:05",
-                    {"bkg": 0.05, "amp": 20.0, "powermeter_type": "bfp"},
+                    {"bkg": 0.05, "amp": 40.0, "powermeter_type": "bfp"},
                 ),
             ],
         )
         mio.compute_and_save_factor(self.db, "TestScope", 488, self.ana_config)
         df = mio.load_factors(self.db, device="TestScope", laser=488)
         self.assertEqual(len(df), 1)
-        # sample/bfp amplitude ratio is ~2.0.
+        # sample/bfp amplitude ratio is ~0.5 (a physical transmission ≤ 1).
         self.assertAlmostEqual(
-            df.iloc[0]["transmission_objective_mean"], 2.0, places=1
+            df.iloc[0]["transmission_objective_mean"], 0.5, places=1
         )
 
 
@@ -586,37 +586,39 @@ class TestComputeAndSaveFactorOutliers(unittest.TestCase):
 
     def test_outlier_power_dropped(self):
         today = datetime.now().strftime("%Y-%m-%d")
-        # Two consistent powers (ratio ~2.0, 2.05) and one failed run (~5.0).
-        rows = self._pair(100.0, 40.0, 20.0, today)
-        rows += self._pair(200.0, 41.0, 20.0, today)
-        rows += self._pair(300.0, 100.0, 20.0, today)  # failed calibration
+        # Two consistent powers (ratio ~0.5, 0.51) and one anomalous-but-still-
+        # physical run (~0.95): all pass the per-level 0<T<=1 gate, so this
+        # exercises the cross-level MAD filter dropping the odd-one-out.
+        rows = self._pair(100.0, 20.0, 40.0, today)
+        rows += self._pair(200.0, 20.5, 40.0, today)
+        rows += self._pair(300.0, 38.0, 40.0, today)  # failed calibration
         _write_calib_db(self.db, rows)
         mio.compute_and_save_factor(self.db, "TestScope", 488, self.ana_config)
         df = mio.load_factors(self.db, device="TestScope", laser=488)
         self.assertEqual(len(df), 1)
-        # Robust mean should stay near the good cluster (~2.0), not be pulled
-        # toward 3.0 by the failed run.
-        self.assertLess(df.iloc[0]["transmission_objective_mean"], 2.5)
+        # Robust mean should stay near the good cluster (~0.5), not be pulled
+        # toward ~0.95 by the failed run.
+        self.assertLess(df.iloc[0]["transmission_objective_mean"], 0.7)
 
     def test_mixed_calibration_keeps_good_level_drops_dark(self):
         """A mixed calibration (one good power level + one dark level) still
         yields a factor from the good level; the dark level is dropped, not
         allowed to tip the pooled factor or reject the whole wavelength."""
         today = datetime.now().strftime("%Y-%m-%d")
-        rows = self._pair(100.0, 40.0, 20.0, today)  # good → factor ~2
-        rows += self._pair(200.0, 400.0, 1e-9, today)  # dark BFP → ~1e3
+        rows = self._pair(100.0, 20.0, 40.0, today)  # good → factor ~0.5
+        rows += self._pair(200.0, 400.0, 1e-9, today)  # dark BFP → ~1e11
         _write_calib_db(self.db, rows)
         mio.compute_and_save_factor(self.db, "TestScope", 488, self.ana_config)
         df = mio.load_factors(self.db, device="TestScope", laser=488)
         self.assertEqual(len(df), 1)
         f = df.iloc[0]["transmission_objective_mean"]
         self.assertTrue(mio.is_physical_transmission(f))
-        self.assertLess(f, 5.0)  # from the good level (~2), not the dark one
+        self.assertLess(f, 1.0)  # from the good level (~0.5), not the dark one
 
     def test_rejects_nonphysical_factor(self):
-        """A dark/degenerate run in one plane makes P_sample/P_bfp explode;
-        that non-physical factor must NOT be stored (regression for the
-        '1e6..1e14 transmission' bug)."""
+        """A dark BFP plane makes P_sample/P_bfp explode; that non-physical
+        factor must NOT be stored (regression for the '1e6..1e14 transmission'
+        bug)."""
         today = datetime.now().strftime("%Y-%m-%d")
         # BFP amplitude ~1e-6 (near-dark) vs sample ~40 → ratio ~4e7.
         rows = self._pair(100.0, 40.0, 1e-6, today)
@@ -625,18 +627,54 @@ class TestComputeAndSaveFactorOutliers(unittest.TestCase):
         df = mio.load_factors(self.db, device="TestScope", laser=488)
         self.assertTrue(df.empty)
 
+    def test_rejects_dark_sample_plane(self):
+        """A dark SAMPLE plane makes P_sample/P_bfp collapse to ~0; that
+        near-zero factor passes a bare '0 < T' check but is a no-signal plane —
+        it must NOT be stored (else newpwr / factor drives the laser wild).
+
+        A genuinely dark plane reads noise in *both* background and amplitude,
+        so model it with near-zero bkg too (a mere small amp over a normal bkg
+        is not dark — the bkg offset dominates estimate_power)."""
+        today = datetime.now().strftime("%Y-%m-%d")
+        rows = [
+            (
+                "TestScope",
+                488.0,
+                100.0,
+                today,
+                "10:00",
+                {"bkg": 1e-9, "amp": 1e-9, "powermeter_type": "sample"},
+            ),
+            (
+                "TestScope",
+                488.0,
+                100.0,
+                today,
+                "10:05",
+                {"bkg": 0.1, "amp": 40.0, "powermeter_type": "bfp"},
+            ),
+        ]
+        _write_calib_db(self.db, rows)
+        mio.compute_and_save_factor(self.db, "TestScope", 488, self.ana_config)
+        df = mio.load_factors(self.db, device="TestScope", laser=488)
+        self.assertTrue(df.empty)
+
 
 class TestIsPhysicalTransmission(unittest.TestCase):
     def test_accepts_plausible_values(self):
-        for v in (0.0001, 0.11, 0.8, 1.0, 2.0, 50.0, 100.0):
+        # Transmission is a loss, so physical values are ~0 < T <= 1.
+        for v in (0.0001, 0.11, 0.5, 0.8, 1.0):
             self.assertTrue(mio.is_physical_transmission(v), v)
 
     def test_rejects_implausible_values(self):
         for v in (
             0.0,
             -0.5,
-            100.01,
-            1e6,
+            1e-7,  # below the noise floor — a dark sample plane (T≈0)
+            1e-12,  # dark sample plane
+            1.0001,  # just above unity — a transmission cannot exceed 1
+            2.0,
+            1e6,  # dark BFP plane (ratio explodes)
             9.5e14,
             float("nan"),
             float("inf"),
@@ -813,11 +851,11 @@ class TestCalibrationRuns(unittest.TestCase):
 
     def test_compute_run_pair_factors(self):
         rows = [
-            self._cal(488, 100, "2024-06-01", "10:00", "sample", 40),
-            self._cal(488, 200, "2024-06-01", "10:05", "sample", 80),
+            self._cal(488, 100, "2024-06-01", "10:00", "sample", 20),
+            self._cal(488, 200, "2024-06-01", "10:05", "sample", 40),
             self._cal(561, 100, "2024-06-01", "10:10", "sample", 30),
-            self._cal(488, 100, "2024-06-01", "10:20", "bfp", 20),
-            self._cal(488, 200, "2024-06-01", "10:25", "bfp", 40),
+            self._cal(488, 100, "2024-06-01", "10:20", "bfp", 40),
+            self._cal(488, 200, "2024-06-01", "10:25", "bfp", 80),
             # 561 only in sample -> not paired
         ]
         _write_calib_db(self.db, rows)
@@ -827,13 +865,41 @@ class TestCalibrationRuns(unittest.TestCase):
         stored = mio.compute_run_pair_factors(
             self.db, s_run, b_run, self.ana_config
         )
-        # Only the two 488 nm powers pair (561 nm has no BFP partner).
+        # Only the two 488 nm powers pair (561 nm has no BFP partner). The
+        # sample/bfp ratio is ~0.5 (a physical transmission ≤ 1).
         self.assertEqual(len(stored), 2)
         for p in stored:
             self.assertEqual(p["wavelength"], 488.0)
-            self.assertAlmostEqual(p["factor"], 2.0, places=1)
+            self.assertAlmostEqual(p["factor"], 0.5, places=1)
         # And they now appear as stored pairs.
         self.assertEqual(len(mio.load_factor_pairs(self.db)), 2)
+
+    def test_pair_drops_dark_sample_wavelength_keeps_others(self):
+        """A pairing where one wavelength's sample plane is dark (no signal)
+        drops only that wavelength and keeps the good ones — the user's case:
+        the chosen sample run has a dark 642 but signal in 488/561."""
+        rows = [
+            # Sample run: 488 & 561 have signal, 642 is dark (no-signal plane).
+            self._cal(488, 100, "2024-06-01", "10:00", "sample", 20),
+            self._cal(561, 100, "2024-06-01", "10:02", "sample", 30),
+            self._cal(642, 100, "2024-06-01", "10:04", "sample", 1e-6),
+            # BFP run: all three bright.
+            self._cal(488, 100, "2024-06-01", "10:20", "bfp", 40),
+            self._cal(561, 100, "2024-06-01", "10:22", "bfp", 40),
+            self._cal(642, 100, "2024-06-01", "10:24", "bfp", 40),
+        ]
+        _write_calib_db(self.db, rows)
+        runs = mio.list_calibration_runs(self.db, "TestScope")
+        s_run = [r for r in runs if r["powermeter_type"] == "sample"][0]
+        b_run = [r for r in runs if r["powermeter_type"] == "bfp"][0]
+        stored = mio.compute_run_pair_factors(
+            self.db, s_run, b_run, self.ana_config
+        )
+        # 642's dark sample plane (ratio ~2.5e-8) is skipped; 488 & 561 kept.
+        wls = sorted(p["wavelength"] for p in stored)
+        self.assertEqual(wls, [488.0, 561.0])
+        for p in stored:
+            self.assertTrue(mio.is_physical_transmission(p["factor"]))
 
     def test_mixed_db_skips_unannotated_rows(self):
         # Column present (annotated DB) + one row missing powermeter_type: the
@@ -873,8 +939,8 @@ class TestCalibrationRuns(unittest.TestCase):
 
     def test_pair_records_carry_dates(self):
         rows = [
-            self._cal(488, 100, "2024-06-01", "10:00", "sample", 40),
-            self._cal(488, 100, "2024-06-02", "11:00", "bfp", 20),
+            self._cal(488, 100, "2024-06-01", "10:00", "sample", 20),
+            self._cal(488, 100, "2024-06-02", "11:00", "bfp", 40),
         ]
         _write_calib_db(self.db, rows)
         runs = mio.list_calibration_runs(self.db, "TestScope")
@@ -888,8 +954,8 @@ class TestCalibrationRuns(unittest.TestCase):
 
     def test_clear_factor_pairs(self):
         rows = [
-            self._cal(488, 100, "2024-06-01", "10:00", "sample", 40),
-            self._cal(488, 100, "2024-06-01", "10:20", "bfp", 20),
+            self._cal(488, 100, "2024-06-01", "10:00", "sample", 20),
+            self._cal(488, 100, "2024-06-01", "10:20", "bfp", 40),
         ]
         _write_calib_db(self.db, rows)
         runs = mio.list_calibration_runs(self.db, "TestScope")

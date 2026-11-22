@@ -454,16 +454,22 @@ class TestDoctorTab(unittest.TestCase):
                 self._factors = {488: 0.8}
                 self._powermeter_type = {488: "bfp"}
                 self.lasers = {488: object(), 561: object()}
+                # 640 is configured but not loaded (no hardware); it is absent
+                # from ``lasers`` but preserved in the configured set so it must
+                # still appear in the report.
+                self._configured_lasers = {488, 561, 640}
                 self.config = {
                     "index": {"name": "Scope"},
-                    # 640 is configured but not loaded (no hardware); it must
-                    # still appear in the report.
-                    "lasers": {"488": {}, "561": {}, "640": {}},
                     # A non-existent local DB → load_factors returns empty,
                     # so the diagnostic is deterministic and makes no network
                     # call.
                     "database": "/nonexistent/does-not-exist.xlsx",
                 }
+
+            def _all_laser_keys(self):
+                keys = {int(la) for la in self.lasers.keys()}
+                keys |= set(self._configured_lasers)
+                return keys
 
         class _FakePC:
             instrument = _FakeInstr()
