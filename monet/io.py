@@ -1268,11 +1268,41 @@ def is_physical_transmission(factor):
     )
 
 
+def _latest_date_subset(df):
+    """Rows of ``df`` whose calibration date is the most recent present.
+
+    ``df`` is indexed with a 'date' level ('YYYY-MM-DD' strings or Timestamps).
+    Used to pick one plane's latest calibration session when pairing sample vs
+    BFP for the transmission factor, so the pairing uses the newest available
+    data per plane rather than requiring both planes on the same day. Rows whose
+    date is unparseable (e.g. a NaT from a blank cell — ``str`` gives 'NaT',
+    which would sort *after* any real ISO date) are ignored, not treated as the
+    latest.
+    """
+    if "date" not in df.index.names or df.empty:
+        return df
+    dates = [str(d)[:10] for d in df.index.get_level_values("date")]
+    valid = [d for d in dates if len(d) >= 4 and d[:4].isdigit()]
+    if not valid:
+        return df.iloc[0:0]
+    latest = max(valid)
+    sub = df.loc[[d == latest for d in dates]]
+    # Sort so a later per-power ``.iloc[-1]`` picks the latest *time* within the
+    # day, not merely the last row in file/insertion order.
+    try:
+        return sub.sort_index()
+    except Exception:
+        return sub
+
+
 def compute_and_save_factor(db_fname, device, laser, ana_config):
     """Compute and save the objective transmission factor.
 
-    Uses paired back focal plane (BFP) vs sample-plane calibrations
-    recorded on the same day.
+    Pairs the latest back focal plane (BFP) vs the latest sample-plane
+    calibration for the laser (each plane taken on its own most-recent date, so
+    a laser whose hardware is currently off still gets a factor from its
+    existing calibrations — the same-day case is just when both latest dates are
+    today).
 
     transmission_objective = P_sample / P_bfp, sampled at 50 attenuator
     positions per common laser-power level. Saved to the 'factors' sheet.
@@ -1335,32 +1365,49 @@ def compute_and_save_factor(db_fname, device, laser, ana_config):
         )
         return
 
-    # Filter to today — normalize dates to 'YYYY-MM-DD' strings regardless of
-    # whether Excel stored them as strings or Timestamps.
-    if "date" in db.index.names:
-        dates_str = [str(d)[:10] for d in db.index.get_level_values("date")]
-        db = db.loc[[d == today for d in dates_str]]
-    if db.empty:
-        logger.warning(
-            "compute_and_save_factor: no calibrations for today (%s) for "
-            "%s / %s nm — both types must be calibrated on the same day",
-            today,
-            device,
-            laser,
-        )
-        return
-
+    # Split by plane, then use each plane's LATEST calibration independently
+    # (not restricted to today), so a laser whose hardware is currently off can
+    # still get a factor from its existing sample/BFP calibrations. A fresh
+    # same-day calibration is just the case where both latest dates are today;
+    # the physical-band / MAD / offset-bias safeguards below catch a mismatched
+    # (e.g. stale) pairing.
     pm_type_norm = db["powermeter_type"].map(normalize_powermeter_type)
     db_manual = db.loc[pm_type_norm == POWERMETER_SAMPLE]
     db_beampath = db.loc[pm_type_norm == POWERMETER_BFP]
     if db_manual.empty or db_beampath.empty:
         logger.warning(
             "compute_and_save_factor: need both sample-plane and BFP "
-            "calibrations on the same day; found sample=%d bfp=%d",
+            "calibrations for %s / %s nm; found sample=%d bfp=%d",
+            device,
+            laser,
             len(db_manual),
             len(db_beampath),
         )
         return
+    db_manual = _latest_date_subset(db_manual)
+    db_beampath = _latest_date_subset(db_beampath)
+
+    # Traceability: when the two planes come from different days, the pairing
+    # assumes the optical alignment is unchanged between them — log it so a
+    # stale cross-day pairing is visible (the offset-bias check below also
+    # warns if the two planes disagree).
+    def _one_date(sub):
+        try:
+            return str(sub.index.get_level_values("date")[0])[:10]
+        except Exception:
+            return "?"
+
+    s_date, b_date = _one_date(db_manual), _one_date(db_beampath)
+    if s_date != b_date:
+        logger.info(
+            "transmission_objective %s/%s nm: pairing latest sample-plane "
+            "calibration (%s) with latest BFP calibration (%s) — different "
+            "days; verify the alignment is unchanged.",
+            device,
+            laser,
+            s_date,
+            b_date,
+        )
 
     from monet.util import load_class
 
