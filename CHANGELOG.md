@@ -10,6 +10,8 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
+## [0.7.6] - 2026-11-23
+
 ### Changed
 - **Saved calibration plots/tables are now grouped into per-view subfolders.**
   Instead of writing the attenuation curves (`<wl>nm_<power>mW.png`) and
