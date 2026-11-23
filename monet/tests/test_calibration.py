@@ -803,3 +803,144 @@ class TestCalibration(unittest.TestCase):
         pc.instrument.load_calibration_database()
         self.assertTrue(pc.instrument.is_calibrated)
         self.assertIn(50, pc.instrument._analyzers)
+
+    def test_09_plot_views_raw_and_projected(self):
+        """Sample runs get one direct view; BFP runs get raw + projected."""
+        import tempfile
+
+        tmp = tempfile.mkdtemp()
+        db = os.path.join(tmp, "views.xlsx")
+        plotdir = os.path.join(tmp, "plots")
+        os.makedirs(plotdir, exist_ok=True)
+        pc = mca.CalibrationProtocol2D(
+            self._config_2d(db, plotdir),
+            {
+                "laser_sequence": [488],
+                "laser_powers": {488: [100, 200]},
+                "beampath": {488: {"shutter01": True}},
+            },
+        )
+
+        # sample plane -> single direct view
+        views = pc._plot_views(488, "sample")
+        self.assertEqual([v[0] for v in views], [mca.SAMPLE_SUBDIR])
+        self.assertEqual(views[0][1], 1.0)
+
+        # BFP with a transmission factor -> raw (x1) + projected (xT), the
+        # factor shown in the projected label.
+        pc._sample_plane_factor = lambda laser, pmt: 0.4
+        views = pc._plot_views(488, "bfp")
+        self.assertEqual(
+            [v[0] for v in views],
+            [mca.BFP_RAW_SUBDIR, mca.BFP_PROJECTED_SUBDIR],
+        )
+        self.assertEqual(views[0][1], 1.0)
+        self.assertIn("directly measured", views[0][2])
+        self.assertEqual(views[1][1], 0.4)
+        self.assertIn("0.4000", views[1][2])
+
+        # BFP without a factor -> projected view still produced, labelled so
+        pc._sample_plane_factor = lambda laser, pmt: 1.0
+        views = pc._plot_views(488, "bfp")
+        self.assertEqual(
+            [v[0] for v in views],
+            [mca.BFP_RAW_SUBDIR, mca.BFP_PROJECTED_SUBDIR],
+        )
+        self.assertIn("no transmission factor", views[1][2])
+
+    def test_10_calibration_plot_subfolders(self):
+        """A full run files its plots/tables into the per-view subfolders."""
+        import tempfile
+
+        import pandas as pd
+
+        tmp = tempfile.mkdtemp()
+        db = os.path.join(tmp, "subfolders.xlsx")
+        plotdir = os.path.join(tmp, "plots")
+        os.makedirs(plotdir, exist_ok=True)
+        protocol = {
+            "laser_sequence": [488],
+            "laser_powers": {488: [100, 200]},
+            "beampath": {488: {"shutter01": True}},
+        }
+
+        # sample-plane run -> only the sample subfolder, direct values
+        mca.CalibrationProtocol2D(
+            self._config_2d(db, plotdir), protocol
+        ).run_protocol(wait_time=0, powermeter_type="sample")
+        sample_dir = os.path.join(plotdir, mca.SAMPLE_SUBDIR)
+        self.assertTrue(
+            os.path.exists(os.path.join(sample_dir, "pwrmeasured_488nm.png"))
+        )
+        self.assertTrue(
+            os.path.exists(os.path.join(sample_dir, "488nm_100mW.png"))
+        )
+        self.assertFalse(
+            os.path.isdir(os.path.join(plotdir, mca.BFP_RAW_SUBDIR))
+        )
+
+        # BFP run on the same db -> raw + projected subfolders, both populated
+        pc = mca.CalibrationProtocol2D(self._config_2d(db, plotdir), protocol)
+        pc.run_protocol(wait_time=0, powermeter_type="bfp")
+        raw_dir = os.path.join(plotdir, mca.BFP_RAW_SUBDIR)
+        proj_dir = os.path.join(plotdir, mca.BFP_PROJECTED_SUBDIR)
+        for d in (raw_dir, proj_dir):
+            self.assertTrue(
+                os.path.exists(os.path.join(d, "pwrmeasured_488nm.xlsx"))
+            )
+            self.assertTrue(os.path.exists(os.path.join(d, "488nm_200mW.png")))
+
+        # the projected table is the raw table scaled by the stored factor
+        raw = pd.read_excel(
+            os.path.join(raw_dir, "pwrmeasured_488nm.xlsx"), index_col=0
+        )
+        proj = pd.read_excel(
+            os.path.join(proj_dir, "pwrmeasured_488nm.xlsx"), index_col=0
+        )
+        factor = pc._sample_plane_factor(488, "bfp")
+        np.testing.assert_allclose(
+            proj.to_numpy(), raw.to_numpy() * factor, rtol=1e-6
+        )
+
+    def test_11_curve_plot_survives_fit_eval_error(self):
+        """A fit-evaluation failure mid-build must not crash plot saving.
+
+        Regression: ``grid`` is assigned before ``fit`` in
+        ``_save_curve_plot``; if ``estimate_power`` raises, ``grid`` ends up
+        set while ``fit`` stays None. Guarding the overlay on ``grid`` then
+        crashed on ``fit * factor``. The curve must still be saved (without
+        the fit overlay).
+        """
+        import tempfile
+
+        tmp = tempfile.mkdtemp()
+        plotdir = os.path.join(tmp, "plots")
+        os.makedirs(plotdir, exist_ok=True)
+        cfg = self._config_1d()
+        cfg["database"] = os.path.join(tmp, "fiterr.xlsx")
+        cfg["dest_calibration_plot"] = plotdir
+        pc = mca.CalibrationProtocol1D(cfg)
+
+        class _BoomAnalyzer:
+            def load_model(self, pars):
+                pass
+
+            def estimate_power(self, x):
+                raise RuntimeError("fit eval boom")
+
+        orig = mca.load_class
+        mca.load_class = lambda *a, **k: _BoomAnalyzer()
+        try:
+            pc._save_curve_plot(
+                488,
+                100,
+                np.array([30.0, 40.0]),
+                np.array([1.0, 2.0]),
+                {"bkg": 0, "amp": 1, "phi": 0},
+                "sample",
+            )
+        finally:
+            mca.load_class = orig
+
+        out = os.path.join(plotdir, mca.SAMPLE_SUBDIR, "488nm_100mW.png")
+        self.assertTrue(os.path.exists(out))
