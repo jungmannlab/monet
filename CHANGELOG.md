@@ -10,6 +10,22 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
+## [0.7.6] - 2026-11-23
+
+### Changed
+- **Saved calibration plots/tables are now grouped into per-view subfolders.**
+  Instead of writing the attenuation curves (`<wl>nm_<power>mW.png`) and
+  measured-value tables (`pwrmeasured_<wl>nm.png/.xlsx`) flat into the plot
+  folder, each run now files them under `sample plane measurement`,
+  `BFP measurement - raw`, or `BFP measurement - projected`. A sample-plane run
+  fills only the sample subfolder with the direct values. A back-focal-plane
+  run fills *both* `BFP measurement - raw` (the directly measured values) and
+  `BFP measurement - projected` (the same values projected to the sample plane
+  via the objective transmission factor), with the factor value shown in the
+  plot title. The model-parameter plot (`<wl>nm.png`) and device-history plots
+  stay at the top level, and stale-plot pruning now reaches into the
+  subfolders.
+
 ## [0.7.5] - 2026-11-22
 
 ### Fixed
