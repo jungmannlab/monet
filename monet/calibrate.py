@@ -36,6 +36,15 @@ from monet.util import load_class, release_hardware
 logger = logging.getLogger(__name__)
 ic.configureOutput(outputFunction=logger.debug)
 
+# Subfolders the per-laser calibration plots/tables are saved into, grouping
+# them by power-meter position and whether the sample-plane projection was
+# applied. A sample-plane run fills only SAMPLE_SUBDIR; a back-focal-plane run
+# fills BFP_RAW_SUBDIR (directly measured) and BFP_PROJECTED_SUBDIR (the same
+# values multiplied by the objective transmission factor).
+SAMPLE_SUBDIR = "sample plane measurement"
+BFP_RAW_SUBDIR = "BFP measurement - raw"
+BFP_PROJECTED_SUBDIR = "BFP measurement - projected"
+
 
 class CalibrationProtocol1D:
     """Calibrate the power of an instrument with one laser power input.
@@ -768,34 +777,11 @@ class CalibrationProtocol1D:
             )
         return 1.0
 
-    def _curve_plot_title(self, laser, lpwr, powermeter_type, projected):
-        """Build the plot title.
+    def _plot_base_folder(self):
+        """Folder the calibration plots/tables are written under.
 
-        Names the power-meter position and whether the values are
-        sample-plane projected.
-        """
-        pm = normalize_powermeter_type(powermeter_type)
-        if pm == POWERMETER_BFP:
-            plane = (
-                "back focal plane → sample plane (projected)"
-                if projected
-                else "back focal plane (raw, no transmission factor yet)"
-            )
-        else:
-            plane = "sample plane"
-        return "power calibration — {:d} nm, {} mW\n{}".format(
-            int(laser), lpwr, plane
-        )
-
-    def _save_curve_plot(
-        self, laser, lpwr, ctrl_vals, powers, model_pars, powermeter_type
-    ):
-        """Save a single attenuation curve as '<wl>nm_<power>mW.png'.
-
-        Saves into the plot folder, overwriting any previous file for that
-        wavelength/power so only the newest (and latest power-meter
-        position) is kept. Power values are projected to the sample plane
-        when a transmission factor is available.
+        Honours ``dest_calibration_plot``; otherwise falls back to the
+        database directory (or the working directory for a server URL).
         """
         folder = self.instrument.config.get("dest_calibration_plot")
         if folder is None:
@@ -805,27 +791,58 @@ class CalibrationProtocol1D:
                 if io._is_server_url(fname)
                 else os.path.split(fname)[0]
             )
+        return folder
 
+    def _plot_views(self, laser, powermeter_type):
+        """Target views for a calibration's saved plots/tables.
+
+        Returns a list of ``(subdir, factor, plane_label)`` tuples. A
+        sample-plane calibration yields a single direct view; a
+        back-focal-plane calibration yields a raw (directly measured) view
+        and a projected view whose values are multiplied by the objective
+        transmission factor and whose label states that factor.
+        """
+        if normalize_powermeter_type(powermeter_type) != POWERMETER_BFP:
+            return [(SAMPLE_SUBDIR, 1.0, "sample plane")]
         factor = self._sample_plane_factor(laser, powermeter_type)
-        projected = (
-            normalize_powermeter_type(powermeter_type) == POWERMETER_BFP
-            and factor != 1.0
+        if factor != 1.0:
+            proj_label = (
+                "back focal plane → sample plane "
+                "(projected, T_obj = {:.4f})".format(factor)
+            )
+        else:
+            proj_label = (
+                "back focal plane → sample plane "
+                "(no transmission factor yet)"
+            )
+        return [
+            (BFP_RAW_SUBDIR, 1.0, "back focal plane (raw, directly measured)"),
+            (BFP_PROJECTED_SUBDIR, factor, proj_label),
+        ]
+
+    def _curve_plot_title(self, laser, lpwr, plane_label):
+        """Build the plot title from the laser/power and a plane label."""
+        return "power calibration — {:d} nm, {} mW\n{}".format(
+            int(laser), lpwr, plane_label
         )
 
+    def _save_curve_plot(
+        self, laser, lpwr, ctrl_vals, powers, model_pars, powermeter_type
+    ):
+        """Save a single attenuation curve as '<wl>nm_<power>mW.png'.
+
+        Saves one file per view (see :meth:`_plot_views`) into the matching
+        subfolder, overwriting any previous file for that wavelength/power so
+        only the newest is kept: a sample-plane run writes the direct values,
+        a back-focal-plane run writes both the raw (directly measured) and the
+        sample-plane projected (transmission-factor applied) curve.
+        """
+        base = self._plot_base_folder()
         plt.switch_backend("agg")
-        fig, ax = plt.subplots()
 
-        # measured data points (projected to the sample plane)
-        if ctrl_vals is not None and powers is not None:
-            ax.plot(
-                np.asarray(ctrl_vals, dtype=float),
-                np.asarray(powers, dtype=float) * factor,
-                marker="x",
-                linestyle="none",
-                label="measured",
-            )
-
-        # fitted model curve, evaluated over the control range and projected
+        # Pre-evaluate the fitted model curve once; it is reused (and scaled)
+        # per view. ``grid``/``fit`` stay None if the overlay cannot be built.
+        grid = fit = None
         try:
             analyzer = load_class(
                 self.instrument.config["analysis"]["classpath"],
@@ -834,29 +851,48 @@ class CalibrationProtocol1D:
             analyzer.load_model(model_pars)
             init = self.instrument.config["analysis"]["init_kwargs"]
             grid = np.linspace(init["min"], init["max"], 200)
-            ax.plot(
-                grid,
-                np.array([analyzer.estimate_power(g) for g in grid]) * factor,
-                label="fit",
-            )
-            ax.legend()
+            fit = np.array([analyzer.estimate_power(g) for g in grid])
         except Exception as exc:
             logger.debug(
                 "Could not overlay fitted curve for %s nm: %s", laser, exc
             )
 
-        ax.set_xlabel("attenuator control value")
-        ax.set_ylabel("Power [{:s}]".format(self.powermeter.unit))
-        ax.grid(True)
-        ax.set_title(
-            self._curve_plot_title(laser, lpwr, powermeter_type, projected)
-        )
-        fig.tight_layout()
-        fnplot = os.path.join(
-            folder, "{:d}nm_{}mW.png".format(int(laser), lpwr)
-        )
-        fig.savefig(fnplot)
-        plt.close(fig)
+        for subdir, factor, plane_label in self._plot_views(
+            laser, powermeter_type
+        ):
+            folder = os.path.join(base, subdir)
+            os.makedirs(folder, exist_ok=True)
+
+            fig, ax = plt.subplots()
+
+            # measured data points, scaled by the view's factor
+            if ctrl_vals is not None and powers is not None:
+                ax.plot(
+                    np.asarray(ctrl_vals, dtype=float),
+                    np.asarray(powers, dtype=float) * factor,
+                    marker="x",
+                    linestyle="none",
+                    label="measured",
+                )
+
+            # fitted model curve, scaled by the view's factor. Guard on
+            # ``fit`` (not ``grid``): a mid-build failure can leave ``grid``
+            # assigned while ``fit`` stays None, and ``fit`` set implies
+            # ``grid`` set.
+            if fit is not None:
+                ax.plot(grid, fit * factor, label="fit")
+                ax.legend()
+
+            ax.set_xlabel("attenuator control value")
+            ax.set_ylabel("Power [{:s}]".format(self.powermeter.unit))
+            ax.grid(True)
+            ax.set_title(self._curve_plot_title(laser, lpwr, plane_label))
+            fig.tight_layout()
+            fnplot = os.path.join(
+                folder, "{:d}nm_{}mW.png".format(int(laser), lpwr)
+            )
+            fig.savefig(fnplot)
+            plt.close(fig)
 
 
 class CalibrationProtocol2D(CalibrationProtocol1D):
@@ -966,7 +1002,9 @@ class CalibrationProtocol2D(CalibrationProtocol1D):
             readings are dropped and the curve is fit on the remaining points.
         """
         powermeter_type = normalize_powermeter_type(powermeter_type)
-        plotfolder = self.instrument.config.get("dest_calibration_plot")
+        # Resolve the same base folder the plots are saved under, so pruning
+        # targets where they actually land (not the raw, possibly-None config).
+        plotfolder = self._plot_base_folder()
         self.reset_saved_calibrations()
         # Per-curve fit quality and raw curves, keyed (laser, laser_power).
         self.fit_qualities = {}
@@ -989,35 +1027,23 @@ class CalibrationProtocol2D(CalibrationProtocol1D):
             return lps
 
         # delete plots belonging to the lasers being calibrated so stale
-        # power levels do not linger. Per-curve files are named
-        # '<wl>nm_<power>mW.png' and model/meas plots '<wl>nm.png' /
-        # 'pwrmeasured_<wl>nm.*'; all are overwritten on re-run, but
-        # pruning removes powers no longer calibrated. Skipped for a partial
-        # (single-point recalibration) run so untouched powers keep their
-        # plots.
+        # power levels do not linger. Model plots '<wl>nm.png' sit in the top
+        # folder; per-curve '<wl>nm_<power>mW.png' and 'pwrmeasured_<wl>nm.*'
+        # now live in the per-view subfolders. All are overwritten on re-run,
+        # but pruning removes powers no longer calibrated. Skipped for a
+        # partial (single-point recalibration) run so untouched powers keep
+        # their plots.
         if not partial:
             laser_ints = {int(las) for las in lasers}
-            for fname in os.listdir(plotfolder):
-                matched = any(
-                    fname
-                    in (
-                        "{:d}nm.png".format(li),
-                        "pwrmeasured_{:d}nm.png".format(li),
-                        "pwrmeasured_{:d}nm.xlsx".format(li),
-                    )
-                    or (
-                        fname.startswith("{:d}nm_".format(li))
-                        and fname.endswith("mW.png")
-                    )
-                    # legacy timestamped curve files from older versions
-                    or "wavelength (nm)-{:d}_".format(li) in fname
-                    for li in laser_ints
+            self._prune_laser_plots(plotfolder, laser_ints)
+            for subdir in (
+                SAMPLE_SUBDIR,
+                BFP_RAW_SUBDIR,
+                BFP_PROJECTED_SUBDIR,
+            ):
+                self._prune_laser_plots(
+                    os.path.join(plotfolder, subdir), laser_ints
                 )
-                if matched:
-                    try:
-                        os.remove(os.path.join(plotfolder, fname))
-                    except Exception:
-                        pass
         total = sum(len(_powers_for(las)) for las in lasers)
         step = 0
 
@@ -1195,6 +1221,37 @@ class CalibrationProtocol2D(CalibrationProtocol1D):
             # re-runs within the same minute.
             shutil.copytree(lfolder, sfolder, dirs_exist_ok=True)
 
+    def _prune_laser_plots(self, folder, laser_ints):
+        """Remove saved plots/tables for ``laser_ints`` from ``folder``.
+
+        Matches the model plot '<wl>nm.png', the measured-value table
+        'pwrmeasured_<wl>nm.png/.xlsx', the per-curve '<wl>nm_<power>mW.png'
+        and legacy timestamped curve files. Missing folders are ignored.
+        """
+        if not os.path.isdir(folder):
+            return
+        for fname in os.listdir(folder):
+            matched = any(
+                fname
+                in (
+                    "{:d}nm.png".format(li),
+                    "pwrmeasured_{:d}nm.png".format(li),
+                    "pwrmeasured_{:d}nm.xlsx".format(li),
+                )
+                or (
+                    fname.startswith("{:d}nm_".format(li))
+                    and fname.endswith("mW.png")
+                )
+                # legacy timestamped curve files from older versions
+                or "wavelength (nm)-{:d}_".format(li) in fname
+                for li in laser_ints
+            )
+            if matched:
+                try:
+                    os.remove(os.path.join(folder, fname))
+                except Exception:
+                    pass
+
     def plot_model(self, modeldf, laser):
         plt.switch_backend("agg")
         fig, ax = plt.subplots(
@@ -1208,23 +1265,18 @@ class CalibrationProtocol2D(CalibrationProtocol1D):
         ax[-1, 0].set_xlabel("laser power [mW]")
         fig.suptitle("laser {:d} nm".format(int(laser)))
 
-        fname = self.instrument.config["database"]
-        folder = self.instrument.config.get("dest_calibration_plot")
-        if folder is None:
-            folder = (
-                os.getcwd()
-                if io._is_server_url(fname)
-                else os.path.split(fname)[0]
-            )
+        folder = self._plot_base_folder()
         fnplot = os.path.join(folder, "{:d}nm".format(int(laser)) + ".png")
         fig.savefig(fnplot)
         plt.close(fig)
 
     def save_measvals(self, measdf, laser, powermeter_type=POWERMETER_SAMPLE):
-        """Save measured values as an Excel sheet and png.
+        """Save measured values as an Excel sheet and png, one per view.
 
-        Values are projected to the sample plane when a transmission factor
-        is available.
+        A sample-plane run writes the direct values; a back-focal-plane run
+        writes both the raw (directly measured) and the sample-plane projected
+        (transmission-factor applied) values, each into its own subfolder (see
+        :meth:`_plot_views`).
 
         Parameters
         ----------
@@ -1234,52 +1286,41 @@ class CalibrationProtocol2D(CalibrationProtocol1D):
         laser : int or str
             Laser wavelength.
         powermeter_type : str
-            'sample' or 'bfp' — selects whether projection applies.
+            'sample' or 'bfp' — selects whether a projected view is produced.
         """
-        fname = self.instrument.config["database"]
-        folder = self.instrument.config.get("dest_calibration_plot")
-        if folder is None:
-            folder = (
-                os.getcwd()
-                if io._is_server_url(fname)
-                else os.path.split(fname)[0]
-            )
-
-        factor = self._sample_plane_factor(laser, powermeter_type)
-        projected = (
-            normalize_powermeter_type(powermeter_type) == POWERMETER_BFP
-            and factor != 1.0
-        )
-        # measpwrs is assembled via .loc and can be object dtype; coerce so the
-        # multiplication and rounding below behave numerically.
-        measdf = measdf.apply(pd.to_numeric, errors="coerce") * factor
-
-        fnxlsx = os.path.join(
-            folder, "pwrmeasured_{:d}nm".format(int(laser)) + ".xlsx"
-        )
-        measdf.to_excel(fnxlsx)
-
+        base = self._plot_base_folder()
         plt.switch_backend("agg")
-        fig, ax = plt.subplots()
-        ax.xaxis.set_visible(False)
-        ax.yaxis.set_visible(False)
-        ax.axis("off")
-        tab = pd.plotting.table(ax, measdf.round(3), loc="center")
-        for c in tab.get_celld().values():
-            c.visible_edges = "horizontal"
-        fig.tight_layout()
-        ax.set_title(
-            "measured powers in mW\n"
-            + self._curve_plot_title(
-                laser, "", powermeter_type, projected
-            ).split("\n")[-1]
-        )
-        fnplot = os.path.join(
-            folder, "pwrmeasured_{:d}nm".format(int(laser)) + ".png"
-        )
-        fig.tight_layout()
-        plt.savefig(fnplot)
-        plt.close(fig)
+        # measpwrs is assembled via .loc and can be object dtype; coerce so the
+        # per-view multiplication and rounding below behave numerically.
+        numeric = measdf.apply(pd.to_numeric, errors="coerce")
+
+        for subdir, factor, plane_label in self._plot_views(
+            laser, powermeter_type
+        ):
+            folder = os.path.join(base, subdir)
+            os.makedirs(folder, exist_ok=True)
+            scaled = numeric * factor
+
+            fnxlsx = os.path.join(
+                folder, "pwrmeasured_{:d}nm".format(int(laser)) + ".xlsx"
+            )
+            scaled.to_excel(fnxlsx)
+
+            fig, ax = plt.subplots()
+            ax.xaxis.set_visible(False)
+            ax.yaxis.set_visible(False)
+            ax.axis("off")
+            tab = pd.plotting.table(ax, scaled.round(3), loc="center")
+            for c in tab.get_celld().values():
+                c.visible_edges = "horizontal"
+            fig.tight_layout()
+            ax.set_title("measured powers in mW\n" + plane_label)
+            fnplot = os.path.join(
+                folder, "pwrmeasured_{:d}nm".format(int(laser)) + ".png"
+            )
+            fig.tight_layout()
+            plt.savefig(fnplot)
+            plt.close(fig)
 
     def plot_device_history(self):
         """Plot the historic evolution of model parameters."""
