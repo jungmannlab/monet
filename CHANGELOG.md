@@ -12,6 +12,19 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [0.7.6] - 2026-11-23
 
+### Added
+- **Regenerate calibration plots from the latest stored calibrations.** A new
+  "Regenerate plots" button in the GUI calibration tab (and
+  `CalibrationProtocol2D.regenerate_plots()`) re-saves the attenuation curves,
+  power-measurement tables, model-parameter plots and device-history plots from
+  the latest calibrations already in the database — no hardware and no
+  re-measuring. The stored fit model is evaluated over the attenuator control
+  range to reconstruct each table/curve, written into the same per-view
+  subfolders a fresh run produces; the power-meter position recorded with each
+  calibration decides the subfolder(s) and whether the sample-plane projection
+  applies. This makes it possible to populate (or refresh) the
+  power-measurement folders without running a new calibration.
+
 ### Changed
 - **Saved calibration plots/tables are now grouped into per-view subfolders.**
   Instead of writing the attenuation curves (`<wl>nm_<power>mW.png`) and

@@ -1332,3 +1332,145 @@ class CalibrationProtocol2D(CalibrationProtocol1D):
         anaconfig = self.instrument.config["analysis"]
         analyzer = load_class(anaconfig["classpath"], anaconfig["init_kwargs"])
         io.plot_device_amplitude_history(db_fname, device, plot_dir, analyzer)
+
+    @staticmethod
+    def _row_to_model_pars(rows):
+        """Numeric model parameters from the latest of ``rows``.
+
+        Mirrors ``IlluminationLaserControl._populate_analyzers``: take the
+        most recent row and keep only the numeric columns, skipping metadata
+        such as ``powermeter_type`` / ``comment`` (where ``np.isnan`` raises).
+        """
+        try:
+            rows = rows.sort_index()
+        except Exception:
+            pass
+        row = rows.iloc[-1]
+        pars = {}
+        for col in rows.columns:
+            val = row[col]
+            try:
+                if not np.isnan(val):
+                    pars[col] = val
+            except (TypeError, ValueError):
+                pass  # non-numeric column (e.g. powermeter_type, comment)
+        return pars
+
+    @staticmethod
+    def _stored_powermeter_type(subdb):
+        """Power-meter position recorded for a laser's latest calibration.
+
+        Defaults to the sample plane for databases predating the
+        ``powermeter_type`` column or a missing value.
+        """
+        if "powermeter_type" not in subdb.columns:
+            return POWERMETER_SAMPLE
+        try:
+            subdb = subdb.sort_index()
+        except Exception:
+            pass
+        val = subdb["powermeter_type"].iloc[-1]
+        if pd.isna(val):
+            return POWERMETER_SAMPLE
+        return normalize_powermeter_type(val)
+
+    def regenerate_plots(self, laser_filter=None):
+        """Regenerate and save plots/tables from the latest stored
+        calibrations, without running new measurements.
+
+        For every laser (optionally filtered) and every laser-power level in
+        the database for this device, the stored fit model is evaluated over
+        the attenuator control range to reconstruct the measured-power table
+        and attenuation curve, saved into the same per-view subfolders a fresh
+        run writes. The model-parameter and device-history plots are refreshed
+        too. The power-meter position recorded with each calibration decides
+        the subfolder(s) and whether the sample-plane projection applies.
+
+        Parameters
+        ----------
+        laser_filter : iterable or None
+            Lasers to regenerate; ``None`` (default) does every laser in the
+            database for this device.
+
+        Returns
+        -------
+        lasers_done : list of int
+            The laser wavelengths that were regenerated.
+        """
+        fname = self.instrument.config["database"]
+        device = self.instrument.config["index"][DEVICE_TAG]
+        try:
+            db = io.load_database(
+                fname, {DEVICE_TAG: device}, "last combinations"
+            )
+        except (KeyError, FileNotFoundError):
+            # no database file yet, or nothing stored for this device
+            return []
+        if db is None or getattr(db, "empty", True):
+            return []
+
+        anaconfig = self.instrument.config["analysis"]
+        init = anaconfig["init_kwargs"]
+        # Same attenuator positions a live run samples (min..max inclusive).
+        ctrl_vals = np.arange(
+            init["min"], init["max"] + init["step"], init["step"]
+        )
+
+        lasers = sorted(
+            {int(wl) for wl in db.index.get_level_values(LASER_TAG)}
+        )
+        if laser_filter is not None:
+            wanted = {int(wl) for wl in laser_filter}
+            lasers = [wl for wl in lasers if wl in wanted]
+
+        lasers_done = []
+        for laser in lasers:
+            subdb = db.loc[db.index.get_level_values(LASER_TAG) == laser]
+            if subdb.empty:
+                continue
+            powermeter_type = self._stored_powermeter_type(subdb)
+            measpwrs = pd.DataFrame()
+            modelpars = pd.DataFrame()
+            for lpwr, rows in subdb.groupby(level=POWER_TAG):
+                pars = self._row_to_model_pars(rows)
+                try:
+                    analyzer = load_class(
+                        anaconfig["classpath"], anaconfig["init_kwargs"]
+                    )
+                    analyzer.load_model(pars)
+                    powers = np.array(
+                        [analyzer.estimate_power(c) for c in ctrl_vals],
+                        dtype=float,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Skipping %s nm / %s mW: stored calibration is "
+                        "incompatible with the current analysis model (%s).",
+                        laser,
+                        lpwr,
+                        exc,
+                    )
+                    continue
+                for c, p in zip(ctrl_vals, powers):
+                    measpwrs.loc[c, lpwr] = p
+                for k, v in pars.items():
+                    modelpars.loc[lpwr, k] = v
+                # fit-only curve: no raw measured points exist when
+                # regenerating from a stored model.
+                self._save_curve_plot(
+                    laser, lpwr, None, None, pars, powermeter_type
+                )
+            if measpwrs.empty:
+                continue
+            measpwrs = measpwrs.reindex(sorted(measpwrs.columns), axis=1)
+            self.save_measvals(measpwrs, laser, powermeter_type)
+            if not modelpars.empty:
+                self.plot_model(modelpars, laser)
+            lasers_done.append(laser)
+
+        if lasers_done:
+            try:
+                self.plot_device_history()
+            except Exception as exc:
+                logger.debug("Could not refresh device history: %s", exc)
+        return lasers_done

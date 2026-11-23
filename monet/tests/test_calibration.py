@@ -944,3 +944,76 @@ class TestCalibration(unittest.TestCase):
 
         out = os.path.join(plotdir, mca.SAMPLE_SUBDIR, "488nm_100mW.png")
         self.assertTrue(os.path.exists(out))
+
+    def test_12_regenerate_plots_from_db(self):
+        """Plots are rebuilt from the stored DB without re-measuring."""
+        import shutil as _sh
+        import tempfile
+
+        import pandas as pd
+
+        tmp = tempfile.mkdtemp()
+        db = os.path.join(tmp, "regen.xlsx")
+        plotdir = os.path.join(tmp, "plots")
+        os.makedirs(plotdir, exist_ok=True)
+        protocol = {
+            "laser_sequence": [488],
+            "laser_powers": {488: [100, 200]},
+            "beampath": {488: {"shutter01": True}},
+        }
+
+        # populate DB + plots with a sample-plane run
+        mca.CalibrationProtocol2D(
+            self._config_2d(db, plotdir), protocol
+        ).run_protocol(wait_time=0, powermeter_type="sample")
+
+        # wipe the plot outputs; the database remains
+        sample_dir = os.path.join(plotdir, mca.SAMPLE_SUBDIR)
+        _sh.rmtree(sample_dir)
+        os.remove(os.path.join(plotdir, "488nm.png"))
+        self.assertFalse(os.path.isdir(sample_dir))
+
+        # regenerate purely from the stored calibrations (fresh instance, so
+        # nothing from the run lingers in memory)
+        pc = mca.CalibrationProtocol2D(self._config_2d(db, plotdir), protocol)
+        done = pc.regenerate_plots()
+        self.assertEqual(done, [488])
+        for name in (
+            "pwrmeasured_488nm.xlsx",
+            "pwrmeasured_488nm.png",
+            "488nm_100mW.png",
+            "488nm_200mW.png",
+        ):
+            self.assertTrue(
+                os.path.exists(os.path.join(sample_dir, name)), name
+            )
+        # model-parameter plot is regenerated at the top level
+        self.assertTrue(os.path.exists(os.path.join(plotdir, "488nm.png")))
+
+        # the regenerated table is indexed by the attenuator control grid and
+        # holds the stored model evaluated there (sample plane -> unscaled)
+        tbl = pd.read_excel(
+            os.path.join(sample_dir, "pwrmeasured_488nm.xlsx"), index_col=0
+        )
+        init = pc.instrument.config["analysis"]["init_kwargs"]
+        grid = np.arange(init["min"], init["max"] + init["step"], init["step"])
+        np.testing.assert_allclose(
+            tbl.index.to_numpy(dtype=float), grid, rtol=1e-6
+        )
+        self.assertEqual(sorted(int(c) for c in tbl.columns), [100, 200])
+
+    def test_13_regenerate_plots_empty_db(self):
+        """Regenerating with no stored calibrations is a no-op, not a crash."""
+        import tempfile
+
+        tmp = tempfile.mkdtemp()
+        db = os.path.join(tmp, "empty.xlsx")
+        plotdir = os.path.join(tmp, "plots")
+        os.makedirs(plotdir, exist_ok=True)
+        protocol = {
+            "laser_sequence": [488],
+            "laser_powers": {488: [100]},
+            "beampath": {488: {"shutter01": True}},
+        }
+        pc = mca.CalibrationProtocol2D(self._config_2d(db, plotdir), protocol)
+        self.assertEqual(pc.regenerate_plots(), [])
