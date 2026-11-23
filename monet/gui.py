@@ -973,6 +973,7 @@ class CalibrateTab(_MonetTab):
         self._discard_worker = None  # keep alive to prevent GC
         self._history_worker = None  # keep alive to prevent GC
         self._verify_worker = None  # keep alive to prevent GC
+        self._regen_worker = None  # keep alive to prevent GC
         self._pm_available = True
         self._last_model_summary = None  # per-model verify residuals
         self._checkboxes = {}
@@ -1179,18 +1180,26 @@ class CalibrateTab(_MonetTab):
             "Switch this microscope's analysis model to the best one (by fresh "
             "verify residual if available, else fit residual) and recalibrate."
         )
+        self._btn_regenerate = QPushButton("Regenerate plots")
+        self._btn_regenerate.setToolTip(
+            "Re-save the calibration plots and power-measurement tables from "
+            "the latest stored calibrations (no hardware, no re-measuring), "
+            "into the per-view subfolders of the calibration-plot folder."
+        )
         self._btn_start.clicked.connect(self._on_start)
         self._btn_cancel.clicked.connect(self._on_cancel)
         self._btn_discard.clicked.connect(self._on_discard)
         self._btn_verify.clicked.connect(self._on_verify)
         self._btn_compare.clicked.connect(self._on_compare_models)
         self._btn_apply_model.clicked.connect(self._on_apply_best_model)
+        self._btn_regenerate.clicked.connect(self._on_regenerate_plots)
         btn_row2.addWidget(self._btn_start)
         btn_row2.addWidget(self._btn_cancel)
         btn_row2.addWidget(self._btn_discard)
         btn_row2.addWidget(self._btn_verify)
         btn_row2.addWidget(self._btn_compare)
         btn_row2.addWidget(self._btn_apply_model)
+        btn_row2.addWidget(self._btn_regenerate)
         btn_row2.addStretch()
         layout.addLayout(btn_row2)
 
@@ -1333,6 +1342,7 @@ class CalibrateTab(_MonetTab):
         self._btn_start.setEnabled(False)
         self._btn_cancel.setEnabled(True)
         self._btn_discard.setEnabled(False)
+        self._btn_regenerate.setEnabled(False)
         self._emit_status("Calibration running…")
 
         self.calibration_started.emit()
@@ -1444,6 +1454,7 @@ class CalibrateTab(_MonetTab):
         self._progress.setFormat("Done")
         self._btn_start.setEnabled(True)
         self._btn_cancel.setEnabled(False)
+        self._btn_regenerate.setEnabled(True)
         self._update_discard_enabled()
         self._worker = None
         self._update_flagged_buttons()
@@ -1456,6 +1467,7 @@ class CalibrateTab(_MonetTab):
         QMessageBox.critical(self, "Calibration error", msg)
         self._btn_start.setEnabled(True)
         self._btn_cancel.setEnabled(False)
+        self._btn_regenerate.setEnabled(True)
         # A run that failed part-way may still have written records; let the
         # user discard those.
         self._update_discard_enabled()
@@ -1728,6 +1740,49 @@ class CalibrateTab(_MonetTab):
         )
         self._btn_compare.setEnabled(has_curves)
         self._btn_apply_model.setEnabled(has_curves)
+
+    def _on_regenerate_plots(self):
+        """Re-save plots/tables from the latest stored calibrations.
+
+        Reads the database only (no hardware, no re-measuring) and writes the
+        per-view subfolder outputs, so plots stay in sync with the stored
+        calibrations without needing a fresh run.
+        """
+        if self._pc is None:
+            return
+        self._btn_regenerate.setEnabled(False)
+        self._log.append(
+            "Regenerating plots from the latest stored calibrations…"
+        )
+        self._emit_status("Regenerating calibration plots…")
+
+        def _do():
+            return self._pc.regenerate_plots()
+
+        def _on_result(lasers):
+            if lasers:
+                self._log.append(
+                    "Regenerated plots for: "
+                    + ", ".join("{:d} nm".format(int(w)) for w in lasers)
+                )
+            else:
+                self._log.append("No stored calibrations found to regenerate.")
+
+        def _on_err(msg):
+            self._log.append("ERROR: regenerate failed: " + msg)
+            QMessageBox.critical(self, "Error", msg)
+
+        def _on_done():
+            self._btn_regenerate.setEnabled(True)
+            self._regen_worker = None
+            self._emit_status("Calibration plots regenerated.", 4000)
+
+        worker = GenericWorker(_do)
+        worker.result.connect(_on_result)
+        worker.error.connect(_on_err)
+        worker.finished.connect(_on_done)
+        self._regen_worker = worker
+        worker.start()
 
     def _on_verify(self):
         """Re-measure a few angles per laser power and compare to the model."""
