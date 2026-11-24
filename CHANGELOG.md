@@ -10,6 +10,8 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
+## [0.7.11] - 2026-11-24
+
 ### Changed
 - **Set Power model plot is now interactive and placed to the right.** The
   plot sits to the right of the Power-adjustment box at ~half width (instead of
