@@ -224,7 +224,7 @@ def main():
 
         from PyQt6.QtWidgets import QApplication
 
-        from monet.gui import MonetMainWindow
+        from monet.gui import MonetMainWindow, app_icon
 
         # Fall back to the .env default (MONET_MICROSCOPE) when no name is
         # given on the command line, so the installed/frozen GUI connects too.
@@ -232,6 +232,9 @@ def main():
 
         initial = args.name or monet.DEFAULT_MICROSCOPE
         app = QApplication(sys.argv)
+        icon = app_icon()
+        if icon is not None:
+            app.setWindowIcon(icon)
         window = MonetMainWindow(initial_microscope=initial)
         window.show()
         sys.exit(app.exec())
