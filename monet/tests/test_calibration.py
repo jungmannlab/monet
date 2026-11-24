@@ -1017,3 +1017,82 @@ class TestCalibration(unittest.TestCase):
         }
         pc = mca.CalibrationProtocol2D(self._config_2d(db, plotdir), protocol)
         self.assertEqual(pc.regenerate_plots(), [])
+
+    def test_14_regenerate_both_planes(self):
+        """Regenerate rebuilds the latest sample-plane AND BFP calibrations.
+
+        Regression: a BFP calibration recorded after a sample-plane one for
+        the same laser/power must not hide the sample-plane plots. Both planes
+        are regenerated into their own subfolders.
+        """
+        import shutil as _sh
+        import tempfile
+        from datetime import datetime as _dt
+
+        import monet.io as mio
+
+        tmp = tempfile.mkdtemp()
+        db = os.path.join(tmp, "both.xlsx")
+        plotdir = os.path.join(tmp, "plots")
+        os.makedirs(plotdir, exist_ok=True)
+        protocol = {
+            "laser_sequence": [488],
+            "laser_powers": {488: [100, 200]},
+            "beampath": {488: {"shutter01": True}},
+        }
+
+        # sample-plane run, then a BFP run on the same db/laser/powers: the BFP
+        # rows are the newest, so a "latest per laser/power" load would drop
+        # the sample-plane calibration. The DB stamps rows at minute
+        # resolution, so pin each run to a distinct minute (real sample/BFP
+        # calibrations are minutes apart) to avoid the second overwriting the
+        # first.
+        real_dt = mio.datetime
+
+        def _frozen(ts):
+            # Subclass so strptime/strftime still work; only now() is pinned.
+            class _FN(real_dt):
+                @classmethod
+                def now(cls, tz=None):
+                    return ts
+
+            return _FN
+
+        try:
+            mio.datetime = _frozen(_dt(2026, 11, 24, 10, 0))
+            mca.CalibrationProtocol2D(
+                self._config_2d(db, plotdir), protocol
+            ).run_protocol(wait_time=0, powermeter_type="sample")
+            mio.datetime = _frozen(_dt(2026, 11, 24, 10, 5))
+            mca.CalibrationProtocol2D(
+                self._config_2d(db, plotdir), protocol
+            ).run_protocol(wait_time=0, powermeter_type="bfp")
+        finally:
+            mio.datetime = real_dt
+
+        # wipe every plot subfolder; the database remains
+        for sub in (
+            mca.SAMPLE_SUBDIR,
+            mca.BFP_RAW_SUBDIR,
+            mca.BFP_PROJECTED_SUBDIR,
+        ):
+            _sh.rmtree(os.path.join(plotdir, sub), ignore_errors=True)
+
+        pc = mca.CalibrationProtocol2D(self._config_2d(db, plotdir), protocol)
+        done = pc.regenerate_plots()
+        self.assertEqual(done, [488])
+
+        # all three subfolders are rebuilt: sample plane AND both BFP views
+        for sub in (
+            mca.SAMPLE_SUBDIR,
+            mca.BFP_RAW_SUBDIR,
+            mca.BFP_PROJECTED_SUBDIR,
+        ):
+            d = os.path.join(plotdir, sub)
+            self.assertTrue(
+                os.path.exists(os.path.join(d, "pwrmeasured_488nm.xlsx")),
+                sub,
+            )
+            self.assertTrue(
+                os.path.exists(os.path.join(d, "488nm_100mW.png")), sub
+            )
