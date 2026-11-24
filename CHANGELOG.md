@@ -10,6 +10,16 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
+### Fixed
+- **Windows install no longer fails with "CreateProcess failed; code 2".**
+  v0.7.9 embedded the app icon into `monet-gui.exe`; a custom icon resource on
+  an unsigned PyInstaller bootloader is a known antivirus false-positive nudge,
+  and Defender silently removed the freshly-installed exe (so the installer's
+  "launch now" and the shortcuts hit a missing file). The exe no longer carries
+  an embedded icon; the Start-menu / desktop shortcuts now take their icon from
+  a standalone `monet.ico` the installer lays down, and the running window /
+  taskbar icon still loads from the bundled icon via `app_icon()`.
+
 ## [0.7.9] - 2026-11-24
 
 ### Changed

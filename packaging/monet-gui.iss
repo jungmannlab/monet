@@ -39,9 +39,11 @@ DisableProgramGroupPage=yes
 LicenseFile=..\LICENSE.md
 OutputDir=..\dist
 OutputBaseFilename=Monet-Setup-{#MyAppVersion}
-UninstallDisplayIcon={app}\monet-gui.exe
+; The standalone monet.ico (installed below) — not the exe, whose embedded
+; icon we dropped to avoid AV false positives on the unsigned bootloader.
+UninstallDisplayIcon={app}\monet.ico
 UninstallDisplayName=Monet {#MyAppVersion}
-; Installer's own icon (the Monet logo).
+; Installer's own icon (the Monet logo). This icons Setup.exe, not the app.
 SetupIconFile=..\monet\icons\monet.ico
 WizardStyle=modern
 Compression=lzma2
@@ -57,12 +59,14 @@ Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription
 ; Onedir build: install the whole dist\monet-gui\ folder (exe + its _internal
 ; dependencies) so there is no per-launch temp extraction.
 Source: "..\dist\monet-gui\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+; Standalone app icon for the shortcuts (the exe carries no embedded icon).
+Source: "..\monet\icons\monet.ico"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-; IconFilename points the shortcut at the exe's embedded icon (the spec's
-; EXE(icon=...)), so the Start-menu and desktop shortcuts show the Monet logo.
-Name: "{autoprograms}\Monet GUI"; Filename: "{app}\monet-gui.exe"; IconFilename: "{app}\monet-gui.exe"
-Name: "{autodesktop}\Monet GUI"; Filename: "{app}\monet-gui.exe"; IconFilename: "{app}\monet-gui.exe"; Tasks: desktopicon
+; IconFilename points the shortcut at the standalone monet.ico (the exe has no
+; embedded icon), so the Start-menu and desktop shortcuts show the Monet logo.
+Name: "{autoprograms}\Monet GUI"; Filename: "{app}\monet-gui.exe"; IconFilename: "{app}\monet.ico"
+Name: "{autodesktop}\Monet GUI"; Filename: "{app}\monet-gui.exe"; IconFilename: "{app}\monet.ico"; Tasks: desktopicon
 
 [Run]
 Filename: "{app}\monet-gui.exe"; Description: "Launch Monet GUI now"; Flags: nowait postinstall skipifsilent
