@@ -1284,3 +1284,91 @@ class TestControl(unittest.TestCase):
         self.assertIsNone(ctrl.curr_laser)
         # The failed numeric-string key is preserved as configured.
         self.assertEqual(ctrl._all_laser_keys(), {488})
+
+    # ── suggest_pi_gains ──────────────────────────────────────────────────
+    def test_suggest_pi_gains_slow_lowers_kp_and_raises_iters(self):
+        """A slow, non-converged decay suggests a lower Kp and more steps."""
+        target = 10.0
+        # error decays ~0.85 per step (slow), same sign -> never reaches 1%.
+        e = [0.5 * 0.85**n for n in range(8)]
+        measured = [target * (1 - x) for x in e]
+        s = mco.suggest_pi_gains(
+            target,
+            measured,
+            kp=0.85,
+            ki=0.15,
+            mode="fixed_laser",
+            converged=False,
+            max_dev_pct=1.0,
+            max_iter=20,
+        )
+        self.assertEqual(s["diagnosis"], "slow")
+        self.assertTrue(s["changed"])
+        self.assertLess(s["kp"], 0.85)  # lower Kp => faster decay
+        self.assertGreaterEqual(s["max_iter"], 20)
+        self.assertGreaterEqual(s["kp"], 0.05)  # stays in bounds
+
+    def test_suggest_pi_gains_oscillating_lowers_kp(self):
+        """A growing, sign-flipping error is diagnosed as oscillating."""
+        target = 10.0
+        e = [0.2 * (-1.25) ** n for n in range(8)]  # |e| grows, alternates
+        measured = [target * (1 - x) for x in e]
+        s = mco.suggest_pi_gains(
+            target,
+            measured,
+            kp=1.2,
+            ki=0.3,
+            mode="fixed_laser",
+            converged=False,
+            max_dev_pct=1.0,
+            max_iter=20,
+        )
+        self.assertEqual(s["diagnosis"], "oscillating")
+        self.assertTrue(s["changed"])
+        self.assertLess(s["kp"], 1.2)
+
+    def test_suggest_pi_gains_converged_no_change(self):
+        """A quick convergence leaves the gains alone."""
+        s = mco.suggest_pi_gains(
+            10.0,
+            [5.0, 9.8, 9.99],
+            kp=0.85,
+            ki=0.15,
+            mode="fixed_laser",
+            converged=True,
+            max_dev_pct=1.0,
+            max_iter=20,
+        )
+        self.assertEqual(s["diagnosis"], "converged")
+        self.assertFalse(s["changed"])
+        self.assertEqual(s["kp"], 0.85)
+
+    def test_suggest_pi_gains_out_of_range_keeps_gains(self):
+        """Range-limited runs are not a tuning problem; gains unchanged."""
+        s = mco.suggest_pi_gains(
+            10.0,
+            [6.0, 6.1, 6.0],
+            kp=0.85,
+            ki=0.15,
+            mode="fixed_laser",
+            converged=False,
+            out_of_range=True,
+            max_iter=20,
+        )
+        self.assertEqual(s["diagnosis"], "range_limited")
+        self.assertFalse(s["changed"])
+        self.assertEqual((s["kp"], s["ki"]), (0.85, 0.15))
+
+    def test_suggest_pi_gains_fixed_attenuator_mode(self):
+        """Fixed-attenuator mode uses no PI gains; say so, change nothing."""
+        s = mco.suggest_pi_gains(
+            10.0,
+            [6.0, 7.0, 7.5],
+            kp=0.85,
+            ki=0.15,
+            mode="fixed_attenuator",
+            converged=False,
+            max_iter=20,
+        )
+        self.assertEqual(s["diagnosis"], "range_limited")
+        self.assertFalse(s["changed"])

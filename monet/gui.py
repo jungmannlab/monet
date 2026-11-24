@@ -38,6 +38,7 @@ from PyQt6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QSizePolicy,
+    QSpinBox,
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
@@ -62,7 +63,7 @@ from monet import (
 )
 from monet import __version__ as _monet_version
 from monet.beampath import NikonFilterWheel, NikonNosepiece
-from monet.control import run_power_feedback
+from monet.control import run_power_feedback, suggest_pi_gains
 from monet.util import (
     load_class,
     update_mm_acquisition_comment,
@@ -2588,13 +2589,50 @@ class SetPowerTab(_MonetTab):
             "Set to 0 to disable integral action."
         )
         pi_layout.addWidget(self._ki_spin)
+        pi_layout.addWidget(QLabel("  Max iter:"))
+        self._maxiter_spin = QSpinBox()
+        self._maxiter_spin.setRange(3, 100)
+        self._maxiter_spin.setValue(20)
+        self._maxiter_spin.setToolTip(
+            "Maximum correction iterations before the loop gives up. Raise it "
+            "if the run stops before reaching the target."
+        )
+        pi_layout.addWidget(self._maxiter_spin)
+        self._btn_suggest_pi = QPushButton("Suggest from last run")
+        self._btn_suggest_pi.setEnabled(False)
+        self._btn_suggest_pi.setToolTip(
+            "Analyse the last feedback run and propose improved Kp / Ki / "
+            "max-iterations."
+        )
+        self._btn_suggest_pi.clicked.connect(self._on_suggest_pi)
+        pi_layout.addWidget(self._btn_suggest_pi)
         pi_layout.addStretch()
         self._pi_panel.setVisible(False)
         adj_layout.addWidget(self._pi_panel)
+        # Trajectory + settings of the last feedback run, for _on_suggest_pi.
+        self._last_feedback = None
 
         # Power range label
         self._range_label = QLabel("Range: N/A")
         adj_layout.addWidget(self._range_label)
+
+        # Modeled power vs. attenuator angle (current laser / laser power),
+        # with the current operating point marked.
+        self._power_canvas = None
+        try:
+            from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
+            from matplotlib.figure import Figure
+
+            self._power_fig = Figure(figsize=(4.2, 2.4), tight_layout=True)
+            self._power_ax = self._power_fig.add_subplot(111)
+            self._power_canvas = FigureCanvasQTAgg(self._power_fig)
+            self._power_canvas.setSizePolicy(
+                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+            )
+            self._power_canvas.setMinimumHeight(170)
+            adj_layout.addWidget(self._power_canvas)
+        except Exception:
+            self._power_fig = self._power_ax = None
 
         # Target power + Set button
         pwr_row = QHBoxLayout()
@@ -2842,7 +2880,11 @@ class SetPowerTab(_MonetTab):
             self._sync_powermeter_position_to_instrument()
         else:
             self._set_bp_label(None)
+            # Disconnecting invalidates the last feedback run and the plot.
+            self._last_feedback = None
+            self._btn_suggest_pi.setEnabled(False)
         self._update_turret_buttons_enabled()
+        self._update_power_plot()
 
     def _sync_powermeter_position_to_instrument(self):
         """Reflect the toggle onto the instrument, defaulting from it if set."""
@@ -3128,6 +3170,44 @@ class SetPowerTab(_MonetTab):
         self._cancel_feedback = True
         self._btn_cancel_feedback.setEnabled(False)
 
+    def _on_feedback_dialog_closed(self, dialog=None):
+        """Closing the current live-plot dialog aborts its in-flight run.
+
+        The PI loop polls ``cancel_check`` each iteration, so setting the flag
+        stops it at the next step. Guarded on identity so closing a stale
+        dialog from an earlier run can't cancel a newer one; a no-op once the
+        run has already finished.
+        """
+        if dialog is None or dialog is self._feedback_dialog:
+            self._cancel_feedback = True
+
+    def _on_suggest_pi(self):
+        """Propose improved PI gains from the most recent feedback run."""
+        if not self._last_feedback:
+            return
+        try:
+            s = suggest_pi_gains(**self._last_feedback)
+        except Exception as exc:
+            QMessageBox.warning(
+                self, "Suggest PI gains", f"Could not analyse the run: {exc}"
+            )
+            return
+        if not s.get("changed"):
+            QMessageBox.information(self, "Suggest PI gains", s["message"])
+            return
+        box = QMessageBox(self)
+        box.setWindowTitle("Suggest PI gains")
+        box.setIcon(QMessageBox.Icon.Information)
+        box.setText(s["message"])
+        apply_btn = box.addButton("Apply", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("Keep current", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        if box.clickedButton() is apply_btn:
+            self._kp_spin.setValue(float(s["kp"]))
+            self._ki_spin.setValue(float(s["ki"]))
+            self._maxiter_spin.setValue(int(s["max_iter"]))
+            self._emit_status("Applied suggested PI gains.", 4000)
+
     def _action_buttons(self, enabled):
         for btn in (
             self._btn_onoff,
@@ -3260,7 +3340,7 @@ class SetPowerTab(_MonetTab):
             factor_available = False
 
         max_dev_pct = self._feedback_tol_spin.value()
-        MAX_ITER = 20
+        MAX_ITER = self._maxiter_spin.value()
 
         # --- Build the background callable ---
         if not use_feedback:
@@ -3428,6 +3508,25 @@ class SetPowerTab(_MonetTab):
                     self._emit_status("Ready", 2000)
                 self._refresh_hw_state(laser)
                 self._update_range_label()
+                # Record the run so "Suggest from last run" can analyse it.
+                try:
+                    measured_series = list(
+                        getattr(self._feedback_dialog, "_measured_vals", [])
+                    )
+                except Exception:
+                    measured_series = []
+                self._last_feedback = {
+                    "target": pwr,
+                    "measured": measured_series,
+                    "kp": kp_att,
+                    "ki": ki_att,
+                    "mode": mode,
+                    "converged": converged,
+                    "out_of_range": out_of_range_warned,
+                    "max_dev_pct": max_dev_pct,
+                    "max_iter": MAX_ITER,
+                }
+                self._btn_suggest_pi.setEnabled(True)
 
             # Open the live-plot dialog and wire everything up manually
             # (cannot use _run_hw because we need access to the worker object
@@ -3435,6 +3534,13 @@ class SetPowerTab(_MonetTab):
             plot_dialog = FeedbackPlotDialog(pwr, max_dev_pct, mode, self)
             plot_dialog.show()
             self._feedback_dialog = plot_dialog  # keep alive (prevent GC)
+            # Closing the live-plot dialog aborts an in-flight run (the loop
+            # polls cancel_check). Harmless once the run has already finished.
+            # Capture this dialog so a stale dialog from an earlier run can't
+            # cancel a newer one.
+            plot_dialog.finished.connect(
+                lambda _r=0, d=plot_dialog: self._on_feedback_dialog_closed(d)
+            )
 
             self._action_buttons(False)
             self._cancel_feedback = False
@@ -4200,19 +4306,98 @@ class SetPowerTab(_MonetTab):
         self._update_range_label()
 
     def _update_range_label(self):
-        """Compute and display the accessible power range for the mode."""
+        """Compute and display the accessible power range for the mode.
+
+        Also refreshes the modeled-power plot, so both stay in sync with the
+        current laser / laser-power / mode wherever the range is updated.
+        """
         if self._pc is None or not getattr(
             self._pc.instrument, "is_calibrated", False
         ):
             self._range_label.setText("Range: N/A (not calibrated)")
+        else:
+            laser = self._laser_combo.currentData()
+            mode = self._mode_combo.currentData()
+            try:
+                lo, hi = self._pc.instrument.accessible_power_range(
+                    mode, laser
+                )
+                self._range_label.setText(f"Range: {lo:.2f} – {hi:.2f} mW")
+            except Exception:
+                self._range_label.setText("Range: N/A")
+        self._update_power_plot()
+
+    def _update_power_plot(self):
+        """Draw modeled beam power vs. attenuator angle for the current laser.
+
+        Evaluates the active calibration model across the attenuator control
+        range (projected to the sample plane), and marks the current operating
+        point. A no-op when matplotlib is unavailable; shows an explanatory
+        title when not calibrated.
+        """
+        if self._power_canvas is None:
             return
-        laser = self._laser_combo.currentData()
-        mode = self._mode_combo.currentData()
+        ax = self._power_ax
+        ax.clear()
+        inst = getattr(self._pc, "instrument", None) if self._pc else None
+        if inst is None or not getattr(inst, "is_calibrated", False):
+            ax.set_title("model power vs. angle — not calibrated", fontsize=9)
+            ax.set_xticks([])
+            ax.set_yticks([])
+            self._power_canvas.draw_idle()
+            return
         try:
-            lo, hi = self._pc.instrument.accessible_power_range(mode, laser)
-            self._range_label.setText(f"Range: {lo:.2f} – {hi:.2f} mW")
-        except Exception:
-            self._range_label.setText("Range: N/A")
+            analyzer = inst.analyzer
+            laser = inst.curr_laser
+            params = analyzer.analysis_parameters
+            lo = float(params.get("min", 0))
+            hi = float(params.get("max", 180))
+            grid = np.linspace(lo, hi, 240)
+            try:
+                factor = float(inst._bfp_factor(laser))
+            except Exception:
+                factor = 1.0
+            try:
+                pin = float(inst._pin_factor())
+            except Exception:
+                pin = 1.0
+            scale = factor * pin
+            power = (
+                np.asarray(
+                    [analyzer.estimate_power(g) for g in grid], dtype=float
+                )
+                * scale
+            )
+            ax.plot(grid, power, "-", color="#1f77b4", lw=1.6, label="model")
+            # current operating point
+            try:
+                cur_ang = float(inst.attenuator.curr_pos())
+                cur_pwr = float(inst.power)
+                ax.plot(
+                    cur_ang,
+                    cur_pwr,
+                    "o",
+                    color="#d62728",
+                    ms=6,
+                    label="current",
+                )
+            except Exception:
+                pass
+            ax.set_xlabel("attenuator angle", fontsize=8)
+            ax.set_ylabel("power [mW]", fontsize=8)
+            ax.set_title(
+                "model power — {} nm @ {} mW".format(
+                    laser, inst.curr_laserpower
+                ),
+                fontsize=9,
+            )
+            ax.grid(True, alpha=0.3)
+            ax.tick_params(labelsize=7)
+            ax.legend(fontsize=7, loc="best")
+        except Exception as exc:
+            logger.debug("Could not draw power plot: %s", exc)
+            ax.set_title("model power vs. angle — unavailable", fontsize=9)
+        self._power_canvas.draw_idle()
 
     def _on_hw_refresh(self):
         """Read attenuator position and laser power from hardware."""
