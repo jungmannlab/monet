@@ -17,7 +17,7 @@ import time
 import numpy as np
 
 from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
-from PyQt6.QtGui import QAction, QFont
+from PyQt6.QtGui import QAction, QColor, QFont, QPainter, QPen
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -38,8 +38,11 @@ from PyQt6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QSizePolicy,
+    QSlider,
     QSpinBox,
     QSplitter,
+    QStyle,
+    QStyleOptionSlider,
     QTableWidget,
     QTableWidgetItem,
     QTabWidget,
@@ -353,6 +356,91 @@ class GenericWorker(QThread):
             self.result.emit(val)
         except Exception as exc:
             self.error.emit(str(exc))
+
+
+class PowerLevelSlider(QSlider):
+    """Vertical laser-power slider with tick marks at the calibrated preset
+    levels.
+
+    The integer domain (0..``_RES``) maps linearly to a power range
+    ``[lo, hi]``; the owner reads :meth:`power` / writes :meth:`set_power` in
+    mW and applies any snap-to-preset per mode. Preset marks are painted at
+    their power positions regardless of spacing (QSlider's own ticks are
+    evenly spaced, which can't represent non-uniform presets).
+    """
+
+    _RES = 1000
+
+    def __init__(self, parent=None):
+        super().__init__(Qt.Orientation.Vertical, parent)
+        self.setRange(0, self._RES)
+        self._lo = 0.0
+        self._hi = 1.0
+        self._presets = []
+
+    def configure(self, lo, hi, presets):
+        self._lo = float(lo)
+        self._hi = float(hi)
+        self._presets = sorted(float(p) for p in presets)
+        self.update()
+
+    def _to_power(self, value):
+        if self._hi <= self._lo:
+            return self._lo
+        return self._lo + (self._hi - self._lo) * value / self._RES
+
+    def _to_value(self, power):
+        if self._hi <= self._lo:
+            return 0
+        frac = (float(power) - self._lo) / (self._hi - self._lo)
+        return int(round(min(max(frac, 0.0), 1.0) * self._RES))
+
+    def power(self):
+        return self._to_power(self.value())
+
+    def set_power(self, power):
+        self.blockSignals(True)
+        self.setValue(self._to_value(power))
+        self.blockSignals(False)
+        self.update()
+
+    def nearest_preset(self, power):
+        if not self._presets:
+            return power
+        return min(self._presets, key=lambda p: abs(p - power))
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if not self._presets or self._hi <= self._lo:
+            return
+        opt = QStyleOptionSlider()
+        self.initStyleOption(opt)
+        groove = self.style().subControlRect(
+            QStyle.ComplexControl.CC_Slider,
+            opt,
+            QStyle.SubControl.SC_SliderGroove,
+            self,
+        )
+        handle = self.style().subControlRect(
+            QStyle.ComplexControl.CC_Slider,
+            opt,
+            QStyle.SubControl.SC_SliderHandle,
+            self,
+        )
+        span = groove.height() - handle.height()
+        top = groove.top() + handle.height() // 2
+        painter = QPainter(self)
+        pen = QPen(QColor("#d62728"))
+        pen.setWidth(2)
+        painter.setPen(pen)
+        w = self.width()
+        for p in self._presets:
+            v = self._to_value(p)
+            # vertical slider: max value at the top, min at the bottom
+            y = int(top + span * (1.0 - v / self._RES))
+            painter.drawLine(0, y, 5, y)
+            painter.drawLine(w - 5, y, w, y)
+        painter.end()
 
 
 # ---------------------------------------------------------------------------
@@ -2660,6 +2748,32 @@ class SetPowerTab(_MonetTab):
             # crash on ax.clear().
             self._power_fig = self._power_ax = self._power_canvas = None
 
+        # Laser-power slider (ticks at the calibrated preset levels), shown
+        # between the controls and the plot. Drag previews the plot; the laser
+        # power is set on the hardware only on release. Snaps to presets in
+        # combined / fixed-laser mode, continuous in fixed-attenuator mode.
+        self._power_slider_col = QVBoxLayout()
+        self._power_slider_col.addWidget(
+            QLabel("Laser\npower"), 0, Qt.AlignmentFlag.AlignHCenter
+        )
+        self._power_slider = PowerLevelSlider()
+        self._power_slider.setEnabled(False)
+        self._power_slider.setToolTip(
+            "Laser power. Ticks mark the calibrated power levels. Snaps to a "
+            "level in combined / fixed-laser mode; continuous in "
+            "fixed-attenuator mode. Set on release."
+        )
+        self._power_slider.sliderMoved.connect(self._on_power_slider_moved)
+        self._power_slider.sliderReleased.connect(
+            self._on_power_slider_released
+        )
+        self._power_slider_col.addWidget(
+            self._power_slider, 1, Qt.AlignmentFlag.AlignHCenter
+        )
+        self._power_level_label = QLabel("—")
+        self._power_level_label.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        self._power_slider_col.addWidget(self._power_level_label)
+
         # Target power + Set button
         pwr_row = QHBoxLayout()
         pwr_row.addWidget(QLabel("Target power (mW):"))
@@ -2805,15 +2919,20 @@ class SetPowerTab(_MonetTab):
         layout.addWidget(self._status)
 
         # ── Power adjustment (built above, placed below setup controls) ──
-        # The controls box on the left, the model-power plot on its right at
-        # roughly half width (so the plot doesn't stretch the whole tab).
+        # The controls box on the left, then the laser-power slider, then the
+        # model-power plot on the right at roughly half width (so the plot
+        # doesn't stretch the whole tab).
         if self._power_canvas is not None:
             adj_row = QHBoxLayout()
             adj_row.addWidget(adj_group, 1)
+            adj_row.addLayout(self._power_slider_col, 0)
             adj_row.addWidget(self._power_canvas, 1)
             layout.addLayout(adj_row)
         else:
-            layout.addWidget(adj_group)
+            adj_row = QHBoxLayout()
+            adj_row.addWidget(adj_group, 1)
+            adj_row.addLayout(self._power_slider_col, 0)
+            layout.addLayout(adj_row)
 
         # ── Separator ────────────────────────────────────────────────────────
         sep = QFrame()
@@ -4360,14 +4479,72 @@ class SetPowerTab(_MonetTab):
             except Exception:
                 self._range_label.setText("Range: N/A")
         self._update_power_plot()
+        self._refresh_power_slider()
 
-    def _update_power_plot(self):
+    def _model_curve(self, inst, laser, power, grid, with_pin):
+        """Sample-plane power across ``grid`` angles for a given laser power.
+
+        Uses the exact preset analyzer when ``power`` is a calibrated level,
+        else linearly interpolates the two bracketing preset analyzers (so the
+        curve matches a continuous, between-presets laser power). Falls back to
+        the single active analyzer if the per-level analyzers aren't available.
+        Returns ``None`` if nothing can be evaluated.
+        """
+        try:
+            bfp = float(inst._bfp_factor(laser))
+        except Exception:
+            bfp = 1.0
+        analyzers = getattr(inst, "_analyzers", None)
+        if not analyzers:
+            az = getattr(inst, "analyzer", None)
+            if az is None:
+                return None
+            vals = (
+                np.asarray([az.estimate_power(g) for g in grid], float) * bfp
+            )
+            if with_pin:
+                try:
+                    vals = vals * float(inst._pin_factor())
+                except Exception:
+                    pass
+            return vals
+
+        levels = sorted(analyzers.keys(), key=lambda k: float(k))
+        flev = [float(k) for k in levels]
+
+        def curve(level):
+            az = analyzers[level]
+            vals = (
+                np.asarray([az.estimate_power(g) for g in grid], float) * bfp
+            )
+            if with_pin:
+                try:
+                    vals = vals * float(inst._pin_for(laser, level))
+                except Exception:
+                    pass
+            return vals
+
+        p = float(power)
+        if p <= flev[0]:
+            return curve(levels[0])
+        if p >= flev[-1]:
+            return curve(levels[-1])
+        import bisect
+
+        i = bisect.bisect_left(flev, p)
+        if flev[i] == p:
+            return curve(levels[i])
+        w = (p - flev[i - 1]) / (flev[i] - flev[i - 1])
+        return curve(levels[i - 1]) * (1 - w) + curve(levels[i]) * w
+
+    def _update_power_plot(self, preview_power=None):
         """Draw modeled beam power vs. attenuator angle for the current laser.
 
-        Evaluates the active calibration model across the attenuator control
-        range (projected to the sample plane), and marks the current operating
-        point. A no-op when matplotlib is unavailable; shows an explanatory
-        title when not calibrated.
+        Evaluates the calibration model across the attenuator control range
+        (projected to the sample plane) at the current — or ``preview_power``
+        (slider-dragged) — laser power, and marks the current operating point.
+        A no-op when matplotlib is unavailable; shows an explanatory title when
+        not calibrated.
         """
         if self._power_canvas is None:
             return
@@ -4384,48 +4561,51 @@ class SetPowerTab(_MonetTab):
             self._power_canvas.draw_idle()
             return
         try:
-            analyzer = inst.analyzer
             laser = inst.curr_laser
-            params = analyzer.analysis_parameters
+            params = inst.analyzer.analysis_parameters
             lo = float(params.get("min", 0))
             hi = float(params.get("max", 180))
             if lo > hi:  # keep the grid ascending (np.interp needs that)
                 lo, hi = hi, lo
             grid = np.linspace(lo, hi, 240)
-            try:
-                factor = float(inst._bfp_factor(laser))
-            except Exception:
-                factor = 1.0
-            try:
-                pin = float(inst._pin_factor())
-            except Exception:
-                pin = 1.0
-            base = (
-                np.asarray(
-                    [analyzer.estimate_power(g) for g in grid], dtype=float
-                )
-                * factor
+            # The laser power the curve is drawn for: the slider preview while
+            # dragging, else the live hardware laser power (which, in
+            # fixed-attenuator mode, can sit between calibrated presets).
+            if preview_power is not None:
+                shown = float(preview_power)
+            else:
+                try:
+                    shown = float(inst.lasers[laser].power)
+                except Exception:
+                    shown = float(inst.curr_laserpower)
+            base = self._model_curve(inst, laser, shown, grid, with_pin=False)
+            if base is None:
+                raise ValueError("no model for this laser power")
+            effective = self._model_curve(
+                inst, laser, shown, grid, with_pin=True
             )
+            if effective is None:
+                effective = base
             ax.plot(grid, base, "-", color="#1f77b4", lw=1.6, label="model")
             # The curve hover/click reads off is the one power is actually set
             # from: the pinned curve when a one-point pin is active, else the
             # base model. The operating point sits on it.
-            effective = base * pin
-            if abs(pin - 1.0) > 1e-9:
+            if not np.allclose(effective, base):
                 ax.plot(
                     grid,
                     effective,
                     "--",
                     color="#1f77b4",
                     lw=1.4,
-                    label="pinned ×{:.3f}".format(pin),
+                    label="pinned",
                 )
             self._plot_grid = grid
             self._plot_power = effective
-            # current operating point, labelled with its power
+            # Current operating point: the live attenuator angle, with its
+            # power read off the drawn curve so it always sits on it.
             try:
                 cur_ang = float(inst.attenuator.curr_pos())
-                cur_pwr = float(inst.power)
+                cur_pwr = float(np.interp(cur_ang, grid, effective))
                 ax.plot(
                     cur_ang,
                     cur_pwr,
@@ -4457,8 +4637,8 @@ class SetPowerTab(_MonetTab):
             ax.set_xlabel("attenuator angle", fontsize=8)
             ax.set_ylabel("power [mW]", fontsize=8)
             ax.set_title(
-                "model power — {} nm @ {} mW  (click to set)".format(
-                    laser, inst.curr_laserpower
+                "model power — {} nm @ {:g} mW  (click to set)".format(
+                    laser, shown
                 ),
                 fontsize=9,
             )
@@ -4472,6 +4652,86 @@ class SetPowerTab(_MonetTab):
             self._hover_annot = None
             ax.set_title("model power vs. angle — unavailable", fontsize=9)
         self._power_canvas.draw_idle()
+
+    def _refresh_power_slider(self):
+        """Sync the laser-power slider to the current laser's preset levels.
+
+        Ticks mark the calibrated levels; the handle reflects the live laser
+        power. Disabled when uncalibrated. Skipped while the user is dragging
+        so it doesn't fight the drag.
+        """
+        slider = getattr(self, "_power_slider", None)
+        if slider is None or slider.isSliderDown():
+            return
+        inst = getattr(self._pc, "instrument", None) if self._pc else None
+        presets = []
+        if inst is not None and getattr(inst, "is_calibrated", False):
+            try:
+                presets = sorted(float(p) for p in inst._power_ranges.index)
+            except Exception:
+                presets = []
+        if not presets:
+            slider.setEnabled(False)
+            slider.configure(0.0, 1.0, [])
+            self._power_level_label.setText("—")
+            return
+        slider.setEnabled(True)
+        slider.configure(presets[0], presets[-1], presets)
+        try:
+            cur = float(inst.lasers[inst.curr_laser].power)
+        except Exception:
+            try:
+                cur = float(inst.curr_laserpower)
+            except Exception:
+                cur = presets[0]
+        slider.set_power(cur)
+        self._power_level_label.setText("{:g} mW".format(cur))
+
+    def _slider_power(self):
+        """The laser power the slider currently represents, snapped to a
+        preset outside fixed-attenuator (continuous) mode."""
+        p = self._power_slider.power()
+        if self._mode_combo.currentData() != "fixed_attenuator":
+            p = self._power_slider.nearest_preset(p)
+        return p
+
+    def _on_power_slider_moved(self, _value):
+        """Live preview: redraw the plot for the dragged laser power only
+        (no hardware change until release)."""
+        if self._power_slider is None or self._pc is None:
+            return
+        p = self._slider_power()
+        self._power_level_label.setText("{:g} mW".format(p))
+        self._update_power_plot(preview_power=p)
+
+    def _on_power_slider_released(self):
+        """Commit the dragged laser power to the hardware."""
+        if self._power_slider is None or self._pc is None:
+            return
+        mode = self._mode_combo.currentData()
+        p = self._slider_power()
+        if mode != "fixed_attenuator":
+            self._power_slider.set_power(p)  # snap the handle to the preset
+        inst = self._pc.instrument
+        laser = inst.curr_laser
+
+        def _do():
+            if mode == "fixed_attenuator":
+                # continuous: set the raw laser power (no preset analyzer)
+                inst.lasers[laser].power = p
+            else:
+                inst.laserpower = p
+            inst.record_state()
+
+        def _done():
+            self._status.setText("Laser power set to {:g} mW.".format(p))
+            self._emit_status("Ready", 2000)
+            self._refresh_hw_state(laser)
+            self._update_range_label()
+
+        self._run_hw(
+            _do, "Setting laser power to {:g} mW…".format(p), on_done=_done
+        )
 
     def _power_at_event(self, event):
         """Modeled (angle, power) under a plot event, or ``None``.

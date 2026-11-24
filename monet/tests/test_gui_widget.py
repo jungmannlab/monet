@@ -30,6 +30,7 @@ from monet.gui import (  # noqa: E402
     DoctorTab,
     MonetMainWindow,
     MonetWidget,
+    PowerLevelSlider,
     SetPowerTab,
     install_excepthook,
 )
@@ -557,6 +558,128 @@ class TestSetPowerModelPlot(unittest.TestCase):
         tab.set_expert_view(True)
         self.assertTrue(tab._btn_pin.isVisibleTo(tab))
         self.assertTrue(tab._btn_backlash.isVisibleTo(tab))
+
+
+class TestPowerLevelSlider(unittest.TestCase):
+    """The laser-power slider widget's value<->power mapping + presets."""
+
+    def test_power_value_roundtrip_and_presets(self):
+        s = PowerLevelSlider()
+        s.configure(10.0, 100.0, [10, 50, 100])
+        s.set_power(55.0)
+        self.assertAlmostEqual(s.power(), 55.0, delta=0.1)
+        # endpoints map to the slider extremes
+        s.set_power(10.0)
+        self.assertEqual(s.value(), s.minimum())
+        s.set_power(100.0)
+        self.assertEqual(s.value(), s.maximum())
+
+    def test_nearest_preset(self):
+        s = PowerLevelSlider()
+        s.configure(10.0, 100.0, [10, 50, 100])
+        self.assertEqual(s.nearest_preset(40), 50)
+        self.assertEqual(s.nearest_preset(20), 10)
+        self.assertEqual(s.nearest_preset(90), 100)
+
+    def test_degenerate_range_is_safe(self):
+        s = PowerLevelSlider()
+        s.configure(50.0, 50.0, [50])  # single level: lo == hi
+        self.assertEqual(s.power(), 50.0)  # no ZeroDivision
+
+
+class TestLaserPowerSliderIntegration(unittest.TestCase):
+    """SetPowerTab's laser-power slider: presets, snap, interpolation."""
+
+    import pandas as pd
+
+    class _Az:
+        def __init__(self, slope):
+            self.slope = slope
+            self.analysis_parameters = {"min": 0, "max": 100}
+
+        def estimate_power(self, x):
+            return self.slope * x
+
+    class _Att:
+        def curr_pos(self):
+            return 50.0
+
+    class _Laser:
+        power = 50
+
+    class _Inst:
+        def __init__(self):
+            self.is_calibrated = True
+            self.curr_laser = 488
+            self.curr_laserpower = 50
+            self._analyzers = {
+                50: TestLaserPowerSliderIntegration._Az(1.0),
+                100: TestLaserPowerSliderIntegration._Az(2.0),
+            }
+            self._power_ranges = TestLaserPowerSliderIntegration.pd.DataFrame(
+                {"min": [0, 0], "max": [100, 200]}, index=[50, 100]
+            )
+            self.analyzer = self._analyzers[50]
+            self.attenuator = TestLaserPowerSliderIntegration._Att()
+            self.lasers = {488: TestLaserPowerSliderIntegration._Laser()}
+            self.powermeter_position = None
+
+        def load_calibration_database(self):
+            pass
+
+        def _bfp_factor(self, laser=None):
+            return 1.0
+
+        def _pin_for(self, laser, level):
+            return 1.0
+
+        def _pin_factor(self):
+            return 1.0
+
+    class _PC:
+        def __init__(self, inst):
+            self.instrument = inst
+
+    def _tab(self):
+        tab = SetPowerTab()
+        tab._pc = self._PC(self._Inst())
+        tab._laser_combo.addItem("488", 488)
+        return tab
+
+    def test_slider_shows_presets_and_current(self):
+        tab = self._tab()
+        tab._refresh_power_slider()
+        self.assertTrue(tab._power_slider.isEnabled())
+        self.assertEqual(tab._power_slider._presets, [50.0, 100.0])
+        self.assertAlmostEqual(tab._power_slider.power(), 50.0, delta=0.5)
+
+    def test_model_curve_interpolates_between_presets(self):
+        import numpy as np
+
+        tab = self._tab()
+        inst = tab._pc.instrument
+        grid = np.linspace(0, 100, 5)
+        # level 50 -> slope 1, level 100 -> slope 2; midpoint 75 -> slope 1.5
+        mid = tab._model_curve(inst, 488, 75.0, grid, with_pin=False)
+        np.testing.assert_allclose(mid, 1.5 * grid)
+        exact = tab._model_curve(inst, 488, 100.0, grid, with_pin=False)
+        np.testing.assert_allclose(exact, 2.0 * grid)
+
+    def test_combined_mode_snaps_slider_power(self):
+        tab = self._tab()
+        tab._refresh_power_slider()
+        idx = tab._mode_combo.findData("combined")
+        tab._mode_combo.setCurrentIndex(idx)
+        tab._power_slider.set_power(90.0)  # between presets
+        self.assertEqual(tab._slider_power(), 100.0)  # snaps to nearest
+
+    def test_fixed_attenuator_mode_is_continuous(self):
+        tab = self._tab()
+        tab._refresh_power_slider()
+        idx = tab._mode_combo.findData("fixed_attenuator")
+        tab._mode_combo.setCurrentIndex(idx)
+        tab._power_slider.set_power(75.0)
+        self.assertAlmostEqual(tab._slider_power(), 75.0, delta=0.5)
 
 
 class TestSuggestPiButton(unittest.TestCase):
