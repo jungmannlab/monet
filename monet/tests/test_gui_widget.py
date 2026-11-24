@@ -389,6 +389,90 @@ class TestLaserStateControls(unittest.TestCase):
         self.assertEqual(tab._hw_pwr_spin.value(), 10.0)
 
 
+class TestSetPowerModelPlot(unittest.TestCase):
+    """The Set Power tab's modeled power-vs-angle plot."""
+
+    class _Analyzer:
+        analysis_parameters = {"min": 0, "max": 180}
+
+        def estimate_power(self, x):
+            return 10.0 + 0.05 * x
+
+    class _Att:
+        def curr_pos(self):
+            return 45.0
+
+    class _Inst:
+        def __init__(self):
+            self.is_calibrated = True
+            self.curr_laser = 488
+            self.curr_laserpower = 50
+            self.analyzer = TestSetPowerModelPlot._Analyzer()
+            self.attenuator = TestSetPowerModelPlot._Att()
+            self.lasers = {488: object()}
+            self.power = 12.25
+            self.powermeter_position = None
+
+        def load_calibration_database(self):
+            pass
+
+        def _bfp_factor(self, laser=None):
+            return 1.0
+
+        def _pin_factor(self):
+            return 1.0
+
+    class _PC:
+        def __init__(self, inst):
+            self.instrument = inst
+
+    def test_plot_is_empty_when_not_calibrated(self):
+        tab = SetPowerTab()
+        if tab._power_canvas is None:
+            self.skipTest("matplotlib not available")
+        tab._update_power_plot()  # no pc
+        self.assertEqual(len(tab._power_ax.lines), 0)
+
+    def test_plot_draws_model_and_operating_point(self):
+        tab = SetPowerTab()
+        if tab._power_canvas is None:
+            self.skipTest("matplotlib not available")
+        tab._pc = self._PC(self._Inst())
+        tab._laser_combo.addItem("488", 488)
+        tab._update_power_plot()
+        # model curve + current-point marker
+        self.assertGreaterEqual(len(tab._power_ax.lines), 2)
+        title = tab._power_ax.get_title()
+        self.assertIn("488", title)
+
+
+class TestSuggestPiButton(unittest.TestCase):
+    """The 'Suggest from last run' button wiring on the Set Power tab."""
+
+    def test_button_disabled_until_a_run_is_recorded(self):
+        tab = SetPowerTab()
+        self.assertFalse(tab._btn_suggest_pi.isEnabled())
+        self.assertIsNone(tab._last_feedback)
+
+    def test_closing_feedback_dialog_sets_cancel_flag(self):
+        tab = SetPowerTab()
+        tab._cancel_feedback = False
+        tab._on_feedback_dialog_closed()
+        self.assertTrue(tab._cancel_feedback)
+
+    def test_stale_dialog_does_not_abort_newer_run(self):
+        # Closing a dialog left over from an earlier run must not cancel the
+        # current run (identity guard).
+        tab = SetPowerTab()
+        current, stale = object(), object()
+        tab._feedback_dialog = current
+        tab._cancel_feedback = False
+        tab._on_feedback_dialog_closed(stale)
+        self.assertFalse(tab._cancel_feedback)
+        tab._on_feedback_dialog_closed(current)
+        self.assertTrue(tab._cancel_feedback)
+
+
 class TestDoctorTab(unittest.TestCase):
     def test_report_lists_config_locations(self):
         """The diagnostics report names the key config locations."""
