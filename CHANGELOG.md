@@ -10,6 +10,8 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
+## [0.7.12] - 2026-11-24
+
 ### Added
 - **Laser-power slider next to the Set Power plot.** A vertical slider between
   the controls and the model plot sets the laser power, with tick marks at the
