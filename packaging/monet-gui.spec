@@ -37,6 +37,10 @@ from PyInstaller.utils.hooks import (
 # build works regardless of the invocation CWD.
 _launcher = os.path.join(SPECPATH, "monet_gui.py")
 _examples = os.path.join(SPECPATH, "..", "docs", "examples")
+# App icon: embedded in monet-gui.exe (so the Start-menu/desktop shortcuts show
+# it) and also bundled as data next to the package so app_icon() can set the
+# running window's icon.
+_icon = os.path.join(SPECPATH, "..", "monet", "icons", "monet.ico")
 
 # Collect monet's submodules so the dynamically-imported drivers are bundled,
 # but drop (a) the test package and (b) the server-only modules. The GUI never
@@ -60,6 +64,10 @@ hiddenimports = [
 
 datas = [(_examples, "docs/examples")]
 datas += collect_data_files("matplotlib")
+# collect_submodules("monet") below bundles the package's .py modules but NOT
+# its data files (the .ico is not a module), so collect it explicitly — else
+# app_icon() finds nothing in the frozen build and the window has no icon.
+datas += collect_data_files("monet", includes=["icons/*.ico"])
 
 # Hardware SDK packages (the [hardware] extra). monet's drivers lazy-import
 # these by name *inside methods* (e.g. attenuation.py's KinesisAttenuator does
@@ -164,6 +172,9 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    # Embed the app icon in the exe so the Start-menu / desktop shortcuts and
+    # the taskbar show it (best-effort: skip if the file is missing).
+    icon=_icon if os.path.exists(_icon) else None,
 )
 coll = COLLECT(
     exe,

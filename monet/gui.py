@@ -86,18 +86,29 @@ def app_icon():
     """The Monet window/taskbar icon, or ``None`` if it can't be loaded.
 
     Loads the packaged ``monet/icons/monet.ico`` (the single-line
-    attenuation-curve logo). Returns ``None`` rather than raising when the
-    asset is missing, so the GUI still runs from a partial checkout.
+    attenuation-curve logo). Checks both the normal install location (next to
+    this module) and the PyInstaller frozen bundle root (``sys._MEIPASS``), so
+    the window icon shows in the one-click Windows build too. Returns ``None``
+    rather than raising when the asset is missing, so the GUI still runs from a
+    partial checkout.
     """
     import os
+    import sys
 
     from PyQt6.QtGui import QIcon
 
-    path = os.path.join(os.path.dirname(__file__), "icons", "monet.ico")
-    if not os.path.exists(path):
-        return None
-    icon = QIcon(path)
-    return None if icon.isNull() else icon
+    candidates = [
+        os.path.join(os.path.dirname(__file__), "icons", "monet.ico")
+    ]
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        candidates.append(os.path.join(meipass, "monet", "icons", "monet.ico"))
+    for path in candidates:
+        if os.path.exists(path):
+            icon = QIcon(path)
+            if not icon.isNull():
+                return icon
+    return None
 
 
 _LICENSE_FALLBACK = (
@@ -2441,11 +2452,13 @@ class SetPowerTab(_MonetTab):
     def set_expert_view(self, expert):
         """Show/hide advanced controls not meant for a regular user.
 
-        Hidden in the normal view: the Backlash check, Refresh hardware state,
-        and the direct Attenuator / Laser-power controls.
+        Hidden in the normal view: the Pin-calibration and Backlash buttons,
+        Refresh hardware state, and the direct Attenuator / Laser-power
+        controls.
         """
         self._expert = bool(expert)
         for w in (
+            self._btn_pin,
             self._btn_backlash,
             self._btn_hw_refresh,
             self._hw_att_group,
@@ -2746,8 +2759,8 @@ class SetPowerTab(_MonetTab):
         measure_row.addWidget(self._measure_hint)
         # Pin calibration: one-point rescale of the active calibration to the
         # laser's current output — corrects slow laser-power drift between a
-        # full calibration and use without re-running the whole sweep. Stays in
-        # the normal (non-expert) view.
+        # full calibration and use without re-running the whole sweep. Shown
+        # only in the expert view (see set_expert_view).
         self._btn_pin = QPushButton("Pin calibration")
         self._btn_pin.setToolTip(
             "Measure the current laser's power once and rescale the active "
@@ -4361,14 +4374,25 @@ class SetPowerTab(_MonetTab):
                 pin = float(inst._pin_factor())
             except Exception:
                 pin = 1.0
-            scale = factor * pin
-            power = (
+            base = (
                 np.asarray(
                     [analyzer.estimate_power(g) for g in grid], dtype=float
                 )
-                * scale
+                * factor
             )
-            ax.plot(grid, power, "-", color="#1f77b4", lw=1.6, label="model")
+            ax.plot(grid, base, "-", color="#1f77b4", lw=1.6, label="model")
+            # When a one-point "pin" rescales the active calibration, overlay
+            # the pinned curve (what power is actually set from) as a dashed
+            # line; the operating point below sits on it.
+            if abs(pin - 1.0) > 1e-9:
+                ax.plot(
+                    grid,
+                    base * pin,
+                    "--",
+                    color="#1f77b4",
+                    lw=1.4,
+                    label="pinned ×{:.3f}".format(pin),
+                )
             # current operating point
             try:
                 cur_ang = float(inst.attenuator.curr_pos())
@@ -4430,6 +4454,7 @@ class SetPowerTab(_MonetTab):
             self._set_bp_label(result.get("beampath"))
             self._status.setText("Hardware state refreshed.")
             self._emit_status("Ready", 2000)
+            self._update_power_plot()
 
         self._run_hw(_do, "Refreshing hardware state…", on_result=_on_result)
 
@@ -4445,6 +4470,7 @@ class SetPowerTab(_MonetTab):
         def _done():
             self._status.setText(f"Attenuator set to {pos:.3f}.")
             self._emit_status("Ready", 2000)
+            self._update_power_plot()
 
         self._run_hw(_do, f"Setting attenuator to {pos:.3f}…", on_done=_done)
 
@@ -4465,6 +4491,7 @@ class SetPowerTab(_MonetTab):
                     self._hw_att_spin.setValue(float(pos))
             except Exception:
                 pass
+            self._update_power_plot()
 
         self._run_hw(_do, "Homing attenuator…", on_done=_done)
 
