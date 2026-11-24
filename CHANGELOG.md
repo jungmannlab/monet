@@ -10,6 +10,15 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
+### Changed
+- **Set Power model plot is now interactive and placed to the right.** The
+  plot sits to the right of the Power-adjustment box at ~half width (instead of
+  stretching the full width below it). The current operating point is labelled
+  with its power; hovering reads the modeled power at the attenuator angle
+  under the cursor; and left-clicking the plot sets that modeled power (fills
+  the target-power box and runs Set). The curve it reads off is the pinned one
+  when a one-point pin is active, else the base model.
+
 ## [0.7.10] - 2026-11-24
 
 ### Fixed
