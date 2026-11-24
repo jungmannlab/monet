@@ -10,6 +10,17 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
+## [0.7.12] - 2026-11-24
+
+### Added
+- **Laser-power slider next to the Set Power plot.** A vertical slider between
+  the controls and the model plot sets the laser power, with tick marks at the
+  calibrated preset levels. It snaps to those presets in combined / fixed-laser
+  mode and is continuous in fixed-attenuator mode. Dragging previews the plot
+  live; the laser power is applied to the hardware on release. The model plot
+  follows the slider — for a between-presets (continuous) laser power it
+  interpolates the two neighbouring preset curves so the shown curve matches.
+
 ## [0.7.11] - 2026-11-24
 
 ### Changed
