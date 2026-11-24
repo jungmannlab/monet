@@ -10,6 +10,29 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
+### Added
+- **Set Power tab: modeled power vs. attenuator-angle plot.** The tab now shows
+  the calibrated model's beam power across the attenuator range (sample-plane
+  projected) for the current laser / laser power, with the current operating
+  point marked — updated whenever the laser, power, mode or power-meter
+  position changes.
+- **Suggest improved PI gains from a feedback run.** After a closed-loop run, a
+  "Suggest from last run" button (and `control.suggest_pi_gains`) analyses the
+  convergence trajectory and proposes Kp / Ki / max-iterations, which can be
+  applied with one click. A max-iterations spin box was added to the PI panel.
+
+### Changed
+- **Faster closed-loop feedback.** The per-step settle is no longer a fixed 3 s
+  and the redundant throwaway power-meter read was removed; the settle/averaging
+  times are now `run_power_feedback` parameters (`settle_time`, `step_settle`,
+  `read_settle`, `read_averaging`) with faster defaults. The attenuator's `set`
+  already blocks until the move completes, so the extra margin was redundant.
+
+### Fixed
+- **Closing the feedback live-plot dialog aborts the run.** The PI loop polls
+  the cancel flag, so closing the dialog now stops an in-flight run (guarded so
+  a stale dialog can't cancel a newer run).
+
 ## [0.7.7] - 2026-11-24
 
 ### Fixed

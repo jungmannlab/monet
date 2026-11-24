@@ -11,6 +11,7 @@ and attenuations are set for a set output power
 """
 
 import logging
+import math
 
 import numpy as np
 import pandas as pd
@@ -1585,7 +1586,10 @@ def run_power_feedback(
     ki=0.15,
     max_dev_pct=1.0,
     max_iter=20,
-    settle_time=2.0,
+    settle_time=1.0,
+    step_settle=0.8,
+    read_settle=0.3,
+    read_averaging=30,
     progress_callback=None,
     cancel_check=None,
 ):
@@ -1622,6 +1626,16 @@ def run_power_feedback(
         Maximum number of correction iterations.
     settle_time : float
         Seconds to wait after the initial set before the first reading.
+    step_settle : float
+        Seconds to wait for the power to stabilise after each attenuator move
+        (fixed-laser mode). The attenuator's ``set`` already blocks until the
+        move completes and adds its own ``wait_after_move``; this is the extra
+        optical-settling margin on top of that.
+    read_settle : float
+        Seconds to wait between the move/settle and the correction reading.
+    read_averaging : int
+        Number of samples the power meter averages for each correction
+        reading. Lower is faster but noisier.
     progress_callback : callable, optional
         Called as ``progress_callback(iteration, setpoint, measured)``;
         iteration 0 is the reading taken right after the initial set.
@@ -1748,11 +1762,12 @@ def run_power_feedback(
             instrument.attenuator.set(att_pos)
             # report sample plane (corrected_cal is in calibration-meter units)
             last_setpoint = corrected_cal * factor_cal
-            time.sleep(3)
-        time.sleep(0.5)
-        measured_bp = powermeter.read(5)
-        time.sleep(0.5)
-        measured_bp = powermeter.read(50)
+            # The attenuator's set() already blocks until the move completes
+            # (and adds its own wait_after_move); step_settle is the extra
+            # optical-settling margin on top of that.
+            time.sleep(step_settle)
+        time.sleep(read_settle)
+        measured_bp = powermeter.read(read_averaging)
         iterations = iter_num + 1
         if progress_callback is not None:
             progress_callback(
@@ -1794,3 +1809,196 @@ def run_power_feedback(
         "laser_pwr": laser_pwr,
         "iterations": iterations,
     }
+
+
+# Target per-step error decay for a well-tuned fixed-laser loop: each
+# correction should cut the remaining error to ~a third. The multiplicative
+# P-correction gives an error recursion e_{n+1} ≈ -(m·kp)·e_n + (1-m), whose
+# convergence rate is |m·kp|; the suggester scales kp to push the *observed*
+# decay ratio toward this target.
+_TARGET_DECAY = 0.35
+
+
+def suggest_pi_gains(
+    target,
+    measured,
+    kp,
+    ki,
+    mode="fixed_laser",
+    converged=False,
+    out_of_range=False,
+    max_dev_pct=1.0,
+    max_iter=20,
+):
+    """Suggest improved PI gains from a :func:`run_power_feedback` run.
+
+    Analyses the per-iteration measured-power trajectory (the values passed to
+    the progress callback, sample plane) to diagnose why the loop behaved as
+    it did and propose gains / an iteration cap that should converge faster.
+
+    The fixed-laser loop applies a *multiplicative* correction
+    ``setpoint = target·(1 + kp·e + ki·∫e)`` with ``e`` the normalised error,
+    so the error decays geometrically at a ratio ``ρ ≈ m·kp`` set by the
+    plant/calibration mismatch ``m``. A slowly-decaying (often sign-flipping)
+    error that runs out of iterations — the usual "stops halfway" — means ``ρ``
+    is too close to 1; the fix is to move ``ρ`` toward :data:`_TARGET_DECAY` by
+    rescaling ``kp`` (``kp_new = kp·target/ρ_observed``) and to allow enough
+    iterations for that decay to reach tolerance.
+
+    Parameters
+    ----------
+    target : float
+        Sample-plane target power (mW).
+    measured : sequence of float
+        Measured power per iteration (sample plane); index 0 is the reading
+        after the initial open-loop set, matching the progress callbacks.
+    kp, ki : float
+        The gains used for the analysed run.
+    mode : str
+        'fixed_laser' (PI on the attenuator) or 'fixed_attenuator'
+        (proportional on laser power — gains do not apply).
+    converged, out_of_range : bool
+        From the run's result dict.
+    max_dev_pct : float
+        Convergence tolerance used (percent of target).
+    max_iter : int
+        Iteration cap used.
+
+    Returns
+    -------
+    dict
+        ``kp``, ``ki`` (suggested gains), ``max_iter`` (suggested cap),
+        ``changed`` (bool — whether anything differs from the run's settings),
+        ``diagnosis`` (short code, see below) and ``message`` (human-readable
+        explanation + recommendation). Diagnosis codes: ``converged``,
+        ``range_limited``, ``no_light``, ``insufficient``, ``oscillating``,
+        ``slow``, ``stalled``.
+    """
+
+    def _clamp(v, lo, hi):
+        return float(max(lo, min(hi, v)))
+
+    out = {
+        "kp": float(kp),
+        "ki": float(ki),
+        "max_iter": int(max_iter),
+        "changed": False,
+        "diagnosis": "converged",
+        "message": "",
+    }
+
+    y = np.asarray(
+        [v for v in (measured or []) if v is not None and np.isfinite(v)],
+        dtype=float,
+    )
+    tol = max_dev_pct / 100.0
+
+    if out_of_range:
+        out["diagnosis"] = "range_limited"
+        out["message"] = (
+            "The attenuator hit its range limit, so the target is not "
+            "reachable at this laser power — no PI gains can fix that. Change "
+            "the laser power (fixed-laser mode) or switch mode. Gains left "
+            "unchanged."
+        )
+        return out
+    if target <= 0 or y.size and (y <= 0).all():
+        out["diagnosis"] = "no_light"
+        out["message"] = (
+            "No light was measured during the run — check the shutter, laser "
+            "and beam path before tuning gains. Gains left unchanged."
+        )
+        return out
+    if converged:
+        # Converged: only nudge if it was slow (spent most of its budget).
+        if (y.size - 1) >= 0.7 * max_iter and mode == "fixed_laser":
+            out.update(
+                kp=_clamp(kp * 0.6, 0.05, 2.0),
+                changed=True,
+                diagnosis="slow",
+                message=(
+                    "Converged, but only after {} of {} steps. A lower Kp "
+                    "reaches the setpoint in fewer, faster iterations."
+                ).format(y.size - 1, max_iter),
+            )
+            out["ki"] = _clamp(0.2 * out["kp"], 0.0, 1.0)
+        else:
+            out["message"] = (
+                "Converged in {} step(s) — the gains look fine.".format(
+                    max(y.size - 1, 0)
+                )
+            )
+        return out
+    if mode != "fixed_laser":
+        out["diagnosis"] = "range_limited"
+        out["message"] = (
+            "Fixed-attenuator mode corrects by scaling the laser power and "
+            "uses no PI gains; a run that did not converge is limited by the "
+            "laser's power range or linearity, not by Kp/Ki."
+        )
+        return out
+    if y.size < 3:
+        out["diagnosis"] = "insufficient"
+        out["message"] = (
+            "Too few iterations were recorded to analyse — raise the max "
+            "iterations or the deviation tolerance and run again."
+        )
+        out["max_iter"] = int(max(max_iter, 20))
+        return out
+
+    # --- fixed-laser, did not converge: analyse the error trajectory ---
+    e = (target - y) / target  # signed normalised error per iteration
+    a = np.abs(e)
+    ratios = [a[i + 1] / a[i] for i in range(a.size - 1) if a[i] > 1e-6]
+    rho = float(np.median(ratios)) if ratios else 1.0
+    sign_flips = int(np.sum(np.diff(np.sign(e[a > 1e-6])) != 0))
+
+    improved = a[-1] < 0.9 * a[0]
+    if rho >= 1.0 and not improved:
+        out["diagnosis"] = "stalled" if sign_flips == 0 else "oscillating"
+    elif rho >= 1.0:
+        out["diagnosis"] = "oscillating"
+    else:
+        out["diagnosis"] = "slow"
+
+    # Scale Kp so the observed decay ratio moves toward the target. rho>target
+    # (slow or growing) lowers Kp; this *speeds up* convergence because the
+    # loop rate is |m·kp| and overshoot/oscillation shrinks with Kp.
+    kp_new = _clamp(kp * _TARGET_DECAY / max(rho, 1e-3), 0.05, 2.0)
+    ki_new = _clamp(0.2 * kp_new, 0.0, 1.0)
+
+    # Iterations needed to decay the initial error to tolerance at the target
+    # ratio, with a little margin.
+    a0 = float(max(a[0], tol * 1.001))
+
+    need = math.ceil(math.log(tol / a0) / math.log(_TARGET_DECAY)) + 3
+    max_iter_new = int(_clamp(need, max(max_iter, 20), 60))
+
+    changed = (
+        abs(kp_new - kp) > 1e-3
+        or abs(ki_new - ki) > 1e-3
+        or max_iter_new != max_iter
+    )
+    out.update(kp=kp_new, ki=ki_new, max_iter=max_iter_new, changed=changed)
+    verb = {
+        "oscillating": "overshot and oscillated",
+        "stalled": "barely moved toward",
+        "slow": "crept slowly toward",
+    }[out["diagnosis"]]
+    out["message"] = (
+        "The loop {} the target (error decay ~{:.0%} per step over {} steps, "
+        "{} reversal(s)). Suggested Kp {:.2f} → {:.2f}, Ki {:.3f} → {:.3f}, "
+        "max iterations {} → {}."
+    ).format(
+        verb,
+        rho,
+        y.size - 1,
+        sign_flips,
+        kp,
+        kp_new,
+        ki,
+        ki_new,
+        max_iter,
+        max_iter_new,
+    )
+    return out
