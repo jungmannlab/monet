@@ -10,6 +10,20 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
+## [0.7.7] - 2026-11-24
+
+### Fixed
+- **"Regenerate plots" now rebuilds both the latest sample-plane and the
+  latest back-focal-plane calibration**, instead of only whichever was most
+  recent per laser/power. The database load used `"last combinations"`, which
+  collapses a (device, wavelength, laser_power) to a single row and therefore
+  dropped the other plane (`powermeter_type` is a column, not an index level).
+  Regeneration now loads every stored row (`"all"`), splits by normalized
+  power-meter plane, and regenerates each plane's latest calibration per
+  laser/power into its own subfolder(s). The per-wavelength model-parameter
+  plot (`<wl>nm.png`) is shared across planes, so the last plane written (BFP)
+  wins.
+
 ## [0.7.6] - 2026-11-23
 
 ### Added
