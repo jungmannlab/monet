@@ -10,6 +10,8 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
+## [0.7.10] - 2026-11-24
+
 ### Fixed
 - **Windows install no longer fails with "CreateProcess failed; code 2".**
   v0.7.9 embedded the app icon into `monet-gui.exe`; a custom icon resource on
