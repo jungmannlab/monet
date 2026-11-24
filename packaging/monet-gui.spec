@@ -37,10 +37,13 @@ from PyInstaller.utils.hooks import (
 # build works regardless of the invocation CWD.
 _launcher = os.path.join(SPECPATH, "monet_gui.py")
 _examples = os.path.join(SPECPATH, "..", "docs", "examples")
-# App icon: embedded in monet-gui.exe (so the Start-menu/desktop shortcuts show
-# it) and also bundled as data next to the package so app_icon() can set the
-# running window's icon.
-_icon = os.path.join(SPECPATH, "..", "monet", "icons", "monet.ico")
+# App icon: NOT embedded in monet-gui.exe. A custom icon resource on an
+# unsigned PyInstaller bootloader is a known antivirus false-positive nudge
+# (v0.7.9 embedded it and Defender quarantined the freshly-installed exe,
+# "CreateProcess failed; code 2"). The icon still reaches the user two ways:
+# bundled as data (collect_data_files below) so app_icon() sets the window /
+# taskbar icon, and shipped as a standalone monet.ico the installer points the
+# shortcuts at (packaging/monet-gui.iss).
 
 # Collect monet's submodules so the dynamically-imported drivers are bundled,
 # but drop (a) the test package and (b) the server-only modules. The GUI never
@@ -172,9 +175,9 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    # Embed the app icon in the exe so the Start-menu / desktop shortcuts and
-    # the taskbar show it (best-effort: skip if the file is missing).
-    icon=_icon if os.path.exists(_icon) else None,
+    # No icon= here on purpose — see the _launcher comment above (custom-icon
+    # resource on an unsigned PyInstaller exe triggered AV quarantine). The
+    # shortcuts get the icon from a standalone monet.ico instead.
 )
 coll = COLLECT(
     exe,
