@@ -13,8 +13,10 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 ### Added
 - **App icon.** A single-line logo in the Picasso-suite style (`#231f20`
   line-art on a white rounded tile) — the sinusoidal attenuation/power curve
-  monet calibrates, rising into a focused light spot, a sibling of Picasso's
-  DNA-helix mark. Vector source and a cross-platform build script live in
+  monet calibrates (also an imager strand / photon wave) rising into a
+  radiating light spot (an emitting fluorophore / laser), a sibling of
+  Picasso's DNA-helix mark. Vector source and a cross-platform build script
+  live in
   `release/logos/` (`monet-logo-square.svg`, `make_monet_icon.py`, which emits
   `monet.ico`, `monet-logo.png`, and `monet.icns` where `iconutil` is
   available). The GUI window and taskbar now use it (`monet/icons/monet.ico`,
