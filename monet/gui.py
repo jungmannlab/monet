@@ -2630,20 +2630,30 @@ class SetPowerTab(_MonetTab):
         adj_layout.addWidget(self._range_label)
 
         # Modeled power vs. attenuator angle (current laser / laser power),
-        # with the current operating point marked.
+        # with the current operating point marked. Built here but placed to the
+        # right of the adjustment box (see below). Hover reads off the model;
+        # a left-click sets that power.
         self._power_canvas = None
+        self._plot_grid = None  # attenuator angles
+        self._plot_power = None  # modeled sample-plane power (pin applied)
+        self._hover_annot = None
         try:
             from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
             from matplotlib.figure import Figure
 
-            self._power_fig = Figure(figsize=(4.2, 2.4), tight_layout=True)
+            self._power_fig = Figure(figsize=(4.2, 3.0), tight_layout=True)
             self._power_ax = self._power_fig.add_subplot(111)
             self._power_canvas = FigureCanvasQTAgg(self._power_fig)
             self._power_canvas.setSizePolicy(
                 QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
             )
-            self._power_canvas.setMinimumHeight(170)
-            adj_layout.addWidget(self._power_canvas)
+            self._power_canvas.setMinimumHeight(220)
+            self._power_canvas.mpl_connect(
+                "motion_notify_event", self._on_plot_hover
+            )
+            self._power_canvas.mpl_connect(
+                "button_press_event", self._on_plot_click
+            )
         except Exception:
             self._power_fig = self._power_ax = None
 
@@ -2792,7 +2802,15 @@ class SetPowerTab(_MonetTab):
         layout.addWidget(self._status)
 
         # ── Power adjustment (built above, placed below the setup controls) ─
-        layout.addWidget(adj_group)
+        # The controls box on the left, the model-power plot on its right at
+        # roughly half width (so the plot doesn't stretch the whole tab).
+        if self._power_canvas is not None:
+            adj_row = QHBoxLayout()
+            adj_row.addWidget(adj_group, 1)
+            adj_row.addWidget(self._power_canvas, 1)
+            layout.addLayout(adj_row)
+        else:
+            layout.addWidget(adj_group)
 
         # ── Separator ────────────────────────────────────────────────────────
         sep = QFrame()
@@ -4352,6 +4370,9 @@ class SetPowerTab(_MonetTab):
             return
         ax = self._power_ax
         ax.clear()
+        self._plot_grid = None  # disables hover/click until redrawn
+        self._plot_power = None
+        self._hover_annot = None
         inst = getattr(self._pc, "instrument", None) if self._pc else None
         if inst is None or not getattr(inst, "is_calibrated", False):
             ax.set_title("model power vs. angle — not calibrated", fontsize=9)
@@ -4381,19 +4402,22 @@ class SetPowerTab(_MonetTab):
                 * factor
             )
             ax.plot(grid, base, "-", color="#1f77b4", lw=1.6, label="model")
-            # When a one-point "pin" rescales the active calibration, overlay
-            # the pinned curve (what power is actually set from) as a dashed
-            # line; the operating point below sits on it.
+            # The curve hover/click reads off is the one power is actually set
+            # from: the pinned curve when a one-point pin is active, else the
+            # base model. The operating point sits on it.
+            effective = base * pin
             if abs(pin - 1.0) > 1e-9:
                 ax.plot(
                     grid,
-                    base * pin,
+                    effective,
                     "--",
                     color="#1f77b4",
                     lw=1.4,
                     label="pinned ×{:.3f}".format(pin),
                 )
-            # current operating point
+            self._plot_grid = grid
+            self._plot_power = effective
+            # current operating point, labelled with its power
             try:
                 cur_ang = float(inst.attenuator.curr_pos())
                 cur_pwr = float(inst.power)
@@ -4405,12 +4429,30 @@ class SetPowerTab(_MonetTab):
                     ms=6,
                     label="current",
                 )
+                ax.annotate(
+                    "{:.2f} mW".format(cur_pwr),
+                    (cur_ang, cur_pwr),
+                    textcoords="offset points",
+                    xytext=(6, 6),
+                    fontsize=7,
+                    color="#d62728",
+                )
             except Exception:
                 pass
+            # Hover annotation (updated in _on_plot_hover), hidden until used.
+            self._hover_annot = ax.annotate(
+                "",
+                (0, 0),
+                textcoords="offset points",
+                xytext=(8, 8),
+                fontsize=7,
+                bbox=dict(boxstyle="round", fc="#ffffcc", ec="0.5", alpha=0.9),
+            )
+            self._hover_annot.set_visible(False)
             ax.set_xlabel("attenuator angle", fontsize=8)
             ax.set_ylabel("power [mW]", fontsize=8)
             ax.set_title(
-                "model power — {} nm @ {} mW".format(
+                "model power — {} nm @ {} mW  (click to set)".format(
                     laser, inst.curr_laserpower
                 ),
                 fontsize=9,
@@ -4420,8 +4462,59 @@ class SetPowerTab(_MonetTab):
             ax.legend(fontsize=7, loc="best")
         except Exception as exc:
             logger.debug("Could not draw power plot: %s", exc)
+            self._plot_grid = None
+            self._plot_power = None
             ax.set_title("model power vs. angle — unavailable", fontsize=9)
         self._power_canvas.draw_idle()
+
+    def _on_plot_hover(self, event):
+        """Show the modeled power at the hovered attenuator angle."""
+        if (
+            self._power_canvas is None
+            or self._hover_annot is None
+            or self._plot_grid is None
+            or event.inaxes is not self._power_ax
+            or event.xdata is None
+        ):
+            if (
+                self._hover_annot is not None
+                and self._hover_annot.get_visible()
+            ):
+                self._hover_annot.set_visible(False)
+                self._power_canvas.draw_idle()
+            return
+        x = float(event.xdata)
+        lo, hi = float(self._plot_grid[0]), float(self._plot_grid[-1])
+        if x < lo or x > hi:
+            if self._hover_annot.get_visible():
+                self._hover_annot.set_visible(False)
+                self._power_canvas.draw_idle()
+            return
+        p = float(np.interp(x, self._plot_grid, self._plot_power))
+        self._hover_annot.xy = (x, p)
+        self._hover_annot.set_text("{:.1f}°\n{:.2f} mW".format(x, p))
+        self._hover_annot.set_visible(True)
+        self._power_canvas.draw_idle()
+
+    def _on_plot_click(self, event):
+        """Left-click the plot to set the modeled power at that angle."""
+        if (
+            self._pc is None
+            or self._plot_grid is None
+            or event.inaxes is not self._power_ax
+            or event.xdata is None
+            or getattr(event, "button", None) != 1
+        ):
+            return
+        x = float(event.xdata)
+        lo, hi = float(self._plot_grid[0]), float(self._plot_grid[-1])
+        if x < lo or x > hi:
+            return
+        p = float(np.interp(x, self._plot_grid, self._plot_power))
+        if not np.isfinite(p) or p < 0:
+            return
+        self._pwr_spin.setValue(p)
+        self._on_set_power()
 
     def _on_hw_refresh(self):
         """Read attenuator position and laser power from hardware."""

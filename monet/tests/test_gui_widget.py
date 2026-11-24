@@ -460,6 +460,61 @@ class TestSetPowerModelPlot(unittest.TestCase):
         labels = [line.get_label() for line in tab._power_ax.lines]
         self.assertTrue(any("pinned" in str(lbl) for lbl in labels))
 
+    class _Evt:
+        def __init__(self, ax, x, button=1):
+            self.inaxes = ax
+            self.xdata = x
+            self.button = button
+
+    def test_hover_reads_model_power_at_angle(self):
+        tab = SetPowerTab()
+        if tab._power_canvas is None:
+            self.skipTest("matplotlib not available")
+        tab._pc = self._PC(self._Inst())  # power(x) = 10 + 0.05*x
+        tab._laser_combo.addItem("488", 488)
+        tab._update_power_plot()
+        tab._on_plot_hover(self._Evt(tab._power_ax, 100.0))
+        self.assertTrue(tab._hover_annot.get_visible())
+        txt = tab._hover_annot.get_text()
+        self.assertIn("100", txt)
+        self.assertIn("15.0", txt)  # 10 + 0.05*100 = 15 mW
+
+    def test_hover_outside_axes_hides_annotation(self):
+        tab = SetPowerTab()
+        if tab._power_canvas is None:
+            self.skipTest("matplotlib not available")
+        tab._pc = self._PC(self._Inst())
+        tab._laser_combo.addItem("488", 488)
+        tab._update_power_plot()
+        tab._on_plot_hover(self._Evt(tab._power_ax, 100.0))
+        tab._on_plot_hover(self._Evt(None, None))  # off-axes
+        self.assertFalse(tab._hover_annot.get_visible())
+
+    def test_click_sets_modeled_power_and_calls_set(self):
+        tab = SetPowerTab()
+        if tab._power_canvas is None:
+            self.skipTest("matplotlib not available")
+        tab._pc = self._PC(self._Inst())
+        tab._laser_combo.addItem("488", 488)
+        tab._update_power_plot()
+        called = []
+        tab._on_set_power = lambda: called.append(tab._pwr_spin.value())
+        tab._on_plot_click(self._Evt(tab._power_ax, 100.0))
+        self.assertAlmostEqual(tab._pwr_spin.value(), 15.0, places=2)
+        self.assertEqual(len(called), 1)
+
+    def test_right_click_does_not_set(self):
+        tab = SetPowerTab()
+        if tab._power_canvas is None:
+            self.skipTest("matplotlib not available")
+        tab._pc = self._PC(self._Inst())
+        tab._laser_combo.addItem("488", 488)
+        tab._update_power_plot()
+        called = []
+        tab._on_set_power = lambda: called.append(1)
+        tab._on_plot_click(self._Evt(tab._power_ax, 100.0, button=3))
+        self.assertEqual(called, [])
+
     def test_pin_button_moves_to_expert_view(self):
         # Pin calibration is now an expert-only control: it hides/shows with
         # the expert flag, tracking the other expert-only buttons.
