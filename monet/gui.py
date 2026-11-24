@@ -2655,7 +2655,10 @@ class SetPowerTab(_MonetTab):
                 "button_press_event", self._on_plot_click
             )
         except Exception:
-            self._power_fig = self._power_ax = None
+            # Keep the three in lockstep: _update_power_plot() guards on
+            # _power_canvas, so leaving it set while _power_ax is None would
+            # crash on ax.clear().
+            self._power_fig = self._power_ax = self._power_canvas = None
 
         # Target power + Set button
         pwr_row = QHBoxLayout()
@@ -2801,7 +2804,7 @@ class SetPowerTab(_MonetTab):
         self._status = QLabel("")
         layout.addWidget(self._status)
 
-        # ── Power adjustment (built above, placed below the setup controls) ─
+        # ── Power adjustment (built above, placed below setup controls) ──
         # The controls box on the left, the model-power plot on its right at
         # roughly half width (so the plot doesn't stretch the whole tab).
         if self._power_canvas is not None:
@@ -4386,6 +4389,8 @@ class SetPowerTab(_MonetTab):
             params = analyzer.analysis_parameters
             lo = float(params.get("min", 0))
             hi = float(params.get("max", 180))
+            if lo > hi:  # keep the grid ascending (np.interp needs that)
+                lo, hi = hi, lo
             grid = np.linspace(lo, hi, 240)
             try:
                 factor = float(inst._bfp_factor(laser))
@@ -4464,53 +4469,64 @@ class SetPowerTab(_MonetTab):
             logger.debug("Could not draw power plot: %s", exc)
             self._plot_grid = None
             self._plot_power = None
+            self._hover_annot = None
             ax.set_title("model power vs. angle — unavailable", fontsize=9)
         self._power_canvas.draw_idle()
 
-    def _on_plot_hover(self, event):
-        """Show the modeled power at the hovered attenuator angle."""
+    def _power_at_event(self, event):
+        """Modeled (angle, power) under a plot event, or ``None``.
+
+        ``None`` when the plot has no live curve, the event is outside the
+        axes, or the cursor is beyond the attenuator range. ``_plot_grid`` and
+        ``_plot_power`` are always set/cleared together by _update_power_plot.
+        """
         if (
-            self._power_canvas is None
-            or self._hover_annot is None
-            or self._plot_grid is None
+            self._plot_grid is None
+            or self._plot_power is None
             or event.inaxes is not self._power_ax
             or event.xdata is None
         ):
-            if (
-                self._hover_annot is not None
-                and self._hover_annot.get_visible()
-            ):
-                self._hover_annot.set_visible(False)
-                self._power_canvas.draw_idle()
-            return
+            return None
         x = float(event.xdata)
-        lo, hi = float(self._plot_grid[0]), float(self._plot_grid[-1])
-        if x < lo or x > hi:
+        if x < float(self._plot_grid[0]) or x > float(self._plot_grid[-1]):
+            return None
+        return x, float(np.interp(x, self._plot_grid, self._plot_power))
+
+    def _on_plot_hover(self, event):
+        """Show the modeled power at the hovered attenuator angle."""
+        if self._power_canvas is None or self._hover_annot is None:
+            return
+        at = self._power_at_event(event)
+        if at is None:
             if self._hover_annot.get_visible():
                 self._hover_annot.set_visible(False)
                 self._power_canvas.draw_idle()
             return
-        p = float(np.interp(x, self._plot_grid, self._plot_power))
+        x, p = at
+        text = "{:.1f}°\n{:.2f} mW".format(x, p)
+        # Motion events fire continuously; only redraw when something changed.
+        if (
+            self._hover_annot.get_visible()
+            and self._hover_annot.get_text() == (text)
+        ):
+            return
         self._hover_annot.xy = (x, p)
-        self._hover_annot.set_text("{:.1f}°\n{:.2f} mW".format(x, p))
+        self._hover_annot.set_text(text)
         self._hover_annot.set_visible(True)
         self._power_canvas.draw_idle()
 
     def _on_plot_click(self, event):
         """Left-click the plot to set the modeled power at that angle."""
-        if (
-            self._pc is None
-            or self._plot_grid is None
-            or event.inaxes is not self._power_ax
-            or event.xdata is None
-            or getattr(event, "button", None) != 1
-        ):
+        if self._pc is None or getattr(event, "button", None) != 1:
             return
-        x = float(event.xdata)
-        lo, hi = float(self._plot_grid[0]), float(self._plot_grid[-1])
-        if x < lo or x > hi:
+        # Respect an in-flight set/feedback run: the Set button is disabled
+        # then, so clicking the plot must not start a second, concurrent run.
+        if not self._btn_set.isEnabled():
             return
-        p = float(np.interp(x, self._plot_grid, self._plot_power))
+        at = self._power_at_event(event)
+        if at is None:
+            return
+        p = at[1]
         if not np.isfinite(p) or p < 0:
             return
         self._pwr_spin.setValue(p)

@@ -515,6 +515,38 @@ class TestSetPowerModelPlot(unittest.TestCase):
         tab._on_plot_click(self._Evt(tab._power_ax, 100.0, button=3))
         self.assertEqual(called, [])
 
+    def test_click_ignored_while_set_disabled(self):
+        # During an in-flight set/feedback run the Set button is disabled;
+        # clicking the plot must not start a second, concurrent run.
+        tab = SetPowerTab()
+        if tab._power_canvas is None:
+            self.skipTest("matplotlib not available")
+        tab._pc = self._PC(self._Inst())
+        tab._laser_combo.addItem("488", 488)
+        tab._update_power_plot()
+        called = []
+        tab._on_set_power = lambda: called.append(1)
+        tab._btn_set.setEnabled(False)
+        tab._on_plot_click(self._Evt(tab._power_ax, 100.0))
+        self.assertEqual(called, [])
+
+    def test_click_noop_when_plot_invalidated(self):
+        # After the plot is invalidated (not calibrated), a stale click event
+        # must not crash or set anything.
+        tab = SetPowerTab()
+        if tab._power_canvas is None:
+            self.skipTest("matplotlib not available")
+        tab._pc = self._PC(self._Inst())
+        tab._laser_combo.addItem("488", 488)
+        tab._update_power_plot()
+        tab._pc.instrument.is_calibrated = False
+        tab._update_power_plot()  # clears _plot_grid / _plot_power
+        called = []
+        tab._on_set_power = lambda: called.append(1)
+        tab._on_plot_click(self._Evt(tab._power_ax, 100.0))
+        self.assertEqual(called, [])
+        self.assertIsNone(tab._power_at_event(self._Evt(tab._power_ax, 100.0)))
+
     def test_pin_button_moves_to_expert_view(self):
         # Pin calibration is now an expert-only control: it hides/shows with
         # the expert flag, tracking the other expert-only buttons.
