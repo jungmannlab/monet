@@ -169,8 +169,9 @@ fallback_version = "0.3.6"
 include = ["monet*"]
 
 [tool.setuptools.package-data]
-# Vendored Thorlabs TLPM wrapper, when present alongside the package.
-monet = ["TLPM.py"]
+# Vendored Thorlabs TLPM wrapper (when present) and the app icon used by the
+# GUI window / taskbar.
+monet = ["TLPM.py", "icons/*.ico"]
 
 [tool.pytest.ini_options]
 testpaths = ["monet/tests"]
