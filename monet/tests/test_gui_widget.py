@@ -403,7 +403,7 @@ class TestSetPowerModelPlot(unittest.TestCase):
             return 45.0
 
     class _Inst:
-        def __init__(self):
+        def __init__(self, pin=1.0):
             self.is_calibrated = True
             self.curr_laser = 488
             self.curr_laserpower = 50
@@ -412,6 +412,7 @@ class TestSetPowerModelPlot(unittest.TestCase):
             self.lasers = {488: object()}
             self.power = 12.25
             self.powermeter_position = None
+            self.pin = pin
 
         def load_calibration_database(self):
             pass
@@ -420,7 +421,7 @@ class TestSetPowerModelPlot(unittest.TestCase):
             return 1.0
 
         def _pin_factor(self):
-            return 1.0
+            return self.pin
 
     class _PC:
         def __init__(self, inst):
@@ -444,6 +445,31 @@ class TestSetPowerModelPlot(unittest.TestCase):
         self.assertGreaterEqual(len(tab._power_ax.lines), 2)
         title = tab._power_ax.get_title()
         self.assertIn("488", title)
+
+    def test_plot_shows_pinned_curve_dashed(self):
+        tab = SetPowerTab()
+        if tab._power_canvas is None:
+            self.skipTest("matplotlib not available")
+        tab._pc = self._PC(self._Inst(pin=1.2))
+        tab._laser_combo.addItem("488", 488)
+        tab._update_power_plot()
+        # model (solid) + pinned (dashed) + marker
+        self.assertGreaterEqual(len(tab._power_ax.lines), 3)
+        styles = {line.get_linestyle() for line in tab._power_ax.lines}
+        self.assertIn("--", styles)
+        labels = [line.get_label() for line in tab._power_ax.lines]
+        self.assertTrue(any("pinned" in str(lbl) for lbl in labels))
+
+    def test_pin_button_moves_to_expert_view(self):
+        # Pin calibration is now an expert-only control: it hides/shows with
+        # the expert flag, tracking the other expert-only buttons.
+        tab = SetPowerTab()
+        tab.set_expert_view(False)
+        self.assertFalse(tab._btn_pin.isVisibleTo(tab))
+        self.assertFalse(tab._btn_backlash.isVisibleTo(tab))
+        tab.set_expert_view(True)
+        self.assertTrue(tab._btn_pin.isVisibleTo(tab))
+        self.assertTrue(tab._btn_backlash.isVisibleTo(tab))
 
 
 class TestSuggestPiButton(unittest.TestCase):

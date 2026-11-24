@@ -41,6 +41,8 @@ OutputDir=..\dist
 OutputBaseFilename=Monet-Setup-{#MyAppVersion}
 UninstallDisplayIcon={app}\monet-gui.exe
 UninstallDisplayName=Monet {#MyAppVersion}
+; Installer's own icon (the Monet logo).
+SetupIconFile=..\monet\icons\monet.ico
 WizardStyle=modern
 Compression=lzma2
 SolidCompression=yes
@@ -57,8 +59,10 @@ Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription
 Source: "..\dist\monet-gui\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{autoprograms}\Monet GUI"; Filename: "{app}\monet-gui.exe"
-Name: "{autodesktop}\Monet GUI"; Filename: "{app}\monet-gui.exe"; Tasks: desktopicon
+; IconFilename points the shortcut at the exe's embedded icon (the spec's
+; EXE(icon=...)), so the Start-menu and desktop shortcuts show the Monet logo.
+Name: "{autoprograms}\Monet GUI"; Filename: "{app}\monet-gui.exe"; IconFilename: "{app}\monet-gui.exe"
+Name: "{autodesktop}\Monet GUI"; Filename: "{app}\monet-gui.exe"; IconFilename: "{app}\monet-gui.exe"; Tasks: desktopicon
 
 [Run]
 Filename: "{app}\monet-gui.exe"; Description: "Launch Monet GUI now"; Flags: nowait postinstall skipifsilent

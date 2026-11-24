@@ -866,6 +866,19 @@ class TestControl(unittest.TestCase):
         self.assertEqual(ctrl.curr_laserpower, 50)
         self.assertAlmostEqual(ctrl.power, 30.0, places=6)
 
+    def test_power_setter_leaves_headroom_for_feedback(self):
+        # 488: level 50 (max 100), level 100 (max 200). 90 mW is reachable on
+        # level 50 but only in its top 10% — too close to the attenuator
+        # ceiling for a later fixed-laser feedback step to raise it. Combined
+        # mode must prefer level 100, leaving >=15% headroom.
+        ctrl = self._build_laser_control()
+        ctrl.power = 90.0
+        self.assertEqual(ctrl.curr_laserpower, 100)
+        self.assertAlmostEqual(ctrl.power, 90.0, places=6)
+        # the operating point sits at <=85% of this level's reachable max
+        _, hi = ctrl.accessible_power_range("fixed_laser", 488)
+        self.assertLessEqual(90.0, 0.85 * hi + 1e-9)
+
     # ── pin_calibration (one-point rescale) ──────────────────────────────
 
     def test_pin_calibration_rescales_get_and_set(self):
