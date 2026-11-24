@@ -4481,14 +4481,34 @@ class SetPowerTab(_MonetTab):
         self._update_power_plot()
         self._refresh_power_slider()
 
-    def _model_curve(self, inst, laser, power, grid, with_pin):
-        """Sample-plane power across ``grid`` angles for a given laser power.
+    @staticmethod
+    def _eval_power(az, grid, bfp):
+        """``estimate_power`` over the whole angle ``grid`` (× ``bfp``).
 
-        Uses the exact preset analyzer when ``power`` is a calibrated level,
-        else linearly interpolates the two bracketing preset analyzers (so the
-        curve matches a continuous, between-presets laser power). Falls back to
-        the single active analyzer if the per-level analyzers aren't available.
-        Returns ``None`` if nothing can be evaluated.
+        Vectorised when the analyzer accepts an array, else a scalar loop.
+        """
+        try:
+            vals = np.asarray(az.estimate_power(grid), dtype=float)
+            if vals.shape != grid.shape:
+                raise ValueError("estimate_power did not vectorise")
+        except Exception:
+            vals = np.asarray(
+                [az.estimate_power(g) for g in grid], dtype=float
+            )
+        return vals * bfp
+
+    def _model_curves(self, inst, laser, power, grid):
+        """``(base, effective)`` sample-plane power across ``grid`` angles for
+        a given laser power.
+
+        ``base`` is the model without the one-point pin; ``effective`` applies
+        it (so the dashed/operating-point curve sits on it). Uses the exact
+        preset analyzer when ``power`` is a calibrated level, else linearly
+        interpolates the two bracketing presets (matching a continuous,
+        between-presets laser power). ``estimate_power`` is evaluated once per
+        needed level. Falls back to the single active analyzer when the
+        per-level analyzers aren't available. Returns ``(None, None)`` if
+        nothing can be evaluated.
         """
         try:
             bfp = float(inst._bfp_factor(laser))
@@ -4498,44 +4518,46 @@ class SetPowerTab(_MonetTab):
         if not analyzers:
             az = getattr(inst, "analyzer", None)
             if az is None:
-                return None
-            vals = (
-                np.asarray([az.estimate_power(g) for g in grid], float) * bfp
-            )
-            if with_pin:
-                try:
-                    vals = vals * float(inst._pin_factor())
-                except Exception:
-                    pass
-            return vals
+                return None, None
+            base = self._eval_power(az, grid, bfp)
+            try:
+                pin = float(inst._pin_factor())
+            except Exception:
+                pin = 1.0
+            return base, base * pin
+
+        def raw_pin(level):
+            raw = self._eval_power(analyzers[level], grid, bfp)
+            try:
+                pin = float(inst._pin_for(laser, level))
+            except Exception:
+                pin = 1.0
+            return raw, pin
 
         levels = sorted(analyzers.keys(), key=lambda k: float(k))
         flev = [float(k) for k in levels]
-
-        def curve(level):
-            az = analyzers[level]
-            vals = (
-                np.asarray([az.estimate_power(g) for g in grid], float) * bfp
-            )
-            if with_pin:
-                try:
-                    vals = vals * float(inst._pin_for(laser, level))
-                except Exception:
-                    pass
-            return vals
-
         p = float(power)
         if p <= flev[0]:
-            return curve(levels[0])
+            raw, pin = raw_pin(levels[0])
+            return raw, raw * pin
         if p >= flev[-1]:
-            return curve(levels[-1])
-        import bisect
-
-        i = bisect.bisect_left(flev, p)
-        if flev[i] == p:
-            return curve(levels[i])
+            raw, pin = raw_pin(levels[-1])
+            return raw, raw * pin
+        # bracket the between-presets power (levels ascending)
+        i = 1
+        while i < len(flev) and flev[i] < p:
+            i += 1
+        lo_raw, lo_pin = raw_pin(levels[i - 1])
+        hi_raw, hi_pin = raw_pin(levels[i])
         w = (p - flev[i - 1]) / (flev[i] - flev[i - 1])
-        return curve(levels[i - 1]) * (1 - w) + curve(levels[i]) * w
+        base = lo_raw * (1 - w) + hi_raw * w
+        effective = (lo_raw * lo_pin) * (1 - w) + (hi_raw * hi_pin) * w
+        return base, effective
+
+    def _model_curve(self, inst, laser, power, grid, with_pin):
+        """``_model_curves`` convenience: the base or the pinned curve."""
+        base, effective = self._model_curves(inst, laser, power, grid)
+        return effective if with_pin else base
 
     def _update_power_plot(self, preview_power=None):
         """Draw modeled beam power vs. attenuator angle for the current laser.
@@ -4578,12 +4600,9 @@ class SetPowerTab(_MonetTab):
                     shown = float(inst.lasers[laser].power)
                 except Exception:
                     shown = float(inst.curr_laserpower)
-            base = self._model_curve(inst, laser, shown, grid, with_pin=False)
+            base, effective = self._model_curves(inst, laser, shown, grid)
             if base is None:
                 raise ValueError("no model for this laser power")
-            effective = self._model_curve(
-                inst, laser, shown, grid, with_pin=True
-            )
             if effective is None:
                 effective = base
             ax.plot(grid, base, "-", color="#1f77b4", lw=1.6, label="model")
@@ -4707,6 +4726,13 @@ class SetPowerTab(_MonetTab):
     def _on_power_slider_released(self):
         """Commit the dragged laser power to the hardware."""
         if self._power_slider is None or self._pc is None:
+            return
+        # Respect an in-flight run: the Set button is disabled then, so a
+        # slider release must not start a second, concurrent hardware op.
+        # Snap the handle back to the live power so the drag isn't left
+        # looking applied.
+        if not self._btn_set.isEnabled():
+            self._refresh_power_slider()
             return
         mode = self._mode_combo.currentData()
         p = self._slider_power()

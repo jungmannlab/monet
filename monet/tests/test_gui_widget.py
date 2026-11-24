@@ -681,6 +681,38 @@ class TestLaserPowerSliderIntegration(unittest.TestCase):
         tab._power_slider.set_power(75.0)
         self.assertAlmostEqual(tab._slider_power(), 75.0, delta=0.5)
 
+    def test_dragging_slider_does_not_actuate_hardware(self):
+        # A slider drag only previews the plot; it must not start a hw op.
+        tab = self._tab()
+        tab._refresh_power_slider()
+        calls = []
+        tab._run_hw = lambda *a, **k: calls.append(a)
+        tab._power_slider.set_power(80.0)
+        tab._on_power_slider_moved(0)
+        self.assertEqual(calls, [])
+
+    def test_slider_release_ignored_during_run(self):
+        # The Set button is disabled during an in-flight run; a slider release
+        # must not start a second, concurrent hardware op.
+        tab = self._tab()
+        tab._refresh_power_slider()
+        calls = []
+        tab._run_hw = lambda *a, **k: calls.append(a)
+        tab._btn_set.setEnabled(False)
+        tab._power_slider.set_power(90.0)
+        tab._on_power_slider_released()
+        self.assertEqual(calls, [])
+
+    def test_slider_release_actuates_when_idle(self):
+        tab = self._tab()
+        tab._refresh_power_slider()
+        calls = []
+        tab._run_hw = lambda *a, **k: calls.append(a)
+        tab._btn_set.setEnabled(True)
+        tab._power_slider.set_power(100.0)
+        tab._on_power_slider_released()
+        self.assertEqual(len(calls), 1)
+
 
 class TestSuggestPiButton(unittest.TestCase):
     """The 'Suggest from last run' button wiring on the Set Power tab."""
