@@ -10,6 +10,8 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
+## [0.7.8] - 2026-11-24
+
 ### Added
 - **App icon.** A single-line logo in the Picasso-suite style (`#231f20`
   line-art on a white rounded tile) — the sinusoidal attenuation/power curve
