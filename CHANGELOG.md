@@ -10,6 +10,26 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
+### Changed
+- **Combined mode keeps 15% headroom.** When setting power in "combined"
+  (laser power + attenuator) mode, the chosen laser-power level now leaves
+  ≥15% below its reachable maximum (was 5%), so the usual workflow — coarse-set
+  via combined, then switch to fixed-laser feedback — can still raise the power
+  without the attenuator already sitting on its ceiling.
+- **Pin calibration is now an expert-only control** (shown with the other
+  expert controls), and the Set Power model plot overlays the pinned
+  calibration as a dashed curve when a one-point pin is active.
+
+### Fixed
+- **App icon now appears in the Windows build.** The PyInstaller bundle now
+  collects `monet/icons/monet.ico` (so the GUI window/taskbar icon loads via
+  `sys._MEIPASS` when frozen) and embeds it in `monet-gui.exe`; the Inno Setup
+  installer sets its own icon and the Start-menu / desktop shortcut icons.
+- **Set Power model plot now refreshes on every hardware change** — direct
+  attenuator set/home and hardware-state refresh now redraw the plot (laser
+  power / mode / power-meter changes already did), so the operating-point
+  marker and curve stay in sync.
+
 ## [0.7.8] - 2026-11-24
 
 ### Added

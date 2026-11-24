@@ -1115,14 +1115,17 @@ class IlluminationLaserControl(IlluminationControl):
         newpwr = pwr
 
         # Always operate as high as possible on an attenuation curve: pick the
-        # LOWEST laser output level that can still reach the target (its
-        # 95%-max exceeds pwr), so a low setpoint is served near the gentle top
-        # of a low-power curve instead of the steep, error-amplifying trough of
-        # a high-power one. (Previously the level only changed when the target
-        # fell outside the *current* level's range, so a small setpoint set
-        # right after a large one stayed on the high level's trough.) Fall back
-        # to the highest level if none reaches the target.
-        reachable = list(ranges.loc[ranges["max"] * 0.95 > pwr].index)
+        # LOWEST laser output level that can still reach the target with
+        # headroom (its 85%-max exceeds pwr), so a low setpoint is served near
+        # the gentle top of a low-power curve instead of the steep,
+        # error-amplifying trough of a high-power one. (Previously the level
+        # only changed when the target fell outside the *current* level's
+        # range, so a small setpoint set right after a large one stayed on the
+        # high level's trough.) The 15% headroom (0.85) also keeps combined
+        # mode off the attenuator ceiling, so the usual workflow — coarse-set
+        # via combined, then switch to fixed-laser feedback — can still raise
+        # the power. Fall back to the highest level if none reaches the target.
+        reachable = list(ranges.loc[ranges["max"] * 0.85 > pwr].index)
         laserpwr_best = min(reachable) if reachable else max(ranges.index)
 
         if ranges.loc[laserpwr_best, "min"] > pwr:
