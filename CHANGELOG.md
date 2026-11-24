@@ -10,6 +10,8 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
+## [0.7.9] - 2026-11-24
+
 ### Changed
 - **Combined mode keeps 15% headroom.** When setting power in "combined"
   (laser power + attenuator) mode, the chosen laser-power level now leaves
