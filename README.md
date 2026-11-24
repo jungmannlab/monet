@@ -1,5 +1,7 @@
 # Monet
 
+<img src="release/logos/monet-logo.png" alt="Monet logo" width="120" align="right"/>
+
 A Python-based laser power calibration and control suite for microscopy systems. Monet automates calibration of laser power through attenuators (rotation mounts, NIDAQ, AOTF) and power meters, storing results in a SQLite database behind a FastAPI server or in a legacy Excel file. Named after the impressionist painter for his mastery of light intensity.
 
 ## Features

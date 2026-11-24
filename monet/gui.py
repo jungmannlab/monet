@@ -81,6 +81,25 @@ _TITLE_BASE = (
 
 logger = logging.getLogger(__name__)
 
+
+def app_icon():
+    """The Monet window/taskbar icon, or ``None`` if it can't be loaded.
+
+    Loads the packaged ``monet/icons/monet.ico`` (the single-line
+    attenuation-curve logo). Returns ``None`` rather than raising when the
+    asset is missing, so the GUI still runs from a partial checkout.
+    """
+    import os
+
+    from PyQt6.QtGui import QIcon
+
+    path = os.path.join(os.path.dirname(__file__), "icons", "monet.ico")
+    if not os.path.exists(path):
+        return None
+    icon = QIcon(path)
+    return None if icon.isNull() else icon
+
+
 _LICENSE_FALLBACK = (
     "Copyright (c) 2022-2026, Heinrich Grabmayr — Jungmann Lab, MPI of "
     "Biochemistry.\n\nmonet is distributed under a BSD-style license. The full "
@@ -6248,6 +6267,9 @@ class MonetMainWindow(QMainWindow):
         # handler hitting an unexpected rig error).
         install_excepthook()
         self.setWindowTitle("{} — Laser Power Calibration".format(_TITLE_BASE))
+        icon = app_icon()
+        if icon is not None:
+            self.setWindowIcon(icon)
         self.resize(1200, 850)
         # The standalone app includes the Doctor (diagnostics) tab; embedders
         # keep MonetWidget's slimmer default tab set.
