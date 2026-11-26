@@ -10,7 +10,7 @@ A Python-based laser power calibration and control suite for microscopy systems.
 - Sinusoidal, linear, and polynomial curve fitting for attenuation mapping
 - Three power-setting modes — combined (laser + attenuator), fixed-laser (adjust attenuator only), fixed-attenuator (adjust laser only)
 - **Closed-loop power setting** with a PI controller against a power meter, with configurable tolerance and gains
-- **Guided onboarding wizard** (`monet setup` + GUI first-run wizard) that connects a new machine to the server, authors its config, and verifies the hardware
+- **Guided onboarding wizard** (`python -m monet setup` + GUI first-run wizard) that connects a new machine to the server, authors its config, and verifies the hardware
 - Interactive CLI for calibration, adjustment, and power setting
 - **PyQt6 GUI** with a Calibrate / Set Power / Database tab set, including a live feedback-convergence plot
 - **Embeddable widget API** (`monet.qt`) — the GUI can be dropped into any other Qt application
@@ -56,6 +56,23 @@ pip install -e ".[setup]"     # paramiko, for the wizard's SSH server install
 pip install -e ".[all]"       # everything above
 ```
 
+monet installs **no console-script `.exe`** (`Scripts\monet.exe`). pip renders
+console entry points as small, unsigned launcher executables on Windows, and
+Trend Micro Apex One's machine-learning engine false-positives them
+(`Troj.Win32.TRX.*`) and quarantines them on install, silently breaking it. Run
+monet via the module form instead — identical behaviour, no executable to flag:
+
+```bash
+python -m monet gui             # was: monet gui
+python -m monet serve ...       # was: monet serve
+python -m monet.admin.cli       # was: monet-admin-cli
+python -m monet.admin.qt        # was: monet-admin-gui
+```
+
+To keep the bare `monet` command on Windows, copy `deploy/monet.cmd` (a non-PE
+batch wrapper that forwards to `python -m monet`) onto `PATH`. The standalone
+Windows installer below is unaffected — it ships its own `monet-gui.exe`.
+
 ### Standalone Windows install (`Monet-Setup-<version>.exe`)
 
 For a lab acquisition PC that shouldn't need a Python/conda setup, each tagged
@@ -91,7 +108,7 @@ the first stop when a rig misbehaves.
 
 ## Quick Start
 
-### First-time setup wizard (`monet setup`)
+### First-time setup wizard (`python -m monet setup`)
 
 On a freshly installed acquisition machine, the fastest path is the guided
 wizard — it connects you to the lab's calibration server (or stands a new one
@@ -238,7 +255,7 @@ so both DNA-PAINT services share one audited implementation.
 - **Toggle (`PAINT_MONET_AUTH`)** for easy onboarding — `off` | `on` | `auto`
   (default `auto`): `auto` enforces iff tokens are set (backward-compatible);
   `off` runs open on loopback and makes the client omit its token (debugging);
-  `on` requires tokens and makes `monet serve` refuse to start without them. Set
+  `on` requires tokens and makes `python -m monet serve` refuse to start without them. Set
   it in `.env` alongside the token.
 - **Fail-closed:** with auth inactive the service refuses any non-loopback bind
   (startup guard) and any non-loopback request (request-time net). Loopback dev
@@ -259,11 +276,11 @@ It generates the token, writes the `PAINT_MONET_TOKENS` map for you, and prints
 the value once with the exact line to paste on the client:
 
 ```bash
-monet token add --scope write --label microscope-mercury   # -> prints PAINT_MONET_TOKEN=…
-monet token add --scope read  --label dashboards
-monet token list        # scopes + labels only (never the values)
-monet token rotate --label microscope-mercury
-monet token revoke --label microscope-mercury
+python -m monet token add --scope write --label microscope-mercury  # prints PAINT_MONET_TOKEN=…
+python -m monet token add --scope read  --label dashboards
+python -m monet token list        # scopes + labels only (never the values)
+python -m monet token rotate --label microscope-mercury
+python -m monet token revoke --label microscope-mercury
 # --env-file PATH targets a specific .env (default: the package-root .env)
 ```
 
@@ -281,12 +298,12 @@ Give each machine/role its **own** label so it can be rotated/revoked
 independently; the
 `label` is what attributes writes in the logs.
 
-**Verify from a client — `monet auth test`.** On a rig whose `.env` has
-`PAINT_MONET_TOKEN`, check the whole chain (reachability + auth) and see the
+**Verify from a client — `python -m monet auth test`.** On a rig whose `.env`
+has `PAINT_MONET_TOKEN`, check the whole chain (reachability + auth) and see the
 label/scope the server knows the token by:
 
 ```bash
-monet auth test --url http://<server>:8000   # or: monet auth test <MicroscopeName>
+python -m monet auth test --url http://<server>:8000   # or: ... auth test <MicroscopeName>
 # -> Authenticated: YES — 'microscope-mercury' (scope: write)
 ```
 
@@ -319,7 +336,7 @@ ExecStart=/opt/monet/.venv/bin/monet serve Mercury --host 0.0.0.0 --port 8000
 A gitignored `.env` (loaded by your shell/`direnv`) or a secrets manager works
 too; the only hard rules are *never in git* and *never in the calibration DB*.
 
-**Rotate / revoke** with `monet token rotate/revoke --label <holder>` (or edit the
+**Rotate / revoke** with `python -m monet token rotate/revoke --label <holder>` (or edit the
 map by hand), then restart `serve`. Because each holder has a distinct `label`,
 you can rotate/revoke one microscope or the dashboards without disturbing the
 others. There is no online revocation list — a change applies on restart, so keep

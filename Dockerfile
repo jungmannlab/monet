@@ -82,4 +82,4 @@ EXPOSE 8000
 # swallows the HUP. The fail-closed host guard refuses a 0.0.0.0 bind without
 # tokens, so the mounted env file must carry PAINT_MONET_TOKENS (install-docker.sh
 # mints them before first start).
-CMD ["sh", "-c", "exec monet serve --host \"$MONET_HOST\" --port \"$MONET_PORT\" --db-path \"$MONET_DB_PATH\""]
+CMD ["sh", "-c", "exec python -m monet serve --host \"$MONET_HOST\" --port \"$MONET_PORT\" --db-path \"$MONET_DB_PATH\""]

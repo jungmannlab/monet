@@ -88,7 +88,7 @@ cmd_status() {
 token_run() {
   local image; image="$(detect_image)"
   docker run --rm -v "$ETC_DIR:$CONTAINER_ETC" "$image" \
-    monet token "$@" --env-file "$ENV_FILE_IN"
+    python -m monet token "$@" --env-file "$ENV_FILE_IN"
 }
 
 # SIGHUP the running service so an add/rotate/revoke applies without downtime.

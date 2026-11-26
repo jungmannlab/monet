@@ -38,7 +38,7 @@ Environment=HOME=/var/lib/monet
 EnvironmentFile=-/var/lib/monet/monet.env
 
 # Edit the venv path, host/port, and db-path for your box.
-ExecStart=/opt/monet/.venv/bin/monet serve --host 0.0.0.0 --port 8000 --db-path /var/lib/monet/calibrations.db
+ExecStart=/opt/monet/.venv/bin/python -m monet serve --host 0.0.0.0 --port 8000 --db-path /var/lib/monet/calibrations.db
 
 Restart=on-failure
 RestartSec=2
