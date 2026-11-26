@@ -1339,6 +1339,9 @@ class TestControl(unittest.TestCase):
         self.assertEqual(s["diagnosis"], "oscillating")
         self.assertTrue(s["changed"])
         self.assertLess(s["kp"], 1.2)
+        # Ki is tuned independently of Kp: damping oscillation by lowering Kp
+        # must not drag Ki down with it (regression for the old ki=0.2·kp tie).
+        self.assertAlmostEqual(s["ki"], 0.3, places=6)
 
     def test_suggest_pi_gains_converged_no_change(self):
         """A quick convergence leaves the gains alone."""
@@ -1385,3 +1388,104 @@ class TestControl(unittest.TestCase):
         )
         self.assertEqual(s["diagnosis"], "range_limited")
         self.assertFalse(s["changed"])
+
+    def test_suggest_pi_gains_stalled_raises_ki_not_kp(self):
+        """A persistent same-sign offset is an integral deficiency: raise Ki,
+        and do NOT lower Kp (nor collapse Ki, the old bug)."""
+        target = 10.0
+        # Measured plateaus ~6% below target with no sign change — the classic
+        # proportional steady-state offset ("set 18.3, settle at ~17.2").
+        measured = [9.50, 9.44, 9.41, 9.40, 9.40, 9.40]
+        s = mco.suggest_pi_gains(
+            target,
+            measured,
+            kp=0.9,
+            ki=0.0,
+            mode="fixed_laser",
+            converged=False,
+            max_dev_pct=1.0,
+            max_iter=20,
+        )
+        self.assertEqual(s["diagnosis"], "stalled")
+        self.assertTrue(s["changed"])
+        # Ki is raised from 0 so the offset is integrated away...
+        self.assertGreater(s["ki"], 0.0)
+        # ...and Kp is left alone (lowering it would deepen the offset).
+        self.assertAlmostEqual(s["kp"], 0.9, places=6)
+
+    def test_suggest_pi_gains_stalled_raises_existing_ki(self):
+        """A stalled run with Ki already set raises it further, never below."""
+        measured = [9.50, 9.44, 9.41, 9.40, 9.40, 9.40]
+        s = mco.suggest_pi_gains(
+            10.0,
+            measured,
+            kp=0.5,
+            ki=0.15,
+            mode="fixed_laser",
+            converged=False,
+            max_dev_pct=1.0,
+            max_iter=20,
+        )
+        self.assertEqual(s["diagnosis"], "stalled")
+        self.assertGreater(s["ki"], 0.15)
+
+    @mock.patch("time.sleep")
+    def test_autotune_pi_gains_measures_plant_gain(self, _sleep):
+        """The active step-test recovers the plant's multiplicative miscal as
+        the plant gain and derives independent, non-zero Kp/Ki from it."""
+        ctrl = self._build_laser_control()
+        pm = _AttenuatorCurvePowerMeter(ctrl, miscal=1.1)
+        res = mco.autotune_pi_gains(
+            ctrl,
+            pm,
+            target_pwr=30,
+            laser=488,
+            mode="fixed_laser",
+            kp=0.85,
+            ki=0.15,
+            probe_frac=0.15,
+            max_dev_pct=2.0,
+            max_iter=20,
+        )
+        self.assertEqual(res["diagnosis"], "tuned")
+        self.assertAlmostEqual(res["plant_gain"], 1.1, places=2)
+        # Kp = _TARGET_DECAY / g = 0.35 / 1.1 ≈ 0.318
+        self.assertAlmostEqual(res["kp"], mco._TARGET_DECAY / 1.1, places=2)
+        self.assertGreater(res["ki"], 0.0)
+        self.assertEqual(len(res["trajectory"]), 3)
+        self.assertTrue(res["confirmed"])
+        self.assertTrue(res["converged"])
+
+    def test_autotune_pi_gains_rejects_fixed_attenuator(self):
+        """Fixed-attenuator mode has no PI gains; auto-tune is a no-op there."""
+        ctrl = self._build_laser_control()
+        pm = _AttenuatorCurvePowerMeter(ctrl, miscal=1.1)
+        res = mco.autotune_pi_gains(
+            ctrl, pm, target_pwr=30, laser=488, mode="fixed_attenuator"
+        )
+        self.assertEqual(res["diagnosis"], "unsupported")
+        self.assertFalse(res["changed"])
+
+    @mock.patch("time.sleep")
+    def test_autotune_pi_gains_no_light_keeps_gains(self, _sleep):
+        """A dark meter leaves the gains untouched and reports no_light."""
+        ctrl = self._build_laser_control()
+
+        class _DarkMeter:
+            unit = "mW"
+
+            def read(self, averaging=10):
+                return 0.0
+
+        res = mco.autotune_pi_gains(
+            ctrl,
+            _DarkMeter(),
+            target_pwr=30,
+            laser=488,
+            mode="fixed_laser",
+            kp=0.7,
+            ki=0.2,
+        )
+        self.assertEqual(res["diagnosis"], "no_light")
+        self.assertFalse(res["changed"])
+        self.assertEqual((res["kp"], res["ki"]), (0.7, 0.2))

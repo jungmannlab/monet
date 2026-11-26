@@ -126,3 +126,61 @@ def save_laser_state(microscope, laser, laser_power=None, attenuator=None):
     if attenuator is not None:
         entry["attenuator"] = float(attenuator)
     _write_state(data)
+
+
+#: Top-level section (kept out of the per-laser namespace so it can never
+#: collide with a wavelength key) holding the closed-loop PI feedback gains,
+#: one entry per microscope.
+_FEEDBACK_KEY = "_feedback_gains"
+
+
+def get_feedback_gains(microscope):
+    """Return ``{'kp': ..., 'ki': ..., 'max_iter': ...}`` for one microscope,
+    or ``None`` if nothing was stored.
+
+    Parameters
+    ----------
+    microscope : str
+        Microscope name (the ``DEVICE_TAG`` value).
+    """
+    data = load_state()
+    section = data.get(_FEEDBACK_KEY)
+    if not isinstance(section, dict):
+        return None
+    entry = section.get(str(microscope))
+    return entry if isinstance(entry, dict) else None
+
+
+def save_feedback_gains(microscope, kp=None, ki=None, max_iter=None):
+    """Persist the closed-loop PI gains for one microscope across sessions.
+
+    Only the non-``None`` arguments are updated; existing values for the other
+    fields are preserved. The call is a no-op if all are ``None``.
+
+    Parameters
+    ----------
+    microscope : str
+        Microscope name (the ``DEVICE_TAG`` value).
+    kp, ki : float, optional
+        Proportional / integral gains.
+    max_iter : int, optional
+        Maximum feedback-correction iterations.
+    """
+    if kp is None and ki is None and max_iter is None:
+        return
+    data = load_state()
+    section = data.get(_FEEDBACK_KEY)
+    if not isinstance(section, dict):
+        section = {}
+        data[_FEEDBACK_KEY] = section
+    entry = section.get(str(microscope))
+    if not isinstance(entry, dict):
+        entry = {}
+        section[str(microscope)] = entry
+    if kp is not None:
+        entry["kp"] = float(kp)
+    if ki is not None:
+        entry["ki"] = float(ki)
+    if max_iter is not None:
+        entry["max_iter"] = int(max_iter)
+    _write_state(data)
