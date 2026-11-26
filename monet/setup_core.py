@@ -72,8 +72,8 @@ def user_config_dir():
 
     Honours ``MONET_HOME`` (set by the bundled Windows launcher so the whole
     app agrees); otherwise ``%LOCALAPPDATA%\\monet`` on Windows or ``~/.monet``
-    elsewhere. Only used on a frozen build — a normal install keeps state beside
-    the package.
+    elsewhere. Only used by the bundled standalone build (frozen or embeddable)
+    — a normal install keeps state beside the package.
     """
     base = os.environ.get("MONET_HOME")
     if base:
@@ -87,12 +87,16 @@ def default_env_path():
 
     A normal (editable/wheel) install keeps it beside the package, the same file
     :func:`monet.tokens._default_env_file` targets, so what the wizard writes is
-    exactly what monet reads next run. A **frozen** PyInstaller build's package
-    dir is an ephemeral temp dir (``sys._MEIPASS``), so there the ``.env`` is
-    persisted under :func:`user_config_dir` instead (the launcher chdirs there,
-    so monet's import-time ``.env`` search finds it too).
+    exactly what monet reads next run. The **bundled standalone** build instead
+    persists it under :func:`user_config_dir` (the launcher chdirs there, so
+    monet's import-time ``.env`` search finds it too): the install dir may be
+    read-only and, for the old PyInstaller build, was an ephemeral temp dir
+    (``sys._MEIPASS``). Detect the standalone build by ``sys.frozen`` (set by
+    PyInstaller) **or** ``MONET_HOME`` (set by the embeddable-CPython launcher,
+    which is *not* frozen) — otherwise the embeddable build would write ``.env``
+    beside the package and monet would never find it at import.
     """
-    if getattr(sys, "frozen", False):
+    if getattr(sys, "frozen", False) or os.environ.get("MONET_HOME"):
         return os.path.join(user_config_dir(), ".env")
     return os.path.join(_PKG_ROOT, ".env")
 
