@@ -113,9 +113,15 @@ as_monet "$VENV_DIR/bin/pip" install --quiet --upgrade pip
 as_monet "$VENV_DIR/bin/pip" install --quiet -e "$SRC_DIR[server]"
 chown -R "$MONET_USER:$MONET_USER" "$APP_DIR"
 
-# Put `monet` on PATH so admins don't have to spell out the venv path or
-# activate anything: `sudo -u monet monet token ... --env-file $ENV_FILE`.
-ln -sf "$VENV_DIR/bin/monet" /usr/local/bin/monet
+# Put a `monet` command on PATH so admins don't have to spell out the venv path
+# or activate anything: `sudo -u monet monet token ... --env-file $ENV_FILE`.
+# pip no longer installs a Scripts/bin `monet` launcher (its .exe form trips
+# Apex One on Windows), so write a tiny non-PE wrapper around `python -m monet`.
+cat > /usr/local/bin/monet <<EOF
+#!/bin/sh
+exec "$VENV_DIR/bin/python" -m monet "\$@"
+EOF
+chmod +x /usr/local/bin/monet
 
 # ---- 5. token env file (preserve if it already has content) -----------------
 if [ -s "$ENV_FILE" ]; then
@@ -123,7 +129,7 @@ if [ -s "$ENV_FILE" ]; then
 else
   log "no tokens at $ENV_FILE — creating PAINT_MONET_AUTH=on + one write token"
   printf 'PAINT_MONET_AUTH=on\n' > "$ENV_FILE"
-  sudo -u "$MONET_USER" "$VENV_DIR/bin/monet" token add \
+  sudo -u "$MONET_USER" "$VENV_DIR/bin/python" -m monet token add \
        --scope write --label "$(hostname -s)" --env-file "$ENV_FILE"
 fi
 chmod 600 "$ENV_FILE"
@@ -150,7 +156,7 @@ Group=$MONET_USER
 WorkingDirectory=$DATA_DIR
 Environment=HOME=$DATA_DIR
 EnvironmentFile=$ENV_FILE
-ExecStart=$VENV_DIR/bin/monet serve --host $MONET_HOST --port $MONET_PORT --db-path $DB_PATH
+ExecStart=$VENV_DIR/bin/python -m monet serve --host $MONET_HOST --port $MONET_PORT --db-path $DB_PATH
 Restart=on-failure
 RestartSec=2
 NoNewPrivileges=true

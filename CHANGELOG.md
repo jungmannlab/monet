@@ -10,6 +10,21 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
+## [0.7.14] - 2026-11-26
+
+### Changed
+- **No console-script `.exe` is installed (Apex One quarantine fix).** pip
+  renders console entry points as small, unsigned launcher `.exe` stubs in
+  `Scripts\` on Windows; Trend Micro Apex One's TrendX machine-learning engine
+  false-positives them as `Troj.Win32.TRX.*` and quarantines `Scripts\monet.exe`
+  on install, silently breaking it. The `[project.scripts]` entry points are
+  removed; every one has an equivalent module form that runs the same code with
+  no executable to flag: `python -m monet`, `python -m monet.admin.cli`,
+  `python -m monet.admin.qt`. `deploy/monet.cmd` (a non-PE batch wrapper)
+  restores the bare `monet` command on Windows. The systemd unit
+  (`deploy/monet.service`) and the standalone PyInstaller installer
+  (`monet-gui.exe`) are updated/unaffected accordingly.
+
 ## [0.7.13] - 2026-11-26
 
 ### Fixed
