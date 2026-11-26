@@ -804,6 +804,16 @@ class TestFrozenPaths(unittest.TestCase):
                 sc.default_env_path(), os.path.join("/data/monet-home", ".env")
             )
 
+    def test_default_env_path_embeddable_uses_user_dir(self):
+        # The embeddable-CPython standalone build is NOT frozen, but its
+        # launcher sets MONET_HOME; the .env must still go there (not beside
+        # the package), or monet would never find it at import.
+        os.environ["MONET_HOME"] = "/data/monet-home"
+        with mock.patch.object(sc.sys, "frozen", False, create=True):
+            self.assertEqual(
+                sc.default_env_path(), os.path.join("/data/monet-home", ".env")
+            )
+
 
 class TestDetectState(unittest.TestCase):
     def test_detect_state_no_network(self):

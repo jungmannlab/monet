@@ -71,7 +71,8 @@ python -m monet.admin.qt        # was: monet-admin-gui
 
 To keep the bare `monet` command on Windows, copy `deploy/monet.cmd` (a non-PE
 batch wrapper that forwards to `python -m monet`) onto `PATH`. The standalone
-Windows installer below is unaffected — it ships its own `monet-gui.exe`.
+Windows installer below likewise ships **no custom `.exe`** — it launches the
+GUI with the signed CPython interpreter (see below).
 
 ### Standalone Windows install (`Monet-Setup-<version>.exe`)
 
@@ -86,12 +87,20 @@ launches straight into that microscope — no command-line argument needed.
 
 The same Release also carries a **portable zip** (`monet-gui-portable-<version>.zip`)
 for anyone who prefers to run it without installing — unzip it and run
-`monet-gui.exe` inside. Both are built by CI
-(`.github/workflows/release-windows.yml`): a PyInstaller **onedir** bundle from
-`packaging/monet-gui.spec` (a folder, not a single exe — so there's no per-launch
-temp extraction, which avoids antivirus-induced "failed to load Python DLL"
-errors and starts faster) and the installer from `packaging/monet-gui.iss`
-(Inno Setup) that lays that folder down.
+**`Monet GUI.cmd`** (or `pythonw.exe monet_gui.py`) inside. Both are built by CI
+(`.github/workflows/release-windows.yml`): `packaging/build-embedded.ps1`
+assembles a folder from the **python.org embeddable CPython** plus a real
+`pip install .[gui,hardware,setup]` into it, and `packaging/monet-gui.iss`
+(Inno Setup) lays that folder down with a Start-menu shortcut.
+
+The GUI launches via the bundle's **`pythonw.exe monet_gui.py`** — the only
+executables shipped are `python.exe`/`pythonw.exe` (Authenticode-signed by the
+Python Software Foundation) and vendor DLLs, so there is **no custom unsigned
+`.exe`**. The earlier PyInstaller build shipped a `monet-gui.exe` bootloader
+that Trend Micro Apex One's TrendX engine false-positived as `Troj.Win32.TRX.*`
+and quarantined; the embeddable build removes that artifact entirely. (If you
+have a code-signing certificate, the release CI will also sign the installer
+when `WINDOWS_CODESIGN_PFX_B64` / `WINDOWS_CODESIGN_PASSWORD` secrets are set.)
 
 The build bundles the `[hardware]` extra, so the **vendor SDK Python packages**
 (msl-equipment, pyvisa, nidaqmx, pycobolt, python-microscope, pycromanager,
