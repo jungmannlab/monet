@@ -20,6 +20,11 @@ permissions:
 jobs:
   windows-exe:
     runs-on: windows-latest
+    # Surface the (optional) code-signing secrets as env so step-level `if:`
+    # can test them — the `secrets` context is not available in a step `if`.
+    env:
+      WINDOWS_CODESIGN_PFX_B64: ${{ secrets.WINDOWS_CODESIGN_PFX_B64 }}
+      WINDOWS_CODESIGN_PASSWORD: ${{ secrets.WINDOWS_CODESIGN_PASSWORD }}
 
     steps:
       - name: Checkout code
@@ -104,19 +109,16 @@ jobs:
         # installer is the one PE we emit; sign it when a code-signing cert is
         # configured so it also carries publisher trust / reputation. Skipped
         # (no-op) when the secret is absent, so forks and cert-less builds work.
-        if: ${{ secrets.WINDOWS_CODESIGN_PFX_B64 != '' }}
+        if: ${{ env.WINDOWS_CODESIGN_PFX_B64 != '' }}
         shell: pwsh
-        env:
-          PFX_B64: ${{ secrets.WINDOWS_CODESIGN_PFX_B64 }}
-          PFX_PASSWORD: ${{ secrets.WINDOWS_CODESIGN_PASSWORD }}
         run: |
           $pfx = Join-Path $env:RUNNER_TEMP "codesign.pfx"
-          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:PFX_B64))
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CODESIGN_PFX_B64))
           $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe" |
             Sort-Object FullName -Descending | Select-Object -First 1
           if (-not $signtool) { throw "signtool.exe not found" }
           Get-ChildItem dist\Monet-Setup-*.exe | ForEach-Object {
-            & $signtool.FullName sign /f $pfx /p $env:PFX_PASSWORD `
+            & $signtool.FullName sign /f $pfx /p $env:WINDOWS_CODESIGN_PASSWORD `
               /tr http://timestamp.digicert.com /td sha256 /fd sha256 $_.FullName
             if ($LASTEXITCODE -ne 0) { throw "signtool failed ($LASTEXITCODE)" }
           }
