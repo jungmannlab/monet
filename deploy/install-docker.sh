@@ -162,10 +162,10 @@ else
   # The token CLI lives in the image; mint via throwaway containers with
   # $ETC_DIR mounted rw so the file is updated on the host.
   docker run --rm -v "$ETC_DIR:$CONTAINER_ETC" "$IMAGE:latest" \
-    monet token add --scope write --label "$HOSTLABEL" \
+    python -m monet token add --scope write --label "$HOSTLABEL" \
     --env-file "$CONTAINER_ENV_FILE"
   docker run --rm -v "$ETC_DIR:$CONTAINER_ETC" "$IMAGE:latest" \
-    monet token add --scope read --label lab-dashboard \
+    python -m monet token add --scope read --label lab-dashboard \
     --env-file "$CONTAINER_ENV_FILE"
 fi
 chmod 600 "$ENV_FILE"

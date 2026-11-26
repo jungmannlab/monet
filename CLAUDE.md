@@ -37,7 +37,9 @@ pip install -e ".[hardware]"    # real-instrument SDKs (pyvisa, nidaqmx, ...)
 pip install -e ".[dev]"         # test tooling + [server] (needed to run the suite)
 pip install -e ".[all]"         # everything
 
-# Run (console script `monet` and `python -m monet` are equivalent)
+# Run (no console-script `.exe` is installed — Apex One quarantines pip's
+# Scripts\monet.exe launcher stub; use the module form. deploy/monet.cmd
+# restores a bare `monet` command on Windows without a PE.)
 python -m monet calibrate <Name>   # run a calibration protocol
 python -m monet set <Name>         # interactive power-setting shell
 python -m monet gui <Name>         # PyQt6 GUI

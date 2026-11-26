@@ -150,12 +150,16 @@ all = [
 Homepage = "https://github.com/Heerpa/monet"
 Repository = "https://github.com/Heerpa/monet"
 
-[project.scripts]
-monet = "monet.__main__:main"
-# SSH admin console (the [admin] extra). Laptop-side front-ends over the
-# server-side monet-admin wrapper; both lazy-import Qt/paramiko.
-monet-admin-cli = "monet.admin.cli:main"
-monet-admin-gui = "monet.admin.qt:main"
+# No [project.scripts]. pip renders console entry points as small, unsigned
+# launcher .exe stubs in the environment's Scripts\ dir on Windows, and Trend
+# Micro Apex One's TrendX machine-learning engine false-positives them as
+# "Troj.Win32.TRX.*" and quarantines them on install — which silently breaks
+# the install (the launcher vanishes). Every entry point has an equivalent
+# module form that runs the same code without producing any .exe:
+#   monet            -> python -m monet
+#   monet-admin-cli  -> python -m monet.admin.cli
+#   monet-admin-gui  -> python -m monet.admin.qt
+# On Windows, deploy/monet.cmd restores the bare `monet` command without a PE.
 
 [tool.setuptools_scm]
 # Writes the version into a file that is importable at runtime, even when

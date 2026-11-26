@@ -57,7 +57,7 @@ jobs:
           printf 'PAINT_MONET_AUTH=on\n' > "$PWD/ci-etc/monet.env"
           docker run --rm -v "$PWD/ci-etc:/etc/monet" \
             monet:ci \
-            monet token add --scope write --label ci \
+            python -m monet token add --scope write --label ci \
             --env-file /etc/monet/monet.env
 
       - name: Run the container (0.0.0.0 bind + mounted tokens, as in deploy)
