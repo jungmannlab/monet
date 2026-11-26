@@ -86,6 +86,38 @@ class TestHwState(unittest.TestCase):
             data = json.load(f)
         self.assertEqual(data["Scope"]["640"]["laser_power"], 200.0)
 
+    def test_feedback_gains_roundtrip(self):
+        hwstate.save_feedback_gains("Scope", kp=0.3, ki=0.12, max_iter=25)
+        self.assertEqual(
+            hwstate.get_feedback_gains("Scope"),
+            {"kp": 0.3, "ki": 0.12, "max_iter": 25},
+        )
+
+    def test_feedback_gains_missing_is_none(self):
+        self.assertIsNone(hwstate.get_feedback_gains("Scope"))
+
+    def test_feedback_gains_noop_when_all_none(self):
+        hwstate.save_feedback_gains("Scope")
+        self.assertFalse(self._path.exists())
+
+    def test_feedback_gains_partial_update_preserves_other(self):
+        hwstate.save_feedback_gains("Scope", kp=0.3, ki=0.12, max_iter=25)
+        hwstate.save_feedback_gains("Scope", ki=0.4)
+        entry = hwstate.get_feedback_gains("Scope")
+        self.assertEqual(entry["kp"], 0.3)
+        self.assertEqual(entry["ki"], 0.4)
+        self.assertEqual(entry["max_iter"], 25)
+
+    def test_feedback_gains_do_not_collide_with_laser_state(self):
+        """The gains live in a separate section and never shadow a laser."""
+        hwstate.save_laser_state("Scope", 488, laser_power=100.0)
+        hwstate.save_feedback_gains("Scope", kp=0.5)
+        # Both coexist and read back independently.
+        self.assertEqual(
+            hwstate.get_laser_state("Scope", 488)["laser_power"], 100.0
+        )
+        self.assertEqual(hwstate.get_feedback_gains("Scope")["kp"], 0.5)
+
 
 if __name__ == "__main__":
     unittest.main()

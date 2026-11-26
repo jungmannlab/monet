@@ -1924,7 +1924,10 @@ def suggest_pi_gains(
                     "reaches the setpoint in fewer, faster iterations."
                 ).format(y.size - 1, max_iter),
             )
-            out["ki"] = _clamp(0.2 * out["kp"], 0.0, 1.0)
+            # Ki is tuned independently of Kp — it removes steady-state offset,
+            # so it must not be scaled down just because Kp drops (the old
+            # ``ki = 0.2·kp`` tie drove Ki toward 0 and reintroduced the very
+            # offset the integral term exists to kill). Leave it as set.
         else:
             out["message"] = (
                 "Converged in {} step(s) — the gains look fine.".format(
@@ -1964,11 +1967,35 @@ def suggest_pi_gains(
     else:
         out["diagnosis"] = "slow"
 
-    # Scale Kp so the observed decay ratio moves toward the target. rho>target
-    # (slow or growing) lowers Kp; this *speeds up* convergence because the
-    # loop rate is |m·kp| and overshoot/oscillation shrinks with Kp.
-    kp_new = _clamp(kp * _TARGET_DECAY / max(rho, 1e-3), 0.05, 2.0)
-    ki_new = _clamp(0.2 * kp_new, 0.0, 1.0)
+    # Kp and Ki are tuned *independently*, by what the trajectory shows:
+    #
+    # * A persistent, same-sign residual that stops shrinking ("stalled") is a
+    #   steady-state offset — the proportional loop has reached its own
+    #   equilibrium below the target. That is an *integral*-action deficiency:
+    #   raise Ki to integrate the offset away, and leave Kp (lowering it would
+    #   only deepen the proportional offset, which is what the old
+    #   ``ki = 0.2·kp`` tie did — it shrank Ki as it shrank Kp, so the loop
+    #   crept ever more slowly toward a value it could never reach).
+    # * Oscillation or slow decay is a proportional-*rate* problem: scale Kp so
+    #   the observed decay ratio rho moves toward the target (the loop rate is
+    #   |m·kp|, so a lower Kp both speeds a too-slow decay and damps overshoot),
+    #   and leave Ki as the operator set it.
+    if out["diagnosis"] == "stalled":
+        kp_new = _clamp(kp, 0.05, 2.0)
+        # Raise Ki (double it, with a 0.1 floor and a Kp-relative floor) and
+        # cap at 1.0. ``max(...)`` already exceeds the current Ki for any
+        # Ki < 1.0, so this strictly raises it until it saturates at the cap —
+        # without an ``lo > hi`` _clamp that could push Ki past 1.0.
+        ki_new = _clamp(max(ki * 2.0, 0.1, 0.25 * kp_new), 0.0, 1.0)
+    else:
+        # Scale Kp toward the target decay (the loop rate is |m·kp| = rho), but
+        # never *raise* it: a loop already decaying fast (rho < target) that
+        # merely ran out of iterations needs more steps, not a higher — and
+        # destabilising — Kp. Leave Ki exactly as the operator set it.
+        kp_new = _clamp(
+            min(kp, kp * _TARGET_DECAY / max(rho, 1e-3)), 0.05, 2.0
+        )
+        ki_new = float(ki)
 
     # Iterations needed to decay the initial error to tolerance at the target
     # ratio, with a little margin.
@@ -1984,8 +2011,8 @@ def suggest_pi_gains(
     )
     out.update(kp=kp_new, ki=ki_new, max_iter=max_iter_new, changed=changed)
     verb = {
-        "oscillating": "overshot and oscillated",
-        "stalled": "barely moved toward",
+        "oscillating": "overshot and oscillated around",
+        "stalled": "settled with a steady-state offset short of",
         "slow": "crept slowly toward",
     }[out["diagnosis"]]
     out["message"] = (
@@ -2003,5 +2030,271 @@ def suggest_pi_gains(
         ki_new,
         max_iter,
         max_iter_new,
+    )
+    return out
+
+
+def autotune_pi_gains(
+    instrument,
+    powermeter,
+    target_pwr,
+    laser,
+    mode="fixed_laser",
+    kp=0.85,
+    ki=0.15,
+    probe_frac=0.15,
+    settle_time=0.8,
+    read_settle=0.3,
+    read_averaging=30,
+    confirm=True,
+    max_dev_pct=1.0,
+    max_iter=20,
+    progress_callback=None,
+    cancel_check=None,
+):
+    """Actively identify the plant and derive PI gains (fixed-laser mode).
+
+    Where :func:`suggest_pi_gains` infers gains from one *past* closed-loop
+    run — which may not tell the whole story — this runs a deliberate
+    open-loop **step test** around the operating point: it commands a few power
+    setpoints bracketing ``target_pwr`` (±``probe_frac``), measures the power
+    actually delivered at each, and fits the local plant gain
+    ``g = d(measured)/d(setpoint)`` that the PI loop really sees. From ``g`` it
+    sets, *independently*:
+
+    * ``Kp`` so the proportional loop decays at :data:`_TARGET_DECAY` per step
+      (``Kp = _TARGET_DECAY / g``) — fast but well damped; and
+    * ``Ki`` to a non-zero fraction of ``Kp`` so the steady-state offset the
+      proportional term leaves is integrated away.
+
+    With ``confirm`` it then runs a short :func:`run_power_feedback` with the
+    derived gains and reports whether it converged. The hardware is left at the
+    open-loop ``target_pwr`` setting (or at the confirmed closed-loop point).
+
+    Only ``fixed_laser`` mode has PI gains to tune; ``fixed_attenuator``
+    corrects by scaling the laser power and is rejected.
+
+    Parameters mirror :func:`run_power_feedback` where they overlap. ``kp`` /
+    ``ki`` are the *current* gains, returned unchanged if the step test cannot
+    be completed (no light, degenerate/clamped probe span, non-physical slope).
+
+    Returns
+    -------
+    dict
+        ``kp``, ``ki``, ``max_iter`` (derived gains / cap), ``plant_gain``
+        (float or None), ``linearity`` (0..1, |corr| of the probe fit, or
+        None), ``confirmed`` (bool — whether a confirmation run was done),
+        ``converged`` (bool or None), ``measured`` (float or None, sample
+        plane), ``changed`` (bool), ``diagnosis`` (``tuned`` / ``no_light`` /
+        ``degenerate`` / ``cancelled`` / ``unsupported``), ``message`` and
+        ``trajectory`` (list of ``(label, setpoint, measured)``, sample plane).
+    """
+    import time
+
+    out = {
+        "kp": float(kp),
+        "ki": float(ki),
+        "max_iter": int(max_iter),
+        "plant_gain": None,
+        "linearity": None,
+        "confirmed": False,
+        "converged": None,
+        "measured": None,
+        "changed": False,
+        "diagnosis": "tuned",
+        "message": "",
+        "trajectory": [],
+    }
+
+    if mode != "fixed_laser":
+        out["diagnosis"] = "unsupported"
+        out["message"] = (
+            "Auto-tune applies only to fixed-laser mode (the attenuator-"
+            "adjusting PI loop). Fixed-attenuator mode scales the laser power "
+            "and uses no Kp/Ki."
+        )
+        return out
+    if not getattr(instrument, "is_calibrated", False):
+        raise ValueError("Not calibrated. Cannot auto-tune.")
+
+    # Plane / unit bookkeeping, mirroring run_power_feedback: the loop runs in
+    # the physical meter plane and the analyzer works in the calibration plane.
+    try:
+        factor = instrument._measurement_factor(laser) or 1.0
+    except Exception:
+        factor = 1.0
+    try:
+        factor_cal = instrument._bfp_factor(laser) or 1.0
+    except Exception:
+        factor_cal = 1.0
+    phys_to_cal = factor / factor_cal if factor_cal else 1.0
+
+    if hasattr(instrument, "clamp_to_max_power"):
+        target_pwr, _ = instrument.clamp_to_max_power(target_pwr, laser)
+    target_bp = target_pwr / factor if factor else target_pwr
+
+    try:
+        out_rng = instrument.analyzer.output_range()
+        lo = float(min(out_rng))
+        hi = float(max(out_rng))
+    except Exception:
+        lo, hi = 0.0, float("inf")
+
+    frac = float(np.clip(probe_frac, 0.02, 0.5))
+    # Three points (−frac, nominal, +frac) give both a slope and a linearity
+    # check; clamping to the analyzer range keeps every probe reachable.
+    probe_targets = [
+        target_bp * (1.0 - frac),
+        target_bp,
+        target_bp * (1.0 + frac),
+    ]
+
+    def _restore_target():
+        # Always leave the hardware at the requested open-loop target, never at
+        # a probe setpoint (a probe can sit ±probe_frac off the target). Called
+        # on every post-probe exit, including the early returns and cancel.
+        try:
+            instrument.set_power_fixed_laser(target_pwr, laser)
+            time.sleep(settle_time)
+        except Exception as exc:
+            logger.debug("autotune: restoring target failed: %s", exc)
+
+    pts = []  # (commanded meter-plane setpoint, measured meter-plane power)
+    cancelled = False
+    for idx, sp_bp in enumerate(probe_targets):
+        if cancel_check is not None and cancel_check():
+            cancelled = True
+            break
+        sp_cal = float(np.clip(sp_bp * phys_to_cal, lo, hi))
+        try:
+            att = instrument.analyzer.estimate(sp_cal)
+            instrument.attenuator.set(att)
+        except Exception as exc:
+            logger.warning("autotune: could not set probe %d: %s", idx, exc)
+            continue
+        time.sleep(settle_time)
+        time.sleep(read_settle)
+        meas_bp = powermeter.read(read_averaging)
+        sp_bp_cmd = sp_cal / phys_to_cal if phys_to_cal else sp_cal
+        pts.append((sp_bp_cmd, meas_bp))
+        out["trajectory"].append(
+            ("probe {}".format(idx + 1), sp_bp_cmd * factor, meas_bp * factor)
+        )
+        if progress_callback is not None:
+            progress_callback(idx, sp_bp_cmd * factor, meas_bp * factor)
+
+    if cancelled:
+        _restore_target()
+        out["diagnosis"] = "cancelled"
+        out["message"] = "Auto-tune cancelled before the step test finished."
+        return out
+
+    valid = [(s, m) for (s, m) in pts if s > 0 and m > 0]
+    span_ok = len(valid) >= 2 and abs(valid[-1][0] - valid[0][0]) > 1e-9
+    if not valid or all(m <= 0 for _, m in pts):
+        _restore_target()
+        out["diagnosis"] = "no_light"
+        out["message"] = (
+            "No light was measured during the step test — check the shutter, "
+            "laser and beam path. Gains left unchanged."
+        )
+        return out
+    if not span_ok:
+        _restore_target()
+        out["diagnosis"] = "degenerate"
+        out["message"] = (
+            "The probe setpoints collapsed to one point (likely the attenuator "
+            "range limit at this laser power), so the plant gain could not be "
+            "measured. Change the laser power or target. Gains left unchanged."
+        )
+        return out
+
+    s_arr = np.array([s for s, _ in valid], dtype=float)
+    m_arr = np.array([m for _, m in valid], dtype=float)
+    g, _b = np.polyfit(s_arr, m_arr, 1)
+    if not np.isfinite(g) or g <= 0:
+        _restore_target()
+        out["diagnosis"] = "degenerate"
+        out["message"] = (
+            "The step test produced a non-physical plant gain "
+            "({:.3g}); gains left unchanged. Check for saturation or a "
+            "stuck attenuator.".format(float(g))
+        )
+        return out
+
+    # |correlation| of the probe points as a crude linearity score. Needs at
+    # least 3 distinct points to be meaningful — two points are collinear by
+    # definition (|corr| == 1), which would advertise a false "perfect" score.
+    if s_arr.size >= 3 and np.std(s_arr) > 0 and np.std(m_arr) > 0:
+        linearity = float(abs(np.corrcoef(s_arr, m_arr)[0, 1]))
+    else:
+        linearity = None
+
+    kp_new = float(np.clip(_TARGET_DECAY / g, 0.05, 2.0))
+    # Non-zero integral so the proportional offset is removed; tied to the
+    # identified Kp but floored so it never collapses to ~0.
+    ki_new = float(np.clip(max(0.4 * kp_new, 0.05), 0.0, 1.0))
+    max_iter_new = int(max(max_iter, 20))
+
+    out.update(
+        kp=kp_new,
+        ki=ki_new,
+        max_iter=max_iter_new,
+        plant_gain=float(g),
+        linearity=linearity,
+        changed=(
+            abs(kp_new - kp) > 1e-3
+            or abs(ki_new - ki) > 1e-3
+            or max_iter_new != max_iter
+        ),
+    )
+
+    # Leave the hardware at the requested target (open-loop) rather than at the
+    # last probe point before any confirmation run.
+    _restore_target()
+
+    if confirm and not (cancel_check is not None and cancel_check()):
+        res = run_power_feedback(
+            instrument,
+            powermeter,
+            target_pwr,
+            laser,
+            "fixed_laser",
+            kp=kp_new,
+            ki=ki_new,
+            max_dev_pct=max_dev_pct,
+            max_iter=max_iter_new,
+            settle_time=settle_time,
+            read_settle=read_settle,
+            read_averaging=read_averaging,
+            progress_callback=progress_callback,
+            cancel_check=cancel_check,
+        )
+        out["confirmed"] = True
+        out["converged"] = bool(res.get("converged"))
+        out["measured"] = res.get("measured")
+
+    lin_txt = (
+        "" if linearity is None else " (linearity {:.2f})".format(linearity)
+    )
+    confirm_txt = ""
+    if out["confirmed"]:
+        confirm_txt = " Confirmation run {}.".format(
+            "converged" if out["converged"] else "did not converge"
+        )
+    out["message"] = (
+        "Step test measured plant gain g = {:.3f}{}. Derived Kp {:.2f} → "
+        "{:.2f}, Ki {:.3f} → {:.3f} (independent), max iterations {} → "
+        "{}.{}"
+    ).format(
+        g,
+        lin_txt,
+        kp,
+        kp_new,
+        ki,
+        ki_new,
+        max_iter,
+        max_iter_new,
+        confirm_txt,
     )
     return out

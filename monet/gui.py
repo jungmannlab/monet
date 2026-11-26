@@ -53,6 +53,7 @@ from PyQt6.QtWidgets import (
 
 import monet.analysis as analysis
 import monet.io as io
+from monet import hwstate
 from monet import updates
 from monet import (
     CONFIGS,
@@ -66,7 +67,11 @@ from monet import (
 )
 from monet import __version__ as _monet_version
 from monet.beampath import NikonFilterWheel, NikonNosepiece
-from monet.control import run_power_feedback, suggest_pi_gains
+from monet.control import (
+    autotune_pi_gains,
+    run_power_feedback,
+    suggest_pi_gains,
+)
 from monet.util import (
     load_class,
     update_mm_acquisition_comment,
@@ -2707,9 +2712,25 @@ class SetPowerTab(_MonetTab):
         )
         self._btn_suggest_pi.clicked.connect(self._on_suggest_pi)
         pi_layout.addWidget(self._btn_suggest_pi)
+        self._btn_autotune_pi = QPushButton("Auto-tune")
+        self._btn_autotune_pi.setToolTip(
+            "Actively probe the plant (a short open-loop step test around the "
+            "target) to measure its gain and derive Kp / Ki directly, then "
+            "confirm with a feedback run. Needs a power meter and fixed-laser "
+            "mode. Unlike 'Suggest from last run', this does not rely on a "
+            "previous run."
+        )
+        self._btn_autotune_pi.clicked.connect(self._on_autotune_pi)
+        pi_layout.addWidget(self._btn_autotune_pi)
         pi_layout.addStretch()
         self._pi_panel.setVisible(False)
         adj_layout.addWidget(self._pi_panel)
+        # Persist the PI gains across sessions: save on any edit (the load, in
+        # set_pc, sets the spin boxes with signals blocked so loading does not
+        # trigger a redundant save).
+        self._kp_spin.valueChanged.connect(self._save_feedback_gains)
+        self._ki_spin.valueChanged.connect(self._save_feedback_gains)
+        self._maxiter_spin.valueChanged.connect(self._save_feedback_gains)
         # Trajectory + settings of the last feedback run, for _on_suggest_pi.
         self._last_feedback = None
 
@@ -3005,6 +3026,8 @@ class SetPowerTab(_MonetTab):
             for laser in pc.instrument.lasers:
                 self._laser_combo.addItem(str(laser), laser)
         self._laser_combo.blockSignals(False)
+        if pc is not None:
+            self._load_feedback_gains()
         if self._laser_combo.count():
             self._on_laser_changed(0)
         # Populate the hardware spinboxes from the *live* hardware, so on
@@ -3361,6 +3384,167 @@ class SetPowerTab(_MonetTab):
             self._maxiter_spin.setValue(int(s["max_iter"]))
             self._emit_status("Applied suggested PI gains.", 4000)
 
+    def _feedback_microscope(self):
+        """Name of the connected microscope, or None (for the gain store)."""
+        if self._pc is None:
+            return None
+        try:
+            return self._pc.instrument.config["index"].get("name")
+        except Exception:
+            return None
+
+    def _save_feedback_gains(self, *_):
+        """Persist the current PI gains for the connected microscope.
+
+        Connected to the Kp / Ki / max-iter spin boxes' ``valueChanged``; a
+        no-op before a microscope is connected (nothing to key the store on).
+        """
+        scope = self._feedback_microscope()
+        if scope is None:
+            return
+        hwstate.save_feedback_gains(
+            scope,
+            kp=self._kp_spin.value(),
+            ki=self._ki_spin.value(),
+            max_iter=self._maxiter_spin.value(),
+        )
+
+    def _load_feedback_gains(self):
+        """Load persisted PI gains for the connected microscope into the spin
+        boxes, with signals blocked so the load does not re-save them."""
+        scope = self._feedback_microscope()
+        if scope is None:
+            return
+        saved = hwstate.get_feedback_gains(scope)
+        if not saved:
+            return
+        for spin, key, cast in (
+            (self._kp_spin, "kp", float),
+            (self._ki_spin, "ki", float),
+            (self._maxiter_spin, "max_iter", int),
+        ):
+            if saved.get(key) is not None:
+                spin.blockSignals(True)
+                try:
+                    spin.setValue(cast(saved[key]))
+                finally:
+                    spin.blockSignals(False)
+
+    def _on_autotune_pi(self):
+        """Actively probe the plant to derive PI gains (fixed-laser mode).
+
+        Runs a short open-loop step test around the target in a worker thread,
+        then a confirmation feedback run, and offers to apply the measured
+        gains. Independent of any previous run (unlike _on_suggest_pi).
+        """
+        if self._pc is None:
+            return
+        laser = self._laser_combo.currentData()
+        mode = self._mode_combo.currentData()
+        pwr = self._pwr_spin.value()
+        if mode != "fixed_laser":
+            QMessageBox.information(
+                self,
+                "Auto-tune PI gains",
+                "Auto-tune applies only to fixed-laser mode (the attenuator-"
+                "adjusting PI loop). Switch the mode to use it.",
+            )
+            return
+        if not hasattr(self._pc.instrument, "set_power_fixed_attenuator"):
+            QMessageBox.warning(
+                self,
+                "Not supported",
+                "This mode requires a multi-laser instrument "
+                "with calibrations at multiple laser power levels.",
+            )
+            return
+        if not getattr(self._pc, "powermeter_available", False):
+            QMessageBox.warning(
+                self,
+                "Auto-tune PI gains",
+                "A power meter is required to probe the plant, but none is "
+                "available.",
+            )
+            return
+        if not self._check_power_in_range(pwr, mode, laser):
+            return
+
+        # Resolve beampath / turret on the main thread (as _on_set_power does).
+        protocol = getattr(self._pc, "protocol", None) or {}
+        bp_dict = protocol.get("beampath") or {}
+        bp_for_laser = bp_dict.get(laser)
+        nid = self._nosepiece_id()
+        if nid is not None and isinstance(bp_for_laser, dict):
+            bp_for_laser = {k: v for k, v in bp_for_laser.items() if k != nid}
+        bp_end_calibrate = bp_dict.get("end_calibrate")
+        bp_end = bp_dict.get("end")
+        pm_is_bfp = self._pm_pos_combo.currentData() == POWERMETER_BFP
+        turret_kind = "powermeter" if pm_is_bfp else "objective"
+        turret_target = self._turret_value(turret_kind)
+        # Capture all widget values on the main thread before the worker
+        # starts — reading Qt widgets from the worker thread is unsafe.
+        kp0 = self._kp_spin.value()
+        ki0 = self._ki_spin.value()
+        max_iter0 = self._maxiter_spin.value()
+        max_dev_pct = self._feedback_tol_spin.value()
+
+        def _do():
+            if bp_for_laser:
+                self._pc.instrument.beampath.positions = bp_for_laser
+            if turret_target is not None:
+                tnid, tval = turret_target
+                self._pc.instrument.beampath.positions = {tnid: tval}
+            result = autotune_pi_gains(
+                self._pc.instrument,
+                self._pc.powermeter,
+                pwr,
+                laser,
+                "fixed_laser",
+                kp=kp0,
+                ki=ki0,
+                max_dev_pct=max_dev_pct,
+                max_iter=max_iter0,
+            )
+            if bp_end_calibrate is not None:
+                self._pc.instrument.beampath.positions = bp_end_calibrate
+            if bp_end is not None:
+                self._pc.instrument.beampath.positions = bp_end
+            self._pc.instrument.record_state(laser)
+            return result
+
+        def _apply(result):
+            if not result.get("changed"):
+                QMessageBox.information(
+                    self, "Auto-tune PI gains", result["message"]
+                )
+                return
+            box = QMessageBox(self)
+            box.setWindowTitle("Auto-tune PI gains")
+            box.setIcon(QMessageBox.Icon.Information)
+            box.setText(result["message"])
+            apply_btn = box.addButton(
+                "Apply", QMessageBox.ButtonRole.AcceptRole
+            )
+            box.addButton("Keep current", QMessageBox.ButtonRole.RejectRole)
+            box.exec()
+            if box.clickedButton() is apply_btn:
+                self._kp_spin.setValue(float(result["kp"]))
+                self._ki_spin.setValue(float(result["ki"]))
+                self._maxiter_spin.setValue(int(result["max_iter"]))
+                self._emit_status("Applied auto-tuned PI gains.", 4000)
+
+        def _done():
+            self._emit_status("Ready", 2000)
+            self._refresh_hw_state(laser)
+            self._update_range_label()
+
+        self._run_hw(
+            _do,
+            f"Auto-tuning PI gains at {pwr} mW…",
+            on_result=_apply,
+            on_done=_done,
+        )
+
     def _action_buttons(self, enabled):
         for btn in (
             self._btn_onoff,
@@ -3376,6 +3560,7 @@ class SetPowerTab(_MonetTab):
             self._btn_hw_att_set,
             self._btn_hw_att_home,
             self._btn_hw_pwr_set,
+            self._btn_autotune_pi,
         ):
             btn.setEnabled(enabled)
         # The turret buttons additionally require a configured nosepiece;
