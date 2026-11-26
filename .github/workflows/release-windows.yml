@@ -1,6 +1,7 @@
 name: Release — Windows GUI installer
 
-# Builds the standalone Windows GUI executable (monet-gui.exe) and attaches it
+# Builds the standalone Windows GUI bundle (embeddable CPython — no custom .exe)
+# and the Inno installer, and attaches the installer + portable zip
 # to the GitHub Release for the pushed tag. Fires on a vX.Y.Z tag push — the
 # same action that already cuts a monet release (setuptools-scm derives the
 # version from the tag). The lint + unit-test gates run on branches/PRs; this
@@ -139,7 +140,7 @@ jobs:
         with:
           # Attaches to the Release for this tag, creating it if it does not
           # exist yet and updating it (without clobbering notes) if it does.
-          # The one-click installer plus a zip of the portable onedir folder.
+          # The one-click installer plus a zip of the portable embeddable bundle.
           files: |
             dist/Monet-Setup-*.exe
             dist/monet-gui-portable-*.zip
