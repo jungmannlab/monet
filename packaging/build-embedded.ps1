@@ -70,11 +70,27 @@ Invoke-WebRequest -Uri "https://bootstrap.pypa.io/get-pip.py" -OutFile $getpip
 & $py $getpip --no-warn-script-location
 if ($LASTEXITCODE -ne 0) { throw "get-pip.py failed ($LASTEXITCODE)" }
 
-# 4. Install monet + the GUI / hardware / setup extras from the repo source
-#    straight into the embeddable interpreter. (No [project.scripts], so this
-#    writes no Scripts\monet.exe launcher — that was the first quarantine.)
-& $py -m pip install --no-warn-script-location --no-compile ".[gui,hardware,setup]"
-if ($LASTEXITCODE -ne 0) { throw "pip install monet[...] failed ($LASTEXITCODE)" }
+# 4. Build every wheel (monet + its full dependency closure, including the
+#    git-sourced pycobolt) with the RUNNER's full Python — pip build isolation
+#    and setuptools work there, but NOT inside the restricted embeddable
+#    interpreter (its ._pth sandbox breaks build isolation). Then install those
+#    prebuilt wheels into the embeddable with --no-index / --no-build-isolation,
+#    so it never needs a build backend.
+$wheelhouse = Join-Path $root "dist\wheelhouse"
+if (Test-Path $wheelhouse) { Remove-Item -Recurse -Force $wheelhouse }
+New-Item -ItemType Directory -Force -Path $wheelhouse | Out-Null
+& python -m pip wheel ".[gui,hardware,setup]" --wheel-dir $wheelhouse
+if ($LASTEXITCODE -ne 0) { throw "pip wheel (runner Python) failed ($LASTEXITCODE)" }
+& $py -m pip install --no-warn-script-location --no-index --find-links $wheelhouse `
+    "monet[gui,hardware,setup]"
+if ($LASTEXITCODE -ne 0) { throw "pip install into embeddable failed ($LASTEXITCODE)" }
+
+# 4b. Strip any launcher .exe stubs pip created (get-pip's Scripts\pip.exe, any
+#     dependency console scripts) — those are the same unsigned-PE class we're
+#     eliminating. Keep only the PSF-signed interpreters.
+Get-ChildItem -Path $DestFull -Recurse -Filter *.exe |
+    Where-Object { $_.Name -notin @('python.exe', 'pythonw.exe') } |
+    Remove-Item -Force -ErrorAction SilentlyContinue
 
 # 5. Drop the GUI launcher, a double-clickable wrapper for the portable zip,
 #    and the app icon next to the interpreter.
