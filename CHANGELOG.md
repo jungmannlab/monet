@@ -10,6 +10,8 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
+## [0.7.13] - 2026-11-26
+
 ### Fixed
 - **Closed-loop PI auto-suggester no longer drives Ki to zero.**
   `suggest_pi_gains` hard-tied `Ki = 0.2·Kp` and lowered Kp on every slow or
