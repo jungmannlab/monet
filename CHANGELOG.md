@@ -10,6 +10,29 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
+## [0.7.13] - 2026-11-26
+
+### Fixed
+- **Closed-loop PI auto-suggester no longer drives Ki to zero.**
+  `suggest_pi_gains` hard-tied `Ki = 0.2·Kp` and lowered Kp on every slow or
+  non-converged run, so it shrank both gains together and removed the integral
+  action that eliminates steady-state offset — the loop then crept ever more
+  slowly toward a target it could never reach (e.g. "set 18.3 mW, settle at
+  ~17.2 with Ki=0"). Kp and Ki are now tuned independently: a persistent
+  same-sign offset (`stalled`) *raises* Ki and leaves Kp; oscillation / slow
+  decay scales Kp toward the target decay and leaves Ki as set.
+
+### Added
+- **Active PI auto-tuner (`autotune_pi_gains` + "Auto-tune" button).** Instead
+  of inferring gains from one past run, it runs a deliberate open-loop step
+  test around the target, measures the local plant gain `g = d(measured)/
+  d(setpoint)`, and derives `Kp = target-decay / g` and a non-zero `Ki`
+  directly, then confirms with a short feedback run. Exposed in the Set Power
+  tab's PI panel (fixed-laser mode, needs a power meter).
+- **PI gains persist across sessions.** Kp, Ki and max-iterations are saved
+  per microscope to `~/.monet/hardware_state.json` and restored on connect, so
+  a tuned loop survives a restart instead of resetting to defaults.
+
 ## [0.7.12] - 2026-11-24
 
 ### Added
