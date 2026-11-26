@@ -1,6 +1,7 @@
 name: Release — Windows GUI installer
 
-# Builds the standalone Windows GUI executable (monet-gui.exe) and attaches it
+# Builds the standalone Windows GUI bundle (embeddable CPython — no custom .exe)
+# and the Inno installer, and attaches the installer + portable zip
 # to the GitHub Release for the pushed tag. Fires on a vX.Y.Z tag push — the
 # same action that already cuts a monet release (setuptools-scm derives the
 # version from the tag). The lint + unit-test gates run on branches/PRs; this
@@ -20,6 +21,11 @@ permissions:
 jobs:
   windows-exe:
     runs-on: windows-latest
+    # Surface the (optional) code-signing secrets as env so step-level `if:`
+    # can test them — the `secrets` context is not available in a step `if`.
+    env:
+      WINDOWS_CODESIGN_PFX_B64: ${{ secrets.WINDOWS_CODESIGN_PFX_B64 }}
+      WINDOWS_CODESIGN_PASSWORD: ${{ secrets.WINDOWS_CODESIGN_PASSWORD }}
 
     steps:
       - name: Checkout code
@@ -33,21 +39,23 @@ jobs:
           python-version: '3.12'
           cache: pip
 
-      - name: Install monet (GUI + hardware + setup extras) + PyInstaller
-        # [hardware] as well as [gui]: the frozen build bundles the vendor SDK
-        # *Python* packages (msl-equipment, pyvisa, nidaqmx, pycobolt, …) so a
-        # real rig can connect. The vendor DLLs/runtimes (Thorlabs Kinesis,
-        # NI-DAQmx, Micro-Manager) still have to be installed on the rig PC.
-        # [setup] bundles paramiko so the wizard's automated SSH server install
-        # works from the installed exe (no separate `pip install monet[setup]`).
+      - name: Build the embeddable bundle (no PyInstaller, no custom .exe)
+        # Assembles dist\monet-gui\ from the PSF-signed embeddable CPython + a
+        # real `pip install .[gui,hardware,setup]` into it. [hardware] bundles
+        # the vendor SDK *Python* packages (pyvisa, nidaqmx, pycobolt, …) so a
+        # real rig can connect (the vendor DLLs/runtimes still live on the rig
+        # PC); [setup] bundles paramiko for the wizard's SSH server install.
+        # The runner's `python` only pins the matching embeddable version.
+        shell: pwsh
         run: |
           python -m pip install --upgrade pip
-          python -m pip install ".[gui,hardware,setup]" pyinstaller
+          pwsh packaging\build-embedded.ps1
 
       - name: Confirm the bundled version matches the tag
         shell: bash
         run: |
-          ver=$(python -c "import monet; print(monet.__version__)")
+          # Ask the *bundled* interpreter — that's what ships.
+          ver=$(./dist/monet-gui/python.exe -c "import monet; print(monet.__version__)")
           echo "monet version: $ver"
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
             tag="${GITHUB_REF_NAME#v}"
@@ -58,17 +66,15 @@ jobs:
             fi
           fi
 
-      - name: Build monet-gui (onedir)
-        run: pyinstaller --clean --noconfirm packaging/monet-gui.spec
-
       - name: Smoke-check the artifact (bundle contains monet + drivers)
         shell: bash
         run: |
-          # Onedir: the exe lives inside the dist/monet-gui/ folder.
-          test -f dist/monet-gui/monet-gui.exe
-          # Headless import check: fails the release if a dynamically-loaded
-          # driver module didn't make it into the frozen bundle.
-          ./dist/monet-gui/monet-gui.exe --selfcheck
+          test -f dist/monet-gui/pythonw.exe
+          test -f dist/monet-gui/monet_gui.py
+          # Headless import check via the bundled interpreter: fails the release
+          # if monet or a dynamically-loaded driver module is missing from the
+          # embedded install.
+          ./dist/monet-gui/python.exe dist/monet-gui/monet_gui.py --selfcheck
 
       - name: Build the Windows installer (Inno Setup)
         # PowerShell, not bash: Git-Bash's MSYS path conversion mangles the
@@ -81,7 +87,8 @@ jobs:
           if ($env:GITHUB_REF -like 'refs/tags/*') {
             $ver = $env:GITHUB_REF_NAME -replace '^v', ''
           } else {
-            $ver = (python -c "import monet; print(monet.__version__)").Trim()
+            # monet lives only in the bundle now, not the runner's python.
+            $ver = (& "dist\monet-gui\python.exe" -c "import monet; print(monet.__version__)").Trim()
           }
           Write-Host "installer version: $ver"
           # Inno Setup 6 ships on windows-latest; install to be robust to image
@@ -93,9 +100,30 @@ jobs:
           if (-not (Test-Path "dist\Monet-Setup-$ver.exe")) {
             throw "installer not found: dist\Monet-Setup-$ver.exe"
           }
-          # Zip the onedir folder as the portable artifact (the onefile exe is
-          # gone — onedir avoids the per-launch temp-extraction DLL-load issue).
+          # Zip the embeddable bundle folder as the portable artifact (unzip and
+          # run "Monet GUI.cmd" or pythonw.exe monet_gui.py — no install needed).
           Compress-Archive -Path dist\monet-gui -DestinationPath "dist\monet-gui-portable-$ver.zip" -Force
+
+      - name: Code-sign the installer (optional — only if a cert secret is set)
+        # The bundle itself ships no custom .exe (the app launches via the
+        # PSF-signed pythonw.exe), so nothing inside needs signing. The Inno
+        # installer is the one PE we emit; sign it when a code-signing cert is
+        # configured so it also carries publisher trust / reputation. Skipped
+        # (no-op) when the secret is absent, so forks and cert-less builds work.
+        if: ${{ env.WINDOWS_CODESIGN_PFX_B64 != '' }}
+        shell: pwsh
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP "codesign.pfx"
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CODESIGN_PFX_B64))
+          $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe" |
+            Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $signtool) { throw "signtool.exe not found" }
+          Get-ChildItem dist\Monet-Setup-*.exe | ForEach-Object {
+            & $signtool.FullName sign /f $pfx /p $env:WINDOWS_CODESIGN_PASSWORD `
+              /tr http://timestamp.digicert.com /td sha256 /fd sha256 $_.FullName
+            if ($LASTEXITCODE -ne 0) { throw "signtool failed ($LASTEXITCODE)" }
+          }
+          Remove-Item $pfx -Force
 
       - name: Upload installer + portable zip as build artifacts (always)
         uses: actions/upload-artifact@v6
@@ -112,7 +140,7 @@ jobs:
         with:
           # Attaches to the Release for this tag, creating it if it does not
           # exist yet and updating it (without clobbering notes) if it does.
-          # The one-click installer plus a zip of the portable onedir folder.
+          # The one-click installer plus a zip of the portable embeddable bundle.
           files: |
             dist/Monet-Setup-*.exe
             dist/monet-gui-portable-*.zip

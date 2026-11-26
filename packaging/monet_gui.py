@@ -2,12 +2,14 @@
 packaging/monet_gui.py
 ~~~~~~~~~~~~~~~~~~~~~~~
 
-PyInstaller entry point for the standalone Windows monet GUI (``monet-gui.exe``).
+Launcher for the standalone Windows monet GUI. The build
+(``packaging/build-embedded.ps1``) ships this next to an embeddable CPython
+with monet pip-installed into it; the Start-menu shortcut runs
+``pythonw.exe monet_gui.py`` (no custom .exe — see build-embedded.ps1 for why).
 
-A frozen onefile build unpacks the package into an ephemeral temp dir
-(``sys._MEIPASS``) that is wiped on exit, so monet's per-machine state — the
-``.env`` the setup wizard writes, the rotating ``monet.log`` — must live
-somewhere persistent and writable instead. This launcher establishes that
+monet's per-machine state — the ``.env`` the setup wizard writes, the rotating
+``monet.log`` — must live somewhere persistent and writable, not in the install
+dir (which may be read-only / Program Files). This launcher establishes that
 location **before** importing monet (``monet/__init__`` reads the log path and
 loads ``.env`` at import time):
 
@@ -32,8 +34,9 @@ def _user_dir():
 
 
 # Modules monet loads dynamically by classpath (util.load_class), so they must
-# be in the bundle even though nothing imports them statically. --selfcheck
-# imports them to prove the PyInstaller build is complete, without a display.
+# be present in the bundled install even though nothing imports them
+# statically. --selfcheck imports them to prove the bundle is complete, without
+# a display.
 _SELFCHECK_MODULES = (
     "monet",
     "monet.gui",

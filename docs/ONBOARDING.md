@@ -28,8 +28,9 @@ server (Part 6) as needed.
 > [GitHub Release](https://github.com/jungmannlab/monet/releases) — it installs
 > Monet per-user, adds a **Monet GUI** Start-menu shortcut, and the first-run
 > wizard takes over (the wizard records the default microscope, so the shortcut
-> opens straight into it). A portable **`monet-gui.exe`** is attached to the
-> same Release if you prefer not to install. See the README for details.
+> opens straight into it). A portable **zip** (`monet-gui-portable-<version>.zip`,
+> unzip and run **`Monet GUI.cmd`**) is attached to the same Release if you
+> prefer not to install. See the README for details.
 
 > Terminology: a **microscope config** is one named entry in `configs.yaml`.
 > A **protocol** (in `protocols.yaml`) describes a multi-laser/multi-power

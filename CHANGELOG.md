@@ -10,6 +10,29 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 
 ## [Unreleased]
 
+## [0.7.15] - 2026-11-26
+
+### Changed
+- **Standalone Windows build no longer ships a custom `.exe` (Apex One
+  quarantine fix, part 2).** 0.7.14 removed pip's `Scripts\monet.exe`; the
+  one-click installer still shipped a PyInstaller **`monet-gui.exe`** bootloader,
+  which Apex One's TrendX engine also false-positived as `Troj.Win32.TRX.*` and
+  quarantined. The standalone build is now assembled by
+  `packaging/build-embedded.ps1` from the **python.org embeddable CPython** plus
+  a real `pip install .[gui,hardware,setup]`; the GUI launches via the bundle's
+  **`pythonw.exe monet_gui.py`**. The only executables shipped are
+  `python.exe` / `pythonw.exe` (Authenticode-signed by the PSF) and vendor DLLs
+  — no custom unsigned PE. The PyInstaller spec is removed.
+- **`default_env_path` honours `MONET_HOME` on the (non-frozen) embeddable
+  build.** It previously keyed only on `sys.frozen` (PyInstaller-only), so the
+  embeddable build — not frozen, but with `MONET_HOME` set by its launcher —
+  would have written `.env` beside the package where monet never finds it.
+
+### Added
+- **Optional Authenticode signing in the Windows release CI.** When the
+  `WINDOWS_CODESIGN_PFX_B64` / `WINDOWS_CODESIGN_PASSWORD` secrets are set, the
+  release workflow signs `Monet-Setup-<ver>.exe`; absent, the build is unchanged.
+
 ## [0.7.14] - 2026-11-26
 
 ### Changed
