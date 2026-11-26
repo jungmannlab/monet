@@ -81,8 +81,14 @@ if (Test-Path $wheelhouse) { Remove-Item -Recurse -Force $wheelhouse }
 New-Item -ItemType Directory -Force -Path $wheelhouse | Out-Null
 & python -m pip wheel ".[gui,hardware,setup]" --wheel-dir $wheelhouse
 if ($LASTEXITCODE -ne 0) { throw "pip wheel (runner Python) failed ($LASTEXITCODE)" }
-& $py -m pip install --no-warn-script-location --no-index --find-links $wheelhouse `
-    "monet[gui,hardware,setup]"
+# Install the exact wheel files with --no-deps: `pip wheel` already built the
+# COMPLETE closure (monet + every dependency, incl. the git-sourced pycobolt),
+# so there is nothing left to resolve. Resolving "monet[...]" by name instead
+# would re-follow pycobolt's `git+` *direct reference* and try to rebuild it
+# from source (which needs setuptools the embeddable interpreter lacks).
+$wheels = Get-ChildItem "$wheelhouse\*.whl" | ForEach-Object { $_.FullName }
+if (-not $wheels) { throw "no wheels were built into $wheelhouse" }
+& $py -m pip install --no-warn-script-location --no-index --no-deps @wheels
 if ($LASTEXITCODE -ne 0) { throw "pip install into embeddable failed ($LASTEXITCODE)" }
 
 # 4b. Strip any launcher .exe stubs pip created (get-pip's Scripts\pip.exe, any
