@@ -2059,13 +2059,15 @@ def autotune_pi_gains(
     open-loop **step test** around the operating point: it commands a few power
     setpoints bracketing ``target_pwr`` (±``probe_frac``), measures the power
     actually delivered at each, and fits the local plant gain
-    ``g = d(measured)/d(setpoint)`` that the PI loop really sees. From ``g`` it
-    sets, *independently*:
+    ``g = d(measured)/d(setpoint)`` that the PI loop really sees. The fixed-laser
+    loop is multiplicative, so the *integral* term is what actually corrects the
+    gain error; from ``g`` it sets an **integral-led** pair:
 
-    * ``Kp`` so the proportional loop decays at :data:`_TARGET_DECAY` per step
-      (``Kp = _TARGET_DECAY / g``) — fast but well damped; and
-    * ``Ki`` to a non-zero fraction of ``Kp`` so the steady-state offset the
-      proportional term leaves is integrated away.
+    * ``Ki ≈ 0.8/g`` — the primary corrector; and
+    * ``Kp ≈ 0.1/g`` — a small damping term.
+
+    This reaches tolerance in ~3 steps (a proportional-heavy tuning adds a slow
+    closed-loop pole and crawls); see the derivation at the gain assignment.
 
     With ``confirm`` it then runs a short :func:`run_power_feedback` with the
     derived gains and reports whether it converged. The hardware is left at the
@@ -2230,10 +2232,21 @@ def autotune_pi_gains(
     else:
         linearity = None
 
-    kp_new = float(np.clip(_TARGET_DECAY / g, 0.05, 2.0))
-    # Non-zero integral so the proportional offset is removed; tied to the
-    # identified Kp but floored so it never collapses to ~0.
-    ki_new = float(np.clip(max(0.4 * kp_new, 0.05), 0.0, 1.0))
+    # The fixed-laser loop is *multiplicative* — corrected = target*(1 + kp*e +
+    # ki*I) and measured = g*corrected — so the INTEGRAL term is the primary
+    # corrector of the plant/calibration gain error g (its steady state is
+    # ki*I* = 1/g - 1). A large Kp does not speed that up; it adds a slow
+    # positive closed-loop pole (the loop poles are the roots of
+    # λ² - (1 - g(kp+ki))λ - g·kp, whose product is -g·kp). The old
+    # proportional-heavy tuning (kp = 0.35/g, ki = 0.4·kp) put that pole near
+    # 0.9 and crawled to target in ~25 steps. Place the loop *integral-led*
+    # instead: ki ≈ 0.8/g drives the correction, a small kp ≈ 0.1/g damps it.
+    # That reaches 1% in ~3 steps and stays robust to a ±30% error in the
+    # measured g (both verified by simulation and by test_autotune_* against the
+    # real loop). g*kp = 0.1 and g*ki = 0.8 are gain-invariant by construction,
+    # so the dynamics are the same whatever plant gain the step test finds.
+    kp_new = float(np.clip(0.10 / g, 0.01, 2.0))
+    ki_new = float(np.clip(0.80 / g, 0.02, 2.0))
     max_iter_new = int(max(max_iter, 20))
 
     out.update(
@@ -2283,9 +2296,8 @@ def autotune_pi_gains(
             "converged" if out["converged"] else "did not converge"
         )
     out["message"] = (
-        "Step test measured plant gain g = {:.3f}{}. Derived Kp {:.2f} → "
-        "{:.2f}, Ki {:.3f} → {:.3f} (independent), max iterations {} → "
-        "{}.{}"
+        "Step test measured plant gain g = {:.3f}{}. Derived integral-led Kp "
+        "{:.2f} → {:.2f}, Ki {:.3f} → {:.3f}, max iterations {} → {}.{}"
     ).format(
         g,
         lin_txt,
