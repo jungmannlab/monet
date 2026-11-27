@@ -273,6 +273,70 @@ class TestExpertView(unittest.TestCase):
         self.assertIn("deviate", txt)
 
 
+class TestSetPowerLaserSwitch(unittest.TestCase):
+    """Switching the laser combo must switch the instrument's active laser (so
+    the model-power plot / range / slider follow the selection) without ever
+    starting emission."""
+
+    def test_switch_follows_instrument_without_emission(self):
+        import types
+
+        tab = SetPowerTab()
+
+        class _Laser:
+            def __init__(self):
+                self.enabled = False
+                self.power = 50.0
+
+        class _Inst:
+            def __init__(self):
+                self.lasers = {488: _Laser(), 561: _Laser()}
+                self.curr_laser = 488
+                self.auto_enable_lasers = True  # on, as for a set-power action
+                self.is_calibrated = False
+                self.powermeter_position = "bfp"
+                self.switched_to = []
+
+            @property
+            def laser(self):
+                return self.curr_laser
+
+            @laser.setter
+            def laser(self, value):
+                self.curr_laser = int(value)
+                self.switched_to.append(int(value))
+                if self.auto_enable_lasers:
+                    self.lasers[self.curr_laser].enabled = True
+
+            def saved_state(self, laser):
+                return None
+
+            def _has_transmission_factor(self, laser):
+                return False
+
+        inst = _Inst()
+        tab._pc = types.SimpleNamespace(
+            instrument=inst, protocol={}, powermeter_available=False
+        )
+        tab._current_laser = 488
+        tab._laser_combo.blockSignals(True)
+        tab._laser_combo.addItem("488", 488)
+        tab._laser_combo.addItem("561", 561)
+        tab._laser_combo.setCurrentIndex(1)  # 561
+        tab._laser_combo.blockSignals(False)
+
+        tab._on_laser_changed(1)
+
+        # The instrument's active laser follows the combo...
+        self.assertEqual(inst.curr_laser, 561)
+        self.assertIn(561, inst.switched_to)
+        # ...but merely selecting a laser must NOT enable emission, and
+        # auto_enable_lasers is restored to its prior value afterwards.
+        self.assertFalse(inst.lasers[561].enabled)
+        self.assertFalse(inst.lasers[488].enabled)
+        self.assertTrue(inst.auto_enable_lasers)
+
+
 class TestCalibrationPlots(unittest.TestCase):
     """Regression tests for the live calibration plots / wavelength toggles."""
 

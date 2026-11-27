@@ -13,6 +13,17 @@ move the `[Unreleased]` notes into a new `[x.y.z]` section dated today, then
 ## [0.7.16] - 2026-11-27
 
 ### Fixed
+- **Set Power model plot follows the selected laser.** Switching the laser in
+  the Set Power tab now switches the instrument's active laser (emission-safe —
+  auto-enable is forced off across the switch), so the model-power curve, range
+  label and power slider update immediately instead of only after a power was
+  set. The plot's power axis is explicitly the **sample plane** (the curve is
+  projected by the objective transmission factor), now labelled as such.
+- **Measure / feedback read-outs say "projected" when the meter is in the BFP.**
+  A back-focal-plane reading reported in the sample plane is a *projection*
+  (raw × T_obj), not a direct measurement — the status now reads "Projected
+  sample-plane power: … (= measured … in BFP × T_obj=…)" (and "Target → projected
+  …" for a feedback run), keeping the raw reading and factor in brackets.
 - **Auto-tuner now converges in ~3 steps instead of ~25.** The fixed-laser
   feedback loop is *multiplicative* (`corrected = target·(1 + Kp·e + Ki·∫e)`),
   so the integral term is what corrects the plant/calibration gain error; a
