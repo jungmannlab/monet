@@ -3117,6 +3117,24 @@ class SetPowerTab(_MonetTab):
             return
         self._current_laser = laser
 
+        # Switch the instrument's active laser so the model-power plot, range
+        # label and power slider all reflect the selected wavelength — the plot
+        # reads ``inst.curr_laser`` / ``inst.analyzer`` / ``inst._bfp_factor``,
+        # so without this it kept showing the previous laser until a power was
+        # set. Force auto-enable off across the switch (mirrors the calibration
+        # load path) so merely picking a laser never starts emission.
+        inst = getattr(self._pc, "instrument", None) if self._pc else None
+        if inst is not None:
+            try:
+                prev_auto = getattr(inst, "auto_enable_lasers", False)
+                inst.auto_enable_lasers = False
+                try:
+                    inst.laser = laser
+                finally:
+                    inst.auto_enable_lasers = prev_auto
+            except Exception:
+                logger.debug("Could not switch instrument to laser %s", laser)
+
         # Restore saved state for the newly selected laser
         if laser in self._laser_state:
             saved_pwr, saved_mode = self._laser_state[laser]
@@ -3795,8 +3813,16 @@ class SetPowerTab(_MonetTab):
                     factor,
                 ) = res
                 dev_pct = abs(measured - pwr) / pwr * 100.0 if pwr > 0 else 0.0
+                # With the meter in the BFP the result is projected to the
+                # sample plane (× T_obj), not directly measured there — say
+                # "projected" and show the arithmetic in brackets below.
+                verb = (
+                    "projected"
+                    if (factor is not None and factor != 1.0)
+                    else "measured"
+                )
                 parts = [
-                    f"Target {pwr} mW → measured {measured:.3f} mW "
+                    f"Target {pwr} mW → {verb} {measured:.3f} mW "
                     f"({dev_pct:.1f}% deviation)"
                 ]
                 if not converged:
@@ -3810,7 +3836,7 @@ class SetPowerTab(_MonetTab):
                 # Annotate whether an objective transmission factor was used.
                 if factor is not None and factor != 1.0:
                     parts.append(
-                        f"(sample plane; measured {raw:.3f} {unit} in BFP"
+                        f"(= measured {raw:.3f} {unit} in BFP"
                         f" × T_obj={factor:.4f})"
                     )
                 elif pm_is_bfp and not factor_available:
@@ -4268,23 +4294,23 @@ class SetPowerTab(_MonetTab):
             except Exception:
                 unit = "a.u."
 
-            # Annotate whether an objective transmission factor was applied.
+            # When the meter is in the BFP the reported value is the raw reading
+            # *projected* to the sample plane (× T_obj), not a direct sample-
+            # plane measurement — label it "Projected" and show the arithmetic.
             if factor is not None and factor != 1.0:
-                trans_note = (
-                    f" (sample plane; measured {raw:.3f} {unit} in BFP"
-                    f" × T_obj={factor:.4f})"
-                )
+                label = "Projected sample-plane power"
+                trans_note = f" (= measured {raw:.3f} {unit} in BFP × T_obj={factor:.4f})"
             elif pm_is_bfp and not factor_available:
+                label = "Measured power"
                 trans_note = (
                     f" (⚠ BFP selected but no objective transmission factor "
                     f"for {laser} nm — reporting raw BFP reading as "
                     f"sample-plane power, uncorrected)"
                 )
             else:
+                label = "Measured power"
                 trans_note = " (no objective transmission factor applied)"
-            self._status.setText(
-                f"Measured power: {measured:.3f} {unit}{trans_note}"
-            )
+            self._status.setText(f"{label}: {measured:.3f} {unit}{trans_note}")
 
             mm_err = self._update_mm_comment(
                 laser,
@@ -4839,11 +4865,12 @@ class SetPowerTab(_MonetTab):
             )
             self._hover_annot.set_visible(False)
             ax.set_xlabel("attenuator angle", fontsize=8)
-            ax.set_ylabel("power [mW]", fontsize=8)
+            # The curves are projected to the sample plane (×T_obj) in
+            # _model_curves, so label the axis accordingly.
+            ax.set_ylabel("sample-plane power [mW]", fontsize=8)
             ax.set_title(
-                "model power — {} nm @ {:g} mW  (click to set)".format(
-                    laser, shown
-                ),
+                "model sample-plane power — {} nm @ {:g} mW  "
+                "(click to set)".format(laser, shown),
                 fontsize=9,
             )
             ax.grid(True, alpha=0.3)
