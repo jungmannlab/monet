@@ -1449,12 +1449,55 @@ class TestControl(unittest.TestCase):
         )
         self.assertEqual(res["diagnosis"], "tuned")
         self.assertAlmostEqual(res["plant_gain"], 1.1, places=2)
-        # Kp = _TARGET_DECAY / g = 0.35 / 1.1 ≈ 0.318
-        self.assertAlmostEqual(res["kp"], mco._TARGET_DECAY / 1.1, places=2)
-        self.assertGreater(res["ki"], 0.0)
+        # Integral-led gains: Ki ≈ 0.8/g drives the correction, Kp ≈ 0.1/g damps.
+        self.assertAlmostEqual(res["kp"], 0.10 / 1.1, places=2)
+        self.assertAlmostEqual(res["ki"], 0.80 / 1.1, places=2)
+        # Ki must dominate Kp — a proportional-heavy loop is the slow one.
+        self.assertGreater(res["ki"], res["kp"])
         self.assertEqual(len(res["trajectory"]), 3)
         self.assertTrue(res["confirmed"])
         self.assertTrue(res["converged"])
+
+    @mock.patch("time.sleep")
+    def test_autotune_pi_gains_converge_in_few_steps(self, _sleep):
+        """The auto-tuned gains must reach 1% in a handful of steps across a
+        range of plant gains — the old proportional-heavy tuning took ~25.
+
+        One control is reused per gain (autotune, then a fresh feedback run on
+        the same instrument — run_power_feedback re-does its own open-loop set
+        first), so the shared test DB is not rebuilt more than necessary.
+        """
+        for miscal in (0.6, 0.8, 1.1, 1.3):
+            ctrl = self._build_laser_control()
+            pm = _AttenuatorCurvePowerMeter(ctrl, miscal=miscal)
+            tuned = mco.autotune_pi_gains(
+                ctrl,
+                pm,
+                target_pwr=30,
+                laser=488,
+                mode="fixed_laser",
+                max_dev_pct=1.0,
+                confirm=False,
+            )
+            res = mco.run_power_feedback(
+                ctrl,
+                pm,
+                target_pwr=30,
+                laser=488,
+                mode="fixed_laser",
+                kp=tuned["kp"],
+                ki=tuned["ki"],
+                max_dev_pct=1.0,
+                max_iter=40,
+            )
+            self.assertTrue(
+                res["converged"], "did not converge for g=%s" % miscal
+            )
+            self.assertLessEqual(
+                res["iterations"],
+                6,
+                "g=%s took %d steps" % (miscal, res["iterations"]),
+            )
 
     def test_autotune_pi_gains_rejects_fixed_attenuator(self):
         """Fixed-attenuator mode has no PI gains; auto-tune is a no-op there."""
